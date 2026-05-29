@@ -1,0 +1,20 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "kimi-sidecar",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    },
+    "notification:default",
+    "global-shortcut:allow-register"
+  ]
+}

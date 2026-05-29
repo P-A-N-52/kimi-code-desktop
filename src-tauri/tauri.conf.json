@@ -1,0 +1,68 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Kimi Code",
+  "version": "1.44.0",
+  "identifier": "com.kimi.code.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "trayIcon": {
+      "id": "main-tray",
+      "iconPath": "icons/icon.png",
+      "tooltip": "Kimi Code"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Kimi Code",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1280,
+        "minHeight": 800,
+        "decorations": true,
+        "center": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' asset: http://asset.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob: file:; media-src 'self' asset: http://asset.localhost data: blob: file:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* ws://127.0.0.1:*; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self' asset: http://asset.localhost http://127.0.0.1:*; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:*; style-src 'self' 'unsafe-inline' http://127.0.0.1:*; img-src 'self' asset: http://asset.localhost http://127.0.0.1:* data: blob: file:; media-src 'self' asset: http://asset.localhost http://127.0.0.1:* data: blob: file:; font-src 'self' http://127.0.0.1:* data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* ws://127.0.0.1:*; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      "capabilities": [
+        {
+          "identifier": "default",
+          "description": "Default capabilities for the main window",
+          "windows": ["main"],
+          "permissions": [
+            "core:default",
+            {
+              "identifier": "shell:allow-execute",
+              "allow": [
+                {
+                  "name": "kimi-sidecar",
+                  "sidecar": true,
+                  "args": true
+                }
+              ]
+            },
+            "notification:default",
+            "global-shortcut:allow-register"
+          ]
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi"],
+    "externalBin": ["sidecar/kimi-sidecar"],
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {}
+}
