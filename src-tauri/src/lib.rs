@@ -61,23 +61,23 @@ pub fn run() {
                 use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
                 let shortcut_result = tauri_plugin_global_shortcut::Builder::new()
                     .with_shortcuts(["ctrl+shift+k"])
-                    .and_then(|builder| {
-                        Ok(builder
+                    .map(|builder| {
+                        builder
                             .with_handler(|app, shortcut, event| {
-                                if event.state == ShortcutState::Pressed {
-                                    if shortcut.matches(Modifiers::CONTROL, Code::KeyK) {
-                                        if let Some(window) = app.get_webview_window("main") {
-                                            if window.is_visible().unwrap_or(false) {
-                                                let _ = window.hide();
-                                            } else {
-                                                let _ = window.show();
-                                                let _ = window.set_focus();
-                                            }
+                                if event.state == ShortcutState::Pressed
+                                    && shortcut.matches(Modifiers::CONTROL, Code::KeyK)
+                                {
+                                    if let Some(window) = app.get_webview_window("main") {
+                                        if window.is_visible().unwrap_or(false) {
+                                            let _ = window.hide();
+                                        } else {
+                                            let _ = window.show();
+                                            let _ = window.set_focus();
                                         }
                                     }
                                 }
                             })
-                            .build())
+                            .build()
                     });
                 match shortcut_result {
                     Ok(plugin) => {

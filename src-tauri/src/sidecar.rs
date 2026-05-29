@@ -235,6 +235,12 @@ impl DesktopApiProcessManager {
     }
 }
 
+impl Default for WireProcessManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WireProcessManager {
     pub fn new() -> Self {
         Self {
@@ -878,9 +884,7 @@ fn desktop_api_cache_key(action: &str, params: &Value) -> String {
 
 fn get_cached_desktop_api_response(key: &str) -> Option<Value> {
     let mut cache = desktop_api_cache().lock().unwrap();
-    let Some(entry) = cache.get(key) else {
-        return None;
-    };
+    let entry = cache.get(key)?;
     if Instant::now() <= entry.expires_at {
         return Some(entry.value.clone());
     }

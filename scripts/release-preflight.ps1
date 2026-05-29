@@ -58,6 +58,19 @@ function Invoke-SecretScan {
     Write-Host "No high-confidence secrets found."
 }
 
+function Test-CargoClippy {
+    $oldErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & cargo clippy --version 2>$null | Out-Null
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $oldErrorActionPreference
+    }
+
+    return $exitCode -eq 0
+}
+
 function Invoke-GitQuiet {
     param([string[]]$GitArgs)
 
@@ -127,7 +140,14 @@ try {
     }
 
     Invoke-Step "Rust check" {
-        cargo check --manifest-path src-tauri\Cargo.toml
+        npm run rust:check
+    }
+
+    Invoke-Step "Rust clippy lint gate" {
+        if (-not (Test-CargoClippy)) {
+            throw "cargo-clippy is not installed. Run: rustup component add clippy"
+        }
+        npm run rust:clippy
     }
 
     Invoke-Step "Python sidecar compile check" {

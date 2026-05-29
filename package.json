@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "check": "npm run build && cargo check --manifest-path src-tauri/Cargo.toml && npm run sidecar:compile && npm run sidecar:test && npm audit --audit-level=high",
+    "check": "npm run release:preflight",
     "release:preflight": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-preflight.ps1",
     "release:msi": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-msi.ps1",
+    "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
+    "rust:clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "sidecar:compile": "cd sidecar-adapter && python -m compileall -q kimi_desktop_sidecar",
     "sidecar:test": "cd sidecar-adapter && uv run pytest -q",
     "tauri": "tauri",
