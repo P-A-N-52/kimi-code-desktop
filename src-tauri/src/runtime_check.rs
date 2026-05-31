@@ -9,6 +9,7 @@ use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
 const BUNDLED_RUNTIME_INFO_TIMEOUT: Duration = Duration::from_secs(12);
+const KIMI_CLI_INFO_TIMEOUT: Duration = Duration::from_secs(5);
 const KIMI_CLI_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 const KIMI_CLI_VERSION_COMMANDS: &[&[&str]] = &[&["version"], &["--version"]];
 
@@ -123,20 +124,29 @@ pub async fn check_runtime_readiness(app: &AppHandle) -> RuntimeReadiness {
     if external_cli.available {
         checks.push(RuntimeReadinessCheck {
             id: "externalCli",
-            label: "External Kimi Code CLI",
+            label: "External legacy Kimi CLI",
             status: CheckStatus::Ok,
-            detail: external_cli
-                .program
-                .as_ref()
-                .map(|program| format!("External login helper found: {}", program))
-                .unwrap_or_else(|| "External login helper found.".to_string()),
+            detail: match (&external_cli.program, &external_cli.version) {
+                (Some(program), Some(version)) => {
+                    format!(
+                        "Compatible legacy login helper found: {} (v{})",
+                        program, version
+                    )
+                }
+                (Some(program), None) => {
+                    format!("Compatible legacy login helper found: {}", program)
+                }
+                _ => "Compatible legacy login helper found.".to_string(),
+            },
         });
     } else {
-        let detail = "External 'kimi' command was not found. The desktop app can use the bundled runtime, but terminal login/setup needs an installed Kimi Code CLI.".to_string();
+        let detail = external_cli.error.clone().unwrap_or_else(|| {
+            "External legacy 'kimi' command was not found. The desktop app can use the bundled runtime, but terminal login/setup needs the Python kimi-cli runtime.".to_string()
+        });
         warnings.push(detail.clone());
         checks.push(RuntimeReadinessCheck {
             id: "externalCli",
-            label: "External Kimi Code CLI",
+            label: "External legacy Kimi CLI",
             status: CheckStatus::Warning,
             detail,
         });
@@ -179,7 +189,7 @@ pub async fn check_runtime_readiness(app: &AppHandle) -> RuntimeReadiness {
             ),
         });
     } else if config.ready && external_cli.available {
-        let detail = "No credential source was detected. Launch can continue because external Kimi Code CLI is available for login/setup.".to_string();
+        let detail = "No credential source was detected. Launch can continue because a compatible legacy Kimi CLI is available for login/setup.".to_string();
         warnings.push(detail.clone());
         checks.push(RuntimeReadinessCheck {
             id: "credentials",
@@ -188,7 +198,7 @@ pub async fn check_runtime_readiness(app: &AppHandle) -> RuntimeReadiness {
             detail,
         });
     } else if config.ready {
-        let detail = "No credential source was detected and no external Kimi Code CLI is available for login/setup.".to_string();
+        let detail = "No credential source was detected and no compatible legacy Kimi CLI is available for login/setup.".to_string();
         issues.push(detail.clone());
         checks.push(RuntimeReadinessCheck {
             id: "credentials",
@@ -223,7 +233,7 @@ pub async fn resolve_runtime_kimi_cli_version(app: &AppHandle) -> Result<String,
 pub fn resolve_external_kimi_cli_program_blocking() -> Result<String, String> {
     let mut errors = Vec::new();
     for program in kimi_cli_version_candidates() {
-        match resolve_kimi_cli_version_for_program(&program) {
+        match resolve_compatible_kimi_cli_version_for_program(&program) {
             Ok(_) => return Ok(program),
             Err(error) => errors.push(format!("{}: {}", program, error)),
         }
@@ -233,29 +243,16 @@ pub fn resolve_external_kimi_cli_program_blocking() -> Result<String, String> {
 }
 
 fn resolve_external_kimi_cli_version_blocking() -> Result<String, String> {
-    let env_version = std::env::var("KIMI_CLI_VERSION").ok().and_then(|version| {
-        let trimmed = version.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    });
-
     let mut errors = Vec::new();
     for program in kimi_cli_version_candidates() {
-        match resolve_kimi_cli_version_for_program(&program) {
+        match resolve_compatible_kimi_cli_version_for_program(&program) {
             Ok(version) => return Ok(version),
             Err(error) => errors.push(format!("{}: {}", program, error)),
         }
     }
 
-    if let Some(version) = env_version {
-        return Ok(version);
-    }
-
     Err(format!(
-        "Unable to resolve Kimi CLI version ({})",
+        "Unable to resolve compatible legacy Kimi CLI version ({})",
         errors.join("; ")
     ))
 }
@@ -368,13 +365,16 @@ fn probe_external_cli() -> ExternalCliStatus {
 fn resolve_external_kimi_cli_program_and_version() -> Result<(String, String), String> {
     let mut errors = Vec::new();
     for program in kimi_cli_version_candidates() {
-        match resolve_kimi_cli_version_for_program(&program) {
+        match resolve_compatible_kimi_cli_version_for_program(&program) {
             Ok(version) => return Ok((program, version)),
             Err(error) => errors.push(format!("{}: {}", program, error)),
         }
     }
 
-    Err(format!("Unable to find Kimi CLI ({})", errors.join("; ")))
+    Err(format!(
+        "Unable to find compatible legacy Kimi CLI ({})",
+        errors.join("; ")
+    ))
 }
 
 fn kimi_cli_version_candidates() -> Vec<String> {
@@ -442,11 +442,39 @@ fn push_unique_candidate(candidates: &mut Vec<String>, value: impl Into<String>)
     }
 }
 
+fn resolve_compatible_kimi_cli_version_for_program(program: &str) -> Result<String, String> {
+    match run_kimi_command(program, &["info"], KIMI_CLI_INFO_TIMEOUT) {
+        Ok(output) => {
+            if let Some(version) = parse_legacy_kimi_info_version(&output) {
+                return Ok(version);
+            }
+            let detected_version = resolve_kimi_cli_version_for_program(program).ok();
+            let suffix = detected_version
+                .map(|version| format!(" Detected version: v{}.", version))
+                .unwrap_or_default();
+            Err(format!(
+                "not a compatible legacy Python kimi-cli runtime; `kimi info` did not report kimi-cli, wire, and Python runtime details.{}",
+                suffix
+            ))
+        }
+        Err(info_error) => match resolve_kimi_cli_version_for_program(program) {
+            Ok(version) => Err(format!(
+                "found Kimi CLI v{}, but it does not expose the legacy Python `kimi info` runtime contract required by Kimi Code Desktop: {}",
+                version, info_error
+            )),
+            Err(version_error) => Err(format!(
+                "not a runnable compatible Kimi CLI (info: {}; version: {})",
+                info_error, version_error
+            )),
+        },
+    }
+}
+
 fn resolve_kimi_cli_version_for_program(program: &str) -> Result<String, String> {
     let mut errors = Vec::new();
     for args in KIMI_CLI_VERSION_COMMANDS {
         let command_label = args.join(" ");
-        match run_kimi_version_command(program, args) {
+        match run_kimi_command(program, args, KIMI_CLI_VERSION_TIMEOUT) {
             Ok(output) => {
                 if let Some(version) = parse_version_from_output(&output) {
                     return Ok(version);
@@ -464,7 +492,7 @@ fn resolve_kimi_cli_version_for_program(program: &str) -> Result<String, String>
     Err(errors.join("; "))
 }
 
-fn run_kimi_version_command(program: &str, args: &[&str]) -> Result<String, String> {
+fn run_kimi_command(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
     let mut command = Command::new(program);
     command
         .args(args)
@@ -496,7 +524,7 @@ fn run_kimi_version_command(program: &str, args: &[&str]) -> Result<String, Stri
                     combined.trim()
                 ));
             }
-            None if started_at.elapsed() >= KIMI_CLI_VERSION_TIMEOUT => {
+            None if started_at.elapsed() >= timeout => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!("timed out while running {}", args.join(" ")));
@@ -504,6 +532,25 @@ fn run_kimi_version_command(program: &str, args: &[&str]) -> Result<String, Stri
             None => thread::sleep(Duration::from_millis(50)),
         }
     }
+}
+
+fn parse_legacy_kimi_info_version(output: &str) -> Option<String> {
+    let normalized = output.to_ascii_lowercase();
+    if !normalized.contains("kimi-cli version")
+        || !normalized.contains("wire protocol")
+        || !normalized.contains("python version")
+    {
+        return None;
+    }
+
+    output.lines().find_map(|line| {
+        let (label, value) = line.split_once(':')?;
+        if label.trim().eq_ignore_ascii_case("kimi-cli version") {
+            parse_version_from_output(value)
+        } else {
+            None
+        }
+    })
 }
 
 fn parse_version_from_output(output: &str) -> Option<String> {
@@ -728,4 +775,45 @@ fn has_credential_files() -> bool {
                 .map(|ext| ext.eq_ignore_ascii_case("json"))
                 .unwrap_or(false)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_legacy_kimi_info_version, parse_version_from_output};
+
+    #[test]
+    fn parses_legacy_python_kimi_info_version() {
+        let output = "\
+kimi-cli version: 1.45.0
+agent spec versions: 1
+wire protocol: 1.10
+python version: 3.13.2
+";
+        assert_eq!(
+            parse_legacy_kimi_info_version(output),
+            Some("1.45.0".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_plain_node_kimi_code_version_as_legacy_info() {
+        assert_eq!(parse_legacy_kimi_info_version("0.6.0"), None);
+    }
+
+    #[test]
+    fn rejects_incomplete_info_output() {
+        let output = "\
+kimi-cli version: 1.45.0
+python version: 3.13.2
+";
+        assert_eq!(parse_legacy_kimi_info_version(output), None);
+    }
+
+    #[test]
+    fn parses_generic_cli_version_output() {
+        assert_eq!(
+            parse_version_from_output("kimi, version 1.45.0"),
+            Some("1.45.0".to_string())
+        );
+    }
 }

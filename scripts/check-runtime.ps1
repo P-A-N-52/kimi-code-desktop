@@ -30,10 +30,10 @@ $promptMissingCli = $true
 if (-not [string]::IsNullOrWhiteSpace($promptMissingCliRaw)) {
     $promptMissingCli = $promptMissingCliRaw.Trim().ToLowerInvariant() -notin @("0", "false", "no")
 }
-$strictCliVersionCheck = $env:KIMI_STRICT_CLI_VERSION_CHECK -eq "1"
 
 $issues = New-Object System.Collections.Generic.List[string]
 $warnings = New-Object System.Collections.Generic.List[string]
+$incompatibleCliDetails = New-Object System.Collections.Generic.List[string]
 $guiAvailable = $false
 $loadingForm = $null
 $loadingLabel = $null
@@ -313,6 +313,49 @@ function Get-KimiCliCandidates {
     return $candidates
 }
 
+function Get-KimiCliVersionSummary {
+    param([string]$Program)
+
+    foreach ($versionArg in @("--version", "version")) {
+        try {
+            $output = & $Program $versionArg 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $summary = (($output | Out-String).Trim() -replace '\s+', ' ')
+                if (-not [string]::IsNullOrWhiteSpace($summary)) {
+                    return $summary
+                }
+            }
+        }
+        catch {
+            # Try the next version command.
+        }
+    }
+
+    return "version unavailable"
+}
+
+function Test-LegacyKimiInfoOutput {
+    param([string]$OutputText)
+
+    if ([string]::IsNullOrWhiteSpace($OutputText)) {
+        return $false
+    }
+
+    return $OutputText -match 'kimi-cli version\s*:' -and
+        $OutputText -match 'wire protocol\s*:' -and
+        $OutputText -match 'python version\s*:'
+}
+
+function Get-LegacyKimiInfoVersion {
+    param([string]$OutputText)
+
+    $match = [regex]::Match($OutputText, '(?im)^\s*kimi-cli version\s*:\s*(?<version>\S+)')
+    if ($match.Success) {
+        return $match.Groups["version"].Value
+    }
+    return "legacy runtime"
+}
+
 function Test-KimiCliCandidate {
     param([string]$Candidate)
 
@@ -333,30 +376,26 @@ function Test-KimiCliCandidate {
         }
     }
 
-    if (-not $strictCliVersionCheck) {
-        return [pscustomobject]@{
-            Program = $program
-            Version = "found"
-        }
-    }
-
     try {
-        $output = & $program --version 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            return $null
+        $infoOutput = & $program info 2>&1
+        $infoText = ($infoOutput | Out-String)
+        if ($LASTEXITCODE -eq 0 -and (Test-LegacyKimiInfoOutput $infoText)) {
+            $version = Get-LegacyKimiInfoVersion $infoText
+            return [pscustomobject]@{
+                Program = $program
+                Version = $version
+            }
         }
 
-        $version = (($output | Out-String).Trim() -replace '\s+', ' ')
-        if ([string]::IsNullOrWhiteSpace($version)) {
-            $version = "version command succeeded"
-        }
-
-        return [pscustomobject]@{
-            Program = $program
-            Version = $version
-        }
+        $summary = Get-KimiCliVersionSummary $program
+        $script:incompatibleCliDetails.Add("$program ($summary)")
+        return $null
     }
     catch {
+        $summary = Get-KimiCliVersionSummary $program
+        if ($summary -ne "version unavailable") {
+            $script:incompatibleCliDetails.Add("$program ($summary)")
+        }
         return $null
     }
 }
@@ -484,13 +523,16 @@ else {
     $warnings.Add("Sidecar manifest not found: $sidecarManifest")
 }
 
-Update-LoadingStatus "Checking external Kimi Code CLI"
+Update-LoadingStatus "Checking external legacy Kimi CLI"
 $kimiCli = Resolve-KimiCli
 if ($kimiCli) {
-    Write-Host "[OK] External Kimi CLI: $($kimiCli.Program) ($($kimiCli.Version))"
+    Write-Host "[OK] External legacy Kimi CLI: $($kimiCli.Program) ($($kimiCli.Version))"
+}
+elseif ($incompatibleCliDetails.Count -gt 0) {
+    $warnings.Add("Found external 'kimi' command, but it is not the legacy Python kimi-cli runtime required by Kimi Code Desktop login/setup: $($incompatibleCliDetails -join '; ')")
 }
 else {
-    $warnings.Add("External 'kimi' command was not found. The in-app Kimi login button will not work.")
+    $warnings.Add("External legacy 'kimi' command was not found. The in-app Kimi login button requires the Python kimi-cli runtime.")
 }
 
 $configReady = $false
@@ -537,10 +579,10 @@ if ($configReady -and $hasCredentialSource) {
     Write-Host "[OK] Credential source detected without printing secrets."
 }
 elseif ($configReady -and $kimiCli) {
-    $warnings.Add("No credential source was detected. Launch can continue because Kimi CLI is available for login/setup.")
+    $warnings.Add("No credential source was detected. Launch can continue because a compatible legacy Kimi CLI is available for login/setup.")
 }
 elseif ($configReady) {
-    $issues.Add("No credential source was detected and no external Kimi CLI is available for login/setup.")
+    $issues.Add("No credential source was detected and no compatible legacy Kimi CLI is available for login/setup.")
 }
 
 foreach ($warning in $warnings) {
