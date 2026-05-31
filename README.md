@@ -155,3 +155,7 @@ npm run version:set 0.1.0
 
 The Kimi CLI runtime version is separate. UI surfaces that show the CLI version
 must read the installed/runtime CLI, not the desktop shell version.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See `LICENSE` for details.
