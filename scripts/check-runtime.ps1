@@ -15,10 +15,13 @@ if (-not $ConfigFile) {
 }
 
 if (-not $DownloadUrl) {
+    $DownloadUrl = $env:KIMI_LEGACY_CLI_DOWNLOAD_URL
+}
+if (-not $DownloadUrl) {
     $DownloadUrl = $env:KIMI_CODE_DOWNLOAD_URL
 }
 if (-not $DownloadUrl) {
-    $DownloadUrl = "https://www.kimi.com/code"
+    $DownloadUrl = "https://moonshotai.github.io/kimi-cli/"
 }
 
 $projectRootPath = (Resolve-Path $ProjectRoot).Path
@@ -159,7 +162,7 @@ function Show-StartupAttentionDialog {
         $title.Text = "Setup needed before Kimi Code Desktop can be used"
     }
     else {
-        $title.Text = "Kimi Code CLI is not available"
+        $title.Text = "Legacy kimi-cli is not available"
     }
     $title.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
     $title.AutoSize = $true
@@ -172,7 +175,7 @@ function Show-StartupAttentionDialog {
         $body.Text = "The app may open, but chat/session features are likely unavailable until the items below are fixed."
     }
     else {
-        $body.Text = "The app can continue, but login/setup from inside the app may not work until Kimi Code CLI is installed."
+        $body.Text = "The app can continue, but login/setup from inside the app may not work until the legacy Python kimi-cli runtime is installed."
     }
     $body.Left = 18
     $body.Top = 46
@@ -205,13 +208,13 @@ function Show-StartupAttentionDialog {
         }
         $detailLines.Add("")
     }
-    $detailLines.Add("Download page: $Url")
+    $detailLines.Add("Legacy kimi-cli setup page: $Url")
     $details.Text = $detailLines -join [Environment]::NewLine
     $form.Controls.Add($details)
 
     $downloadButton = New-Object System.Windows.Forms.Button
-    $downloadButton.Text = "Open Kimi Code"
-    $downloadButton.Width = 135
+    $downloadButton.Text = "Open legacy kimi-cli"
+    $downloadButton.Width = 160
     $downloadButton.Height = 32
     $downloadButton.Left = 18
     $downloadButton.Top = 236
@@ -608,7 +611,7 @@ if ($issues.Count -gt 0) {
         exit 0
     }
     if ($choice -eq "download") {
-        Write-Host "[INFO] Opened Kimi Code download page: $DownloadUrl"
+        Write-Host "[INFO] Opened legacy kimi-cli setup page: $DownloadUrl"
     }
     exit 1
 }
@@ -619,7 +622,7 @@ if (-not $kimiCli -and $promptMissingCli) {
         Write-Host "[WARN] Continuing without external Kimi Code CLI."
     }
     elseif ($choice -eq "download") {
-        Write-Host "[INFO] Opened Kimi Code download page: $DownloadUrl"
+        Write-Host "[INFO] Opened legacy kimi-cli setup page: $DownloadUrl"
         exit 1
     }
     else {

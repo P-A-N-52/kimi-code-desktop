@@ -44,6 +44,7 @@ import { consumeAuthTokenFromUrl, setAuthToken } from "./lib/auth";
 import { useDomTranslations } from "./lib/i18n";
 import {
 	KIMI_CODE_URL,
+	openLegacyKimiCliWebsite,
 	openKimiCodeWebsite,
 	shouldInterceptKimiCodeLink,
 } from "./lib/kimi-code-link";
@@ -577,7 +578,7 @@ function App() {
 						setRuntimeCheckError(null);
 						setHasAcknowledgedRuntime(true);
 					}}
-					onOpenDownload={openKimiCodeWebsite}
+					onOpenDownload={openLegacyKimiCliWebsite}
 				/>
 			)}
 			<div className="box-border flex h-[100dvh] flex-col bg-background text-foreground px-[calc(0.75rem+var(--safe-left))] pr-[calc(0.75rem+var(--safe-right))] pt-[calc(0.75rem+var(--safe-top))] pb-1 lg:pb-[calc(0.75rem+var(--safe-bottom))] max-lg:h-[100svh] max-lg:overflow-hidden">

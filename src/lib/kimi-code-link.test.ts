@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { KIMI_CODE_URL, openKimiCodeWebsite, shouldInterceptKimiCodeLink } from "./kimi-code-link";
+import {
+  KIMI_CODE_URL,
+  LEGACY_KIMI_CLI_URL,
+  openKimiCodeWebsite,
+  openLegacyKimiCliWebsite,
+  shouldInterceptKimiCodeLink,
+} from "./kimi-code-link";
 
 vi.mock("@/lib/tauri-api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/tauri-api")>();
@@ -17,6 +23,12 @@ describe("kimi-code-link", () => {
     });
   });
 
+  describe("LEGACY_KIMI_CLI_URL", () => {
+    it("points to the legacy Python CLI docs", () => {
+      expect(LEGACY_KIMI_CLI_URL).toBe("https://moonshotai.github.io/kimi-cli/");
+    });
+  });
+
   describe("shouldInterceptKimiCodeLink", () => {
     it("returns false when not in Tauri", () => {
       expect(shouldInterceptKimiCodeLink()).toBe(false);
@@ -28,6 +40,19 @@ describe("kimi-code-link", () => {
       const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
       openKimiCodeWebsite();
       expect(openSpy).toHaveBeenCalledWith(KIMI_CODE_URL, "_blank", "noopener,noreferrer");
+      openSpy.mockRestore();
+    });
+  });
+
+  describe("openLegacyKimiCliWebsite", () => {
+    it("opens the legacy CLI setup page when not in Tauri", () => {
+      const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+      openLegacyKimiCliWebsite();
+      expect(openSpy).toHaveBeenCalledWith(
+        LEGACY_KIMI_CLI_URL,
+        "_blank",
+        "noopener,noreferrer",
+      );
       openSpy.mockRestore();
     });
   });

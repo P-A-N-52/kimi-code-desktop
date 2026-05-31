@@ -118,7 +118,7 @@ export function RuntimeReadinessOverlay({
 						disabled={checking}
 					>
 						<ExternalLink className="size-4" />
-						Open Kimi Code
+						Open legacy kimi-cli
 					</Button>
 					{!checking && (
 						<Button type="button" onClick={onContinue}>
