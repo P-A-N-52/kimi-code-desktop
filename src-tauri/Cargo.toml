@@ -1,6 +1,6 @@
 [package]
 name = "kimi-code-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "Kimi Code Desktop App"
 authors = ["Kimi Team"]
 license = "LicenseRef-Proprietary"
