@@ -144,6 +144,7 @@ import {
   wireConnect,
   wireDisconnect,
   wireSend,
+  wireStatus,
 } from "@/lib/tauri-api";
 import { handleToolResult, useToolEventsStore, type TodoItem } from "@/features/tool/store";
 import { v4 as uuidV4 } from "uuid";
@@ -429,6 +430,18 @@ type TauriWireConnection = StreamConnection & {
 
 const STREAM_OPEN = 1;
 const STREAM_CLOSED = 3;
+
+function sessionStatusToPayload(status: SessionStatus): SessionStatusPayload {
+  return {
+    session_id: status.sessionId,
+    state: status.state as SessionStatusPayload["state"],
+    seq: status.seq,
+    worker_id: status.workerId,
+    reason: status.reason,
+    detail: status.detail,
+    updated_at: status.updatedAt.toISOString(),
+  };
+}
 
 type PendingApprovalEntry = {
   requestId: string;
@@ -734,6 +747,33 @@ export function useSessionStream(
       onSessionStatus,
       onFirstTurnComplete,
     ],
+  );
+
+  const syncTauriStatusSnapshot = useCallback(
+    async (connection: StreamConnection | null, source: string) => {
+      if (!sessionId) {
+        return false;
+      }
+
+      try {
+        const statusSnapshot = await wireStatus(sessionId);
+        if (connection && wsRef.current !== connection) {
+          return false;
+        }
+        if (!statusSnapshot) {
+          return false;
+        }
+        applySessionStatus(sessionStatusToPayload(statusSnapshot));
+        return true;
+      } catch (err) {
+        console.warn(
+          `[SessionStream] Failed to sync Tauri status after ${source}:`,
+          err,
+        );
+        return false;
+      }
+    },
+    [applySessionStatus, sessionId],
   );
 
   const updateMessageById = useCallback(
@@ -2857,6 +2897,16 @@ export function useSessionStream(
           }
           historyCompleteTimeoutRef.current = window.setTimeout(() => {
             if (wsRef.current === currentWs) {
+              if (isTauri()) {
+                console.warn(
+                  "[SessionStream] session_status timeout after history_complete, syncing Tauri status...",
+                );
+                void syncTauriStatusSnapshot(
+                  currentWs,
+                  "history_complete timeout",
+                );
+                return;
+              }
               console.warn(
                 "[SessionStream] session_status timeout after history_complete, reconnecting...",
               );
@@ -2937,6 +2987,7 @@ export function useSessionStream(
       sendInitialize,
       sendPendingMessage,
       clearStepRetryStatus,
+      syncTauriStatusSnapshot,
     ],
   );
   handleMessageRef.current = handleMessage;
@@ -2969,6 +3020,14 @@ export function useSessionStream(
           statusRef.current === "streaming" &&
           !hasPendingInteraction
         ) {
+          if (isTauri()) {
+            lastWsMessageTimeRef.current = Date.now();
+            console.warn(
+              `[SessionStream] Watchdog: no messages for ${Math.round(elapsed / 1000)}s while streaming, syncing Tauri status...`,
+            );
+            void syncTauriStatusSnapshot(connection, "watchdog");
+            return;
+          }
           console.warn(
             `[SessionStream] Watchdog: no messages for ${Math.round(elapsed / 1000)}s while streaming, reconnecting...`,
           );
@@ -2977,7 +3036,7 @@ export function useSessionStream(
       }, 10_000);
       watchdogIntervalRef.current = watchdogIntervalId;
     },
-    [],
+    [syncTauriStatusSnapshot],
   );
 
   const finishConnection = useCallback(

@@ -1,7 +1,7 @@
 [project]
 name = "kimi-desktop-sidecar"
 version = "0.1.0"
-description = "Desktop sidecar adapter for Kimi Code Desktop"
+description = "Kimi Code Desktop 桌面 sidecar 适配器 / Desktop sidecar adapter for Kimi Code Desktop"
 requires-python = ">=3.12"
 # kimi-cli is injected at build time via .pth pointing to the local uv tool installation
 dependencies = [
