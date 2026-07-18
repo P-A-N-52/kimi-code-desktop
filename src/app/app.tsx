@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "reac
 import { Toaster, toast } from "sonner";
 import { useTheme } from "@/hooks/use-theme";
 import { useSessions } from "@/hooks/useSessions";
+import type { LiveMessage } from "@/hooks/types";
+import type { SessionStatus } from "@/lib/api/models";
 import { shouldPauseForRuntimeReadiness } from "@/lib/runtime-readiness";
 import {
 	checkRuntimeReadiness,
@@ -9,6 +11,7 @@ import {
 	type RuntimeReadiness,
 	showWindow,
 } from "@/lib/tauri-api";
+import { ConversationView } from "@/modules/conversation/conversation-view";
 import { AppRail } from "@/modules/rail/app-rail";
 import { CreateSessionDialog } from "@/modules/sessions/create-session-dialog";
 import { SessionsSidebar } from "@/modules/sessions/sessions-sidebar";
@@ -88,6 +91,8 @@ export default function App() {
 		setSearchQuery,
 		fetchWorkDirs,
 		fetchStartupDir,
+		applySessionStatus,
+		refreshSession,
 		error: sessionsError,
 	} = useSessions({ enabled: !shouldPauseRuntime });
 
@@ -101,6 +106,12 @@ export default function App() {
 		[sessions],
 	);
 
+	const [streamMessages, setStreamMessages] = useState<LiveMessage[]>([]);
+
+	useEffect(() => {
+		setStreamMessages([]);
+	}, [selectedSessionId]);
+
 	useEffect(() => {
 		if (sessionsError) {
 			toast.error("Session Error", { description: sessionsError });
@@ -112,6 +123,20 @@ export default function App() {
 			await createSession(workDir);
 		},
 		[createSession],
+	);
+
+	const handleSessionStatus = useCallback(
+		(status: SessionStatus) => {
+			applySessionStatus(status);
+			if (status.state !== "idle") return;
+			const reason = status.reason ?? "";
+			if (reason === "config_update") {
+				window.dispatchEvent(new Event("kimi:config-update"));
+			}
+			if (!reason.startsWith("prompt_")) return;
+			refreshSession(status.sessionId);
+		},
+		[applySessionStatus, refreshSession],
 	);
 
 	if (shouldPauseRuntime) {
@@ -174,7 +199,16 @@ export default function App() {
 				panel={null}
 				panelOpen={panelOpen}
 			>
-				<EmptyState onNewSession={() => setShowCreateDialog(true)} />
+				{selectedSessionId ? (
+					<ConversationView
+						sessionId={selectedSessionId}
+						currentSession={currentSession}
+						onSessionStatus={handleSessionStatus}
+						onMessagesChange={setStreamMessages}
+					/>
+				) : (
+					<EmptyState onNewSession={() => setShowCreateDialog(true)} />
+				)}
 			</AppShell>
 			<CreateSessionDialog
 				open={showCreateDialog}
