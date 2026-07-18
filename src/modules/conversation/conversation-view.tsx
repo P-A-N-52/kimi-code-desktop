@@ -1,11 +1,12 @@
-import { ArrowUp, Square } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useSessionStream } from "@/hooks/useSessionStream";
 import type { LiveMessage } from "@/hooks/types";
 import { getApiBaseUrl } from "@/hooks/utils";
 import type { Session, SessionStatus } from "@/lib/api/models";
-import { cn } from "@/lib/utils";
+import { Composer } from "@/modules/composer/composer";
+import { StatusStrip } from "@/modules/statusbar/status-strip";
+import { shouldAutoApprove, usePermissionMode } from "@/modules/statusbar/permission-mode";
 import { MessageList } from "./message-list";
 
 export function ConversationView({
@@ -32,6 +33,26 @@ export function ConversationView({
 		autoConnect: Boolean(currentSession?.isRunning),
 	});
 
+	const { messages, respondToApproval } = stream;
+	const { mode: permissionMode, setMode: setPermissionMode } =
+		usePermissionMode(sessionId);
+
+	useEffect(() => {
+		if (permissionMode === "ask") return;
+		for (const m of messages) {
+			const tc = m.toolCall;
+			if (
+				tc?.state === "approval-requested" &&
+				tc.approval &&
+				!tc.approval.submitted &&
+				!tc.approval.resolved &&
+				shouldAutoApprove(permissionMode, tc.title)
+			) {
+				void respondToApproval(tc.approval.id, "approve");
+			}
+		}
+	}, [messages, permissionMode, respondToApproval]);
+
 	const [draft, setDraft] = useState("");
 	const busy = stream.status !== "ready";
 
@@ -45,7 +66,7 @@ export function ConversationView({
 	return (
 		<div className="flex min-w-0 flex-1 flex-col">
 			<MessageList
-				messages={stream.messages}
+				messages={messages}
 				onRespondApproval={(id, decision) => {
 					void stream.respondToApproval(id, decision);
 				}}
@@ -55,43 +76,25 @@ export function ConversationView({
 			/>
 			<div className="shrink-0 px-6 pb-4">
 				<div className="mx-auto max-w-[44rem]">
-					<div className="rounded-r3 border border-line-strong bg-elevated px-3 pb-2 pt-3 shadow-pop transition-colors focus-within:border-line-strong">
-						<textarea
-							value={draft}
-							onChange={(e) => setDraft(e.target.value)}
-							onKeyDown={(e) => {
-								if (e.key === "Enter" && !e.shiftKey) {
-									e.preventDefault();
-									send();
-								}
-							}}
-							rows={2}
-							placeholder="给 Kimi 布置任务… (@ 引用文件 · / 命令)"
-							className="max-h-40 w-full resize-none bg-transparent px-1 text-[14px] leading-[1.55] text-foreground outline-none placeholder:text-faint"
-						/>
-						<div className="mt-1.5 flex items-center justify-end gap-2">
-							<span className="mr-auto font-mono text-[10.5px] text-faint">
-								Enter 发送 · Shift+Enter 换行
-							</span>
-							<button
-								type="button"
-								aria-label={busy ? "停止" : "发送"}
-								onClick={busy ? stream.cancel : send}
-								className={cn(
-									"flex size-7 items-center justify-center rounded-full transition-colors",
-									busy
-										? "border border-line-strong text-muted hover:text-foreground"
-										: "bg-bright text-background hover:opacity-85",
-								)}
-							>
-								{busy ? (
-									<Square size={11} strokeWidth={1.5} />
-								) : (
-									<ArrowUp size={13} strokeWidth={2} />
-								)}
-							</button>
-						</div>
-					</div>
+					<Composer
+						draft={draft}
+						onDraftChange={setDraft}
+						onSend={send}
+						onCancel={stream.cancel}
+						busy={busy}
+						planMode={stream.planMode}
+					/>
+					<StatusStrip
+						sessionId={sessionId}
+						permissionMode={permissionMode}
+						onPermissionModeChange={setPermissionMode}
+						planMode={stream.planMode}
+						swarmMode={stream.swarmMode}
+						onPlanModeChange={stream.sendSetPlanMode}
+						onSwarmModeChange={stream.sendSetSwarmMode}
+						contextUsage={stream.contextUsage}
+						tokenUsage={stream.tokenUsage}
+					/>
 				</div>
 			</div>
 		</div>
