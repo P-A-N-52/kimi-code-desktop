@@ -6,31 +6,38 @@ declare const __APP_VERSION__: string | undefined;
 export const desktopVersion =
   typeof __APP_VERSION__ !== "undefined" && __APP_VERSION__ ? __APP_VERSION__ : "dev";
 
-export const bundledKimiCliVersion =
+/** Build-time fallback when live `kimi --version` probing is unavailable. */
+export const kimiCodeCliFallbackVersion =
   typeof __KIMI_CLI_VERSION__ !== "undefined" && __KIMI_CLI_VERSION__
     ? __KIMI_CLI_VERSION__
     : "dev";
 
-export const kimiCliVersion = bundledKimiCliVersion;
+/** @deprecated Use `kimiCodeCliFallbackVersion` — kept for existing imports. */
+export const bundledKimiCliVersion = kimiCodeCliFallbackVersion;
 
-let resolvedKimiCliVersion: string | null = null;
+export const kimiCodeCliVersion = kimiCodeCliFallbackVersion;
+
+/** @deprecated Use `kimiCodeCliVersion` — kept for existing imports. */
+export const kimiCliVersion = kimiCodeCliVersion;
+
+let resolvedKimiCodeCliVersion: string | null = null;
 let versionRequest: Promise<string> | null = null;
 
 export function resolveKimiCliVersion(): Promise<string> {
-  if (resolvedKimiCliVersion) {
-    return Promise.resolve(resolvedKimiCliVersion);
+  if (resolvedKimiCodeCliVersion) {
+    return Promise.resolve(resolvedKimiCodeCliVersion);
   }
 
   if (!versionRequest) {
     versionRequest = getKimiCliVersion()
       .then((version) => {
         const trimmed = version.trim();
-        resolvedKimiCliVersion = trimmed || bundledKimiCliVersion;
-        return resolvedKimiCliVersion;
+        resolvedKimiCodeCliVersion = trimmed || kimiCodeCliFallbackVersion;
+        return resolvedKimiCodeCliVersion;
       })
       .catch(() => {
-        resolvedKimiCliVersion = bundledKimiCliVersion;
-        return resolvedKimiCliVersion;
+        resolvedKimiCodeCliVersion = kimiCodeCliFallbackVersion;
+        return resolvedKimiCodeCliVersion;
       });
   }
 

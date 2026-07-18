@@ -57,6 +57,7 @@ export type LiveMessage = {
     | "tool"
     | "code"
     | "thinking"
+    | "steer"
     | "message-id"
     | "status";
   /** Thinking/reasoning content from the model */

@@ -157,6 +157,26 @@ export default function App() {
 		setPanelOpen(false);
 	}, []);
 
+	const focusSessionSearch = useCallback(() => {
+		setSidebarOpen(true);
+		requestAnimationFrame(() => {
+			document.getElementById("sessions-search-input")?.focus();
+		});
+	}, []);
+
+	useEffect(() => {
+		const onKeyDown = (e: KeyboardEvent) => {
+			if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+				e.preventDefault();
+				focusSessionSearch();
+			} else if (e.key === "Escape" && panelOpen) {
+				handleClosePanel();
+			}
+		};
+		window.addEventListener("keydown", onKeyDown);
+		return () => window.removeEventListener("keydown", onKeyDown);
+	}, [focusSessionSearch, handleClosePanel, panelOpen]);
+
 	useEffect(() => {
 		if (sessionsError) {
 			toast.error("Session Error", { description: sessionsError });
@@ -209,7 +229,7 @@ export default function App() {
 						running={anyRunning}
 						onToggleSessions={() => setSidebarOpen((v) => !v)}
 						onNewSession={() => setShowCreateDialog(true)}
-						onOpenSearch={() => {}}
+						onOpenSearch={focusSessionSearch}
 						onOpenSettings={() => setShowSettings(true)}
 					/>
 				}

@@ -65,6 +65,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "CLI session theme": "CLI 会话主题",
   "Click the + button in the sidebar to start a new session":
     "点击侧边栏中的 + 按钮开始新会话",
+  "Click to open in new tab": "点击以在新标签页打开",
   Close: "关闭",
   "Close sessions sidebar": "关闭会话侧边栏",
   "Close side chat": "关闭侧聊",
@@ -248,6 +249,8 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Path copied": "路径已复制",
   Plan: "计划",
   "Plan Preview": "计划预览",
+  "Press Enter to send, @ for files, / for commands.":
+    "按回车发送，@ 提及文件，/ 查看命令。",
   "Preferences saved": "偏好设置已保存",
   "Previous branch": "上一个分支",
   "Previous slide": "上一张幻灯片",

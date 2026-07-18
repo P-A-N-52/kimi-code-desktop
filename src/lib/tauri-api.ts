@@ -10,6 +10,15 @@ import type {
 	UpdateGlobalConfigResponse,
 	UploadSessionFileResponse,
 } from "./api/models";
+import {
+	instanceOfModelCapability,
+	type ModelCapability,
+} from "./api/models/ModelCapability";
+import {
+	instanceOfProviderType,
+	ProviderType,
+	type ProviderType as ProviderTypeValue,
+} from "./api/models/ProviderType";
 
 export type TextConfigFile = {
 	content: string;
@@ -78,27 +87,27 @@ export function isTauri(): boolean {
 }
 
 export async function showWindow(): Promise<void> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	return invoke<void>("show_window");
 }
 
 export async function hideWindow(): Promise<void> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	return invoke<void>("hide_window");
 }
 
 export async function getAppVersion(): Promise<string> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	return invoke<string>("get_app_version");
 }
 
 export async function getKimiCliVersion(): Promise<string> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	return invoke<string>("get_kimi_cli_version");
 }
 
 export async function checkRuntimeReadiness(): Promise<RuntimeReadiness> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("check_runtime_readiness");
 	return normalizeRuntimeReadiness(raw);
 }
@@ -107,7 +116,7 @@ export async function openKimiLogin(): Promise<{
 	success: boolean;
 	program: string;
 }> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("open_kimi_login");
 	return {
 		success: Boolean(raw.success),
@@ -116,12 +125,12 @@ export async function openKimiLogin(): Promise<{
 }
 
 export async function openExternal(url: string): Promise<void> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	return invoke<void>("open_external", { url });
 }
 
 export async function openInExplorer(path: string): Promise<void> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	return invoke<void>("open_in_explorer", { path });
 }
 
@@ -129,17 +138,17 @@ export async function openInEditor(
 	path: string,
 	editor?: string,
 ): Promise<void> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	return invoke<void>("open_in_editor", { path, editor: editor ?? "vscode" });
 }
 
 export async function wireConnect(sessionId: string): Promise<void> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	return invoke<void>("wire_connect", { sessionId });
 }
 
 export async function wireDisconnect(sessionId: string): Promise<void> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	return invoke<void>("wire_disconnect", { sessionId });
 }
 
@@ -147,7 +156,7 @@ export async function wireSend(
 	sessionId: string,
 	message: unknown,
 ): Promise<void> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const serialized =
 		typeof message === "string" ? message : JSON.stringify(message);
 	return invoke<void>("wire_send", { sessionId, message: serialized });
@@ -156,7 +165,7 @@ export async function wireSend(
 export async function wireStatus(
 	sessionId: string,
 ): Promise<SessionStatus | null> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown> | null>("wire_status", {
 		sessionId,
 	});
@@ -184,13 +193,13 @@ export async function listSessions(args?: {
 	q?: string;
 	archived?: boolean;
 }): Promise<Session[]> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<unknown[]>("list_sessions", args ?? {});
 	return raw.map((item) => normalizeSession(item as Record<string, unknown>));
 }
 
 export async function getSession(sessionId: string): Promise<Session | null> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown> | null>("get_session", {
 		sessionId,
 	});
@@ -200,7 +209,7 @@ export async function getSession(sessionId: string): Promise<Session | null> {
 export async function replaySessionHistory(
 	sessionId: string,
 ): Promise<string[]> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<unknown[]>("replay_session_history", { sessionId });
 	return raw.map(String);
 }
@@ -209,7 +218,7 @@ export async function createSession(
 	workDir?: string,
 	createDir?: boolean,
 ): Promise<Session> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("create_session", {
 		workDir,
 		createDir,
@@ -218,7 +227,7 @@ export async function createSession(
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	return invoke<void>("delete_session", { sessionId });
 }
 
@@ -227,7 +236,7 @@ export async function updateSession(args: {
 	title?: string;
 	archived?: boolean;
 }): Promise<Session> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("update_session", args);
 	return normalizeSession(raw);
 }
@@ -236,7 +245,7 @@ export async function forkSession(
 	sessionId: string,
 	turnIndex: number,
 ): Promise<Session> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("fork_session", {
 		sessionId,
 		turnIndex,
@@ -247,7 +256,7 @@ export async function forkSession(
 export async function generateTitle(
 	sessionId: string,
 ): Promise<{ title: string }> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("generate_title", {
 		sessionId,
 	});
@@ -258,7 +267,7 @@ export async function uploadSessionFile(
 	sessionId: string,
 	file: File,
 ): Promise<UploadSessionFileResponse> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const buffer = await file.arrayBuffer();
 	const data = Array.from(new Uint8Array(buffer));
 	const raw = await invoke<Record<string, unknown>>("upload_session_file", {
@@ -277,7 +286,7 @@ export async function listSessionDirectory(
 	sessionId: string,
 	path?: string,
 ): Promise<SessionFileEntry[]> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<unknown[]>("list_session_directory", {
 		sessionId,
 		path: path ?? ".",
@@ -296,7 +305,7 @@ export async function getSessionFile(
 	sessionId: string,
 	path: string,
 ): Promise<Blob> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("get_session_file", {
 		sessionId,
 		path,
@@ -308,7 +317,7 @@ export async function getSessionUploadFile(
 	sessionId: string,
 	filename: string,
 ): Promise<Blob> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("get_session_upload_file", {
 		sessionId,
 		filename,
@@ -317,24 +326,24 @@ export async function getSessionUploadFile(
 }
 
 export async function listWorkDirs(): Promise<string[]> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<unknown[]>("list_work_dirs");
 	return raw.map(String);
 }
 
 export async function getStartupDir(): Promise<string> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	return String(await invoke<unknown>("get_startup_dir"));
 }
 
 export async function getGlobalConfig(): Promise<GlobalConfig> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("get_global_config");
 	return normalizeGlobalConfig(raw);
 }
 
 export async function getConfigToml(): Promise<TextConfigFile> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("get_config_toml");
 	return normalizeTextConfigFile(raw);
 }
@@ -342,7 +351,7 @@ export async function getConfigToml(): Promise<TextConfigFile> {
 export async function updateConfigToml(
 	content: string,
 ): Promise<UpdateTextConfigResponse> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("update_config_toml", {
 		content,
 	});
@@ -350,7 +359,7 @@ export async function updateConfigToml(
 }
 
 export async function getMcpConfig(): Promise<TextConfigFile> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("get_mcp_config");
 	return normalizeTextConfigFile(raw);
 }
@@ -358,7 +367,7 @@ export async function getMcpConfig(): Promise<TextConfigFile> {
 export async function updateMcpConfig(
 	content: string,
 ): Promise<UpdateTextConfigResponse> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("update_mcp_config", {
 		content,
 	});
@@ -372,7 +381,7 @@ export async function updateGlobalConfig(args: {
 	restartRunningSessions?: boolean;
 	forceRestartBusySessions?: boolean;
 }): Promise<UpdateGlobalConfigResponse> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("update_global_config", {
 		defaultModel: args.defaultModel,
 		defaultThinking: args.defaultThinking,
@@ -393,7 +402,7 @@ export async function updateGlobalConfig(args: {
 export async function getGitDiffStats(
 	sessionId: string,
 ): Promise<GitDiffStats> {
-	if (!isTauri()) return Promise.reject("Not in Tauri");
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const data = await invoke<Record<string, unknown>>("get_git_diff_stats", {
 		sessionId,
 	});
@@ -419,16 +428,16 @@ export async function sendNotification(
 	body: string,
 ): Promise<void> {
 	if (!isTauri()) {
-		return Promise.reject("Not in Tauri");
+		return Promise.reject(new Error("Not in Tauri"));
 	}
 
 	if (!("Notification" in window)) {
-		return Promise.reject("Notifications not supported");
+		return Promise.reject(new Error("Notifications not supported"));
 	}
 
 	const permission = await Notification.requestPermission();
 	if (permission !== "granted") {
-		return Promise.reject("Notification permission denied");
+		return Promise.reject(new Error("Notification permission denied"));
 	}
 
 	new Notification(title, { body });
@@ -555,6 +564,24 @@ function normalizeSessionStatus(raw: Record<string, unknown>): SessionStatus {
 	};
 }
 
+function normalizeCapabilities(raw: unknown): Set<ModelCapability> | undefined {
+	if (!Array.isArray(raw)) {
+		return undefined;
+	}
+	const capabilities = raw.filter((value): value is ModelCapability =>
+		instanceOfModelCapability(value),
+	);
+	return capabilities.length > 0 ? new Set(capabilities) : undefined;
+}
+
+function normalizeProviderType(raw: unknown): ProviderTypeValue {
+	const value = String(raw ?? "");
+	if (instanceOfProviderType(value)) {
+		return value as ProviderTypeValue;
+	}
+	return ProviderType.Kimi;
+}
+
 function normalizeGlobalConfig(raw: Record<string, unknown>): GlobalConfig {
 	const models =
 		(raw.models as Array<Record<string, unknown>> | undefined) ?? [];
@@ -568,11 +595,11 @@ function normalizeGlobalConfig(raw: Record<string, unknown>): GlobalConfig {
 			maxContextSize: Number(
 				model.max_context_size ?? model.maxContextSize ?? 0,
 			),
-			capabilities: model.capabilities
-				? (new Set(model.capabilities as string[]) as never)
-				: undefined,
+			capabilities: normalizeCapabilities(model.capabilities),
 			name: String(model.name ?? ""),
-			providerType: model.provider_type as never,
+			providerType: normalizeProviderType(
+				model.provider_type ?? model.providerType,
+			),
 		})),
 	};
 }

@@ -98,24 +98,15 @@ function manualChunks(id: string): string | undefined {
     return undefined;
   }
 
-  if (normalizedId.includes("@tauri-apps")) {
-    return "vendor-tauri";
-  }
-  if (normalizedId.includes("@radix-ui") || normalizedId.includes("/radix-ui/")) {
-    return "vendor-radix";
-  }
-  if (normalizedId.includes("@codemirror") || normalizedId.includes("@uiw/react-codemirror")) {
-    return "vendor-codemirror";
-  }
-  if (normalizedId.includes("@xyflow")) {
-    return "vendor-diagrams";
-  }
-  if (normalizedId.includes("@tanstack")) {
-    return "vendor-table";
-  }
-  if (normalizedId.includes("lucide-react")) {
-    return "vendor-icons";
-  }
+	if (normalizedId.includes("@tauri-apps")) {
+		return "vendor-tauri";
+	}
+	if (normalizedId.includes("@radix-ui") || normalizedId.includes("/radix-ui/")) {
+		return "vendor-radix";
+	}
+	if (normalizedId.includes("lucide-react")) {
+		return "vendor-icons";
+	}
   if (
     normalizedId.includes("zustand") ||
     normalizedId.includes("/swr/") ||

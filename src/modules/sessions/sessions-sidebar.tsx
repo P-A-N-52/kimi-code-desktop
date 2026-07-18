@@ -135,6 +135,7 @@ export function SessionsSidebar({
 			<div className="mx-1 mb-3 flex items-center gap-2 rounded-r2 border border-line px-2.5 py-1.5 text-faint transition-colors focus-within:border-line-strong">
 				<Search size={12} strokeWidth={1.5} />
 				<input
+					id="sessions-search-input"
 					value={searchQuery}
 					onChange={(e) => onSearchQueryChange(e.target.value)}
 					placeholder="搜索会话"

@@ -87,9 +87,9 @@ describe("auth", () => {
       expect(getAuthHeader()).toEqual({ Authorization: "Bearer stored-token" });
     });
 
-    it("falls back to URL token when localStorage is empty", () => {
+    it("does not fall back to URL token when localStorage is empty", () => {
       window.history.replaceState({}, "", "/?token=url-fallback");
-      expect(getAuthHeader()).toEqual({ Authorization: "Bearer url-fallback" });
+      expect(getAuthHeader()).toEqual({});
     });
   });
 });

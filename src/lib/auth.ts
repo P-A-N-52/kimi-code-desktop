@@ -1,3 +1,10 @@
+/**
+ * Auth token storage for Kimi API requests.
+ *
+ * Security note: tokens are stored in localStorage for now (not OS keychain).
+ * Any XSS in the webview could read them. `consumeAuthTokenFromUrl` handles the
+ * one-time OAuth callback; do not read tokens from URL query params elsewhere.
+ */
 const AUTH_TOKEN_KEY = "kimi_auth_token";
 const AUTH_TOKEN_TIMESTAMP_KEY = "kimi_auth_token_ts";
 const AUTH_TOKEN_PARAM = "token";
@@ -38,6 +45,7 @@ export function clearAuthToken(): void {
   localStorage.removeItem(AUTH_TOKEN_TIMESTAMP_KEY);
 }
 
+/** Consume a one-time token from the OAuth callback URL and remove it from the address bar. */
 export function consumeAuthTokenFromUrl(): string | null {
   const url = new URL(window.location.href);
   const token = url.searchParams.get(AUTH_TOKEN_PARAM);
@@ -50,12 +58,7 @@ export function consumeAuthTokenFromUrl(): string | null {
 }
 
 export function getAuthHeader(): Record<string, string> {
-  let token = getAuthToken();
-  // Fallback: try reading from URL if localStorage is empty
-  if (!token) {
-    const url = new URL(window.location.href);
-    token = url.searchParams.get(AUTH_TOKEN_PARAM);
-  }
+  const token = getAuthToken();
   if (!token) {
     return {};
   }

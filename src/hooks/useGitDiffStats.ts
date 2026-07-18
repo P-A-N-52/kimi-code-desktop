@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import type { GitDiffStats } from "../lib/api/models";
 import { getAuthHeader } from "../lib/auth";
 import { getApiBaseUrl } from "./utils";
@@ -30,6 +30,8 @@ export function useGitDiffStats(sessionId: string | null): UseGitDiffStatsReturn
   const [stats, setStats] = useState<GitDiffStats | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const fetchStats = useCallback(async (forceRefresh = false) => {
     if (!sessionId) {
@@ -37,20 +39,32 @@ export function useGitDiffStats(sessionId: string | null): UseGitDiffStatsReturn
       return;
     }
 
+    const requestId = ++requestIdRef.current;
+    abortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
     // Check cache
     const now = Date.now();
     const cached = sharedCache.get(sessionId);
     if (!forceRefresh && cached?.stats && now - cached.timestamp < CACHE_TTL_MS) {
-      setStats(cached.stats);
+      if (requestId === requestIdRef.current) {
+        setStats(cached.stats);
+      }
       return;
     }
     if (!forceRefresh && cached?.promise) {
-      setStats(await cached.promise);
+      const cachedStats = await cached.promise;
+      if (requestId === requestIdRef.current) {
+        setStats(cachedStats);
+      }
       return;
     }
 
-    setIsLoading(true);
-    setError(null);
+    if (requestId === requestIdRef.current) {
+      setIsLoading(true);
+      setError(null);
+    }
 
     try {
       const promise = (async (): Promise<GitDiffStats> => {
@@ -61,7 +75,7 @@ export function useGitDiffStats(sessionId: string | null): UseGitDiffStatsReturn
         const basePath = getApiBaseUrl();
         const response = await fetch(
           `${basePath}/api/sessions/${encodeURIComponent(sessionId)}/git-diff`,
-          { headers: getAuthHeader() },
+          { headers: getAuthHeader(), signal: abortController.signal },
         );
 
         if (!response.ok) {
@@ -92,6 +106,10 @@ export function useGitDiffStats(sessionId: string | null): UseGitDiffStatsReturn
       });
       const gitDiffStats = await promise;
 
+      if (requestId !== requestIdRef.current) {
+        return;
+      }
+
       // Update cache
       sharedCache.set(sessionId, {
         stats: gitDiffStats,
@@ -100,14 +118,31 @@ export function useGitDiffStats(sessionId: string | null): UseGitDiffStatsReturn
 
       setStats(gitDiffStats);
     } catch (err) {
+      if (abortController.signal.aborted) {
+        return;
+      }
+      if (requestId !== requestIdRef.current) {
+        return;
+      }
       sharedCache.delete(sessionId);
       const message =
         err instanceof Error ? err.message : "Failed to fetch git diff stats";
       setError(message);
       setStats(null);
     } finally {
-      setIsLoading(false);
+      if (requestId === requestIdRef.current) {
+        setIsLoading(false);
+      }
     }
+  }, [sessionId]);
+
+  // Invalidate in-flight requests when session changes
+  useEffect(() => {
+    requestIdRef.current += 1;
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setStats(null);
+    setError(null);
   }, [sessionId]);
 
   // Initial fetch and polling
@@ -121,13 +156,11 @@ export function useGitDiffStats(sessionId: string | null): UseGitDiffStatsReturn
       fetchStats();
     }, isTauri() ? TAURI_POLL_INTERVAL_MS : POLL_INTERVAL_MS);
 
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      abortControllerRef.current?.abort();
+    };
   }, [fetchStats]);
-
-  // Clear cache and stats when session changes
-  useEffect(() => {
-    setStats(null);
-  }, [sessionId]);
 
   const refresh = useCallback(async () => {
     await fetchStats(true);

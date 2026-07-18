@@ -54,7 +54,7 @@ export async function getMcpConfigFile(): Promise<TextConfigFile> {
   if (response.status === 404) {
     return {
       content: DEFAULT_MCP_JSON,
-      path: "~/.kimi/mcp.json",
+      path: "~/.kimi-code/mcp.json",
     };
   }
   return parseJsonResponse<TextConfigFile>(response);

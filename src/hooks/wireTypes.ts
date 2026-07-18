@@ -143,6 +143,7 @@ export type StatusUpdateEvent = {
     token_usage?: TokenUsage | null;
     message_id?: string;
     plan_mode?: boolean | null;
+    swarm_mode?: boolean | null;
   };
 };
 
@@ -248,6 +249,86 @@ export type SubagentEventWire = {
   };
 };
 
+export type AgentTaskWireStatus =
+  | "pending"
+  | "queued"
+  | "running"
+  | "working"
+  | "suspended"
+  | "completed"
+  | "success"
+  | "failed"
+  | "error"
+  | "cancelled"
+  | "aborted";
+
+export type AgentTaskWire = {
+  id: string;
+  session_id?: string | null;
+  kind?: string | null;
+  description?: string | null;
+  status: AgentTaskWireStatus;
+  command?: string | null;
+  created_at?: string | number | null;
+  started_at?: string | number | null;
+  completed_at?: string | number | null;
+  output_preview?: string | null;
+  output_bytes?: number | null;
+  subagent_phase?: string | null;
+  subagent_type?: string | null;
+  parent_tool_call_id?: string | null;
+  suspended_reason?: string | null;
+  swarm_index?: number | null;
+  run_in_background?: boolean | null;
+};
+
+export type TaskCreatedEvent = {
+  type: "TaskCreated";
+  payload: {
+    session_id?: string | null;
+    task: AgentTaskWire;
+  };
+};
+
+export type TaskProgressEvent = {
+  type: "TaskProgress";
+  payload: {
+    session_id?: string | null;
+    task_id: string;
+    output_chunk?: string | null;
+    stream?: string | null;
+    phase?: string | null;
+  };
+};
+
+export type TaskCompletedEvent = {
+  type: "TaskCompleted";
+  payload: {
+    session_id?: string | null;
+    task_id: string;
+    status: AgentTaskWireStatus;
+    output_preview?: string | null;
+    output_bytes?: number | null;
+    completed_at?: string | number | null;
+    error?: string | null;
+  };
+};
+
+export type SubagentLifecycleEvent = {
+  type: "SubagentLifecycle";
+  payload: {
+    session_id?: string | null;
+    agent_id?: string | null;
+    task_id?: string | null;
+    parent_tool_call_id?: string | null;
+    subagent_type?: string | null;
+    phase: string;
+    description?: string | null;
+    swarm_index?: number | null;
+    error?: string | null;
+  };
+};
+
 export type SteerInputEvent = {
   type: "SteerInput";
   payload: {
@@ -260,6 +341,19 @@ export type PlanDisplayEvent = {
   payload: {
     content: string;
     file_path: string;
+  };
+};
+
+export type SlashCommandsUpdateEvent = {
+  type: "SlashCommandsUpdate";
+  payload: {
+    slash_commands?: Array<{
+      name: string;
+      description?: string;
+      aliases?: string[];
+      input_hint?: string | null;
+      inputHint?: string | null;
+    }>;
   };
 };
 
@@ -283,8 +377,13 @@ export type WireEvent =
   | ApprovalRequestResolvedEvent
   | QuestionRequestEvent
   | SubagentEventWire
+  | TaskCreatedEvent
+  | TaskProgressEvent
+  | TaskCompletedEvent
+  | SubagentLifecycleEvent
   | SteerInputEvent
-  | PlanDisplayEvent;
+  | PlanDisplayEvent
+  | SlashCommandsUpdateEvent;
 
 // Parsed wire message
 export type WireMessage = {
@@ -299,10 +398,12 @@ export type WireMessage = {
   id?: string | number;
   params?:
     | {
-        type?: string;
-        payload?: unknown;
-        user_input?: string;
-      }
+      type?: string;
+      payload?: unknown;
+      user_input?: string;
+      plan_mode?: boolean;
+      swarm_mode?: boolean;
+    }
     | SessionStatusPayload;
   result?: {
     status?: string;
@@ -310,6 +411,8 @@ export type WireMessage = {
       name: string;
       description: string;
       aliases: string[];
+      input_hint?: string | null;
+      inputHint?: string | null;
     }>;
     [key: string]: unknown;
   };

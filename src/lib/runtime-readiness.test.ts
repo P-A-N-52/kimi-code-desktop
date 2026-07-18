@@ -12,8 +12,8 @@ function readiness(overrides: Partial<RuntimeReadiness>): RuntimeReadiness {
 		checks: [],
 		issues: [],
 		warnings: [],
-		bundledRuntime: { available: true },
-		externalCli: { available: true },
+		bundledRuntime: { available: false },
+		externalCli: { available: true, program: "kimi", version: "0.18.0" },
 		config: {
 			exists: true,
 			ready: true,
@@ -35,7 +35,7 @@ describe("runtime readiness", () => {
 	});
 
 	it("pauses on warnings until acknowledged", () => {
-		const state = readiness({ warnings: ["External CLI missing"] });
+		const state = readiness({ warnings: ["Kimi Code config not present yet"] });
 		expect(getRuntimeReadinessKind(state)).toBe("warning");
 		expect(shouldPauseForRuntimeReadiness(state, false)).toBe(true);
 		expect(shouldPauseForRuntimeReadiness(state, true)).toBe(false);

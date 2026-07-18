@@ -24,10 +24,10 @@ describe("version", () => {
     });
   });
 
-  describe("bundledKimiCliVersion", () => {
+  describe("kimiCodeCliFallbackVersion", () => {
     it("should be defined", async () => {
-      const { bundledKimiCliVersion } = await loadVersionModule();
-      expect(bundledKimiCliVersion).toBeDefined();
+      const { kimiCodeCliFallbackVersion } = await loadVersionModule();
+      expect(kimiCodeCliFallbackVersion).toBeDefined();
     });
   });
 
@@ -47,10 +47,10 @@ describe("version", () => {
       expect(getKimiCliVersionMock).toHaveBeenCalledTimes(1);
     });
 
-    it("falls back to bundled version when runtime probing fails", async () => {
+    it("falls back to build-time version when runtime probing fails", async () => {
       getKimiCliVersionMock.mockRejectedValue(new Error("Not in Tauri"));
-      const { bundledKimiCliVersion, resolveKimiCliVersion } = await loadVersionModule();
-      await expect(resolveKimiCliVersion()).resolves.toBe(bundledKimiCliVersion);
+      const { kimiCodeCliFallbackVersion, resolveKimiCliVersion } = await loadVersionModule();
+      await expect(resolveKimiCliVersion()).resolves.toBe(kimiCodeCliFallbackVersion);
     });
   });
 });

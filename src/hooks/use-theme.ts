@@ -70,6 +70,12 @@ function applyThemeState(state: ThemeState): void {
     return;
   }
 
+  if ("__TAURI_INTERNALS__" in window) {
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => getCurrentWindow().setTheme(state.theme))
+      .catch(() => {});
+  }
+
   if (state.hasUserPreference) {
     window.localStorage.setItem(THEME_STORAGE_KEY, state.theme);
   } else {

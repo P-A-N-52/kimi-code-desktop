@@ -336,7 +336,10 @@ export function useSessions(
 			setHasMoreArchivedSessions(archivedList.length === PAGE_SIZE);
 			setHasLoadedArchivedSessions(true);
 		} catch (err) {
-			setHasLoadedArchivedSessions(false);
+			const message =
+				err instanceof Error ? err.message : "Failed to load archived sessions";
+			setError(message);
+			toast.error(message);
 			console.error("Failed to refresh archived sessions:", err);
 		} finally {
 			archivedRefreshInFlightRef.current = false;
@@ -663,18 +666,18 @@ export function useSessions(
 				}
 
 				// Update sessions list
+				let nextSelectedId: string | undefined;
 				setSessions((current) => {
 					const next = current.filter((s) => s.sessionId !== sessionId);
-
-					// If we deleted the selected session, select the first remaining one
-					if (sessionId === selectedSessionId && next.length > 0) {
-						setSelectedSessionId(next[0].sessionId);
-					} else if (next.length === 0) {
-						setSelectedSessionId("");
+					if (sessionId === selectedSessionId) {
+						nextSelectedId = next.length > 0 ? next[0].sessionId : "";
 					}
-
 					return next;
 				});
+
+				if (nextSelectedId !== undefined) {
+					setSelectedSessionId(nextSelectedId);
+				}
 
 				return true;
 			} catch (err) {
@@ -947,8 +950,14 @@ export function useSessions(
 			} catch (err) {
 				const message =
 					err instanceof Error ? err.message : "Failed to generate title";
-				console.error("Failed to generate title:", err);
-				toast.error(message);
+				console.warn("Failed to generate title:", err);
+				const isExpectedTitleFallbackFailure =
+					message.includes("No user message found") ||
+					message.includes("No conversation history") ||
+					message.includes("not available via ACP");
+				if (!isExpectedTitleFallbackFailure) {
+					toast.error(message);
+				}
 				return null;
 			}
 		},
