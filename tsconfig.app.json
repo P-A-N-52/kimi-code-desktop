@@ -21,11 +21,9 @@
     "noUncheckedSideEffectImports": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"],
-      "@ai-elements": ["./src/components/ai-elements/index.ts"],
-      "@ai-elements/*": ["./src/components/ai-elements/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src"],
-  "exclude": ["src/components/ai-elements", "src/lib/api"]
+  "exclude": ["src/lib/api"]
 }

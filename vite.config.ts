@@ -1,5 +1,5 @@
-import fs from "node:fs";
 import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
@@ -154,12 +154,11 @@ export default defineConfig({
     __KIMI_CLI_VERSION__: JSON.stringify(kimiCliVersion),
     __APP_VERSION__: JSON.stringify(readPackageVersion()),
   },
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-      "@ai-elements": path.resolve(__dirname, "./src/components/ai-elements"),
-    },
-  },
+	resolve: {
+		alias: {
+			"@": path.resolve(__dirname, "./src"),
+		},
+	},
   server: {
     host: "127.0.0.1",
     port: 1420,
