@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Toaster, toast } from "sonner";
 import { useTheme } from "@/hooks/use-theme";
 import { useSessions } from "@/hooks/useSessions";
@@ -11,11 +11,16 @@ import {
 	type RuntimeReadiness,
 	showWindow,
 } from "@/lib/tauri-api";
-import { ConversationView } from "@/modules/conversation/conversation-view";
+import {
+	ConversationView,
+	type ConversationStreamApi,
+} from "@/modules/conversation/conversation-view";
 import { AppRail } from "@/modules/rail/app-rail";
 import { CreateSessionDialog } from "@/modules/sessions/create-session-dialog";
 import { SessionsSidebar } from "@/modules/sessions/sessions-sidebar";
 import { Topbar } from "@/modules/topbar/topbar";
+import { ChangesPanel } from "@/modules/workspace/changes-panel";
+import { deriveChanges, derivePendingApprovals } from "@/modules/workspace/derive-changes";
 import { AppShell } from "./app-shell";
 import { EmptyState } from "./empty-state";
 
@@ -107,10 +112,46 @@ export default function App() {
 	);
 
 	const [streamMessages, setStreamMessages] = useState<LiveMessage[]>([]);
+	const [streamApi, setStreamApi] = useState<ConversationStreamApi | null>(null);
+	const userClosedPanelRef = useRef(false);
 
 	useEffect(() => {
 		setStreamMessages([]);
+		setStreamApi(null);
+		userClosedPanelRef.current = false;
+		setPanelOpen(false);
 	}, [selectedSessionId]);
+
+	const changes = useMemo(() => deriveChanges(streamMessages), [streamMessages]);
+	const pendingApprovals = useMemo(
+		() => derivePendingApprovals(streamMessages),
+		[streamMessages],
+	);
+
+	useEffect(() => {
+		if (changes.length > 0 && !userClosedPanelRef.current) {
+			setPanelOpen(true);
+		}
+	}, [changes.length]);
+
+	const handleApproveAll = useCallback(() => {
+		if (!streamApi) return;
+		for (const approval of pendingApprovals) {
+			void streamApi.respondToApproval(approval.id, "approve");
+		}
+	}, [streamApi, pendingApprovals]);
+
+	const handleRejectAll = useCallback(() => {
+		if (!streamApi) return;
+		for (const approval of pendingApprovals) {
+			void streamApi.respondToApproval(approval.id, "reject");
+		}
+	}, [streamApi, pendingApprovals]);
+
+	const handleClosePanel = useCallback(() => {
+		userClosedPanelRef.current = true;
+		setPanelOpen(false);
+	}, []);
 
 	useEffect(() => {
 		if (sessionsError) {
@@ -196,7 +237,15 @@ export default function App() {
 						onTogglePanel={() => setPanelOpen((v) => !v)}
 					/>
 				}
-				panel={null}
+				panel={
+					<ChangesPanel
+						changes={changes}
+						pendingApprovals={pendingApprovals}
+						onApproveAll={handleApproveAll}
+						onRejectAll={handleRejectAll}
+						onClose={handleClosePanel}
+					/>
+				}
 				panelOpen={panelOpen}
 			>
 				{selectedSessionId ? (
@@ -205,6 +254,7 @@ export default function App() {
 						currentSession={currentSession}
 						onSessionStatus={handleSessionStatus}
 						onMessagesChange={setStreamMessages}
+						onStreamApiChange={setStreamApi}
 					/>
 				) : (
 					<EmptyState onNewSession={() => setShowCreateDialog(true)} />

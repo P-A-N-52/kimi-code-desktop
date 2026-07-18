@@ -9,16 +9,23 @@ import { StatusStrip } from "@/modules/statusbar/status-strip";
 import { shouldAutoApprove, usePermissionMode } from "@/modules/statusbar/permission-mode";
 import { MessageList } from "./message-list";
 
+export type ConversationStreamApi = Pick<
+	ReturnType<typeof useSessionStream>,
+	"respondToApproval"
+>;
+
 export function ConversationView({
 	sessionId,
 	currentSession,
 	onSessionStatus,
 	onMessagesChange,
+	onStreamApiChange,
 }: {
 	sessionId: string;
 	currentSession: Session | undefined;
 	onSessionStatus: (status: SessionStatus) => void;
 	onMessagesChange?: (messages: LiveMessage[]) => void;
+	onStreamApiChange?: (api: ConversationStreamApi | null) => void;
 }) {
 	const handleError = useCallback((error: Error) => {
 		toast.error("Stream Error", { description: error.message });
@@ -36,6 +43,10 @@ export function ConversationView({
 	const { messages, respondToApproval } = stream;
 	const { mode: permissionMode, setMode: setPermissionMode } =
 		usePermissionMode(sessionId);
+
+	useEffect(() => {
+		onStreamApiChange?.({ respondToApproval });
+	}, [respondToApproval, onStreamApiChange]);
 
 	useEffect(() => {
 		if (permissionMode === "ask") return;
