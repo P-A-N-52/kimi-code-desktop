@@ -1,0 +1,1026 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kimi Code — 设计稿 V2 · Monochrome</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  [data-theme="dark"] {
+    --bg: #0A0A0A;
+    --bg-elev: #121212;
+    --bg-2: #181818;
+    --hover: rgba(255,255,255,0.05);
+    --active: rgba(255,255,255,0.08);
+    --border: rgba(255,255,255,0.09);
+    --border-strong: rgba(255,255,255,0.17);
+    --text: #E8E8E8;
+    --bright: #FFFFFF;
+    --muted: #8B8B8B;
+    --faint: #565656;
+    --green: #4DC08A;
+    --green-bg: rgba(77,192,138,0.08);
+    --red: #DE6262;
+    --red-bg: rgba(222,98,98,0.08);
+    --amber: #D0A24A;
+    --amber-bg: rgba(208,162,74,0.07);
+    --shadow-pop: 0 12px 40px rgba(0,0,0,0.55), 0 2px 8px rgba(0,0,0,0.35);
+    --sel: rgba(255,255,255,0.14);
+  }
+  [data-theme="light"] {
+    --bg: #FAFAFA;
+    --bg-elev: #FFFFFF;
+    --bg-2: #F1F1F1;
+    --hover: rgba(0,0,0,0.045);
+    --active: rgba(0,0,0,0.07);
+    --border: rgba(0,0,0,0.10);
+    --border-strong: rgba(0,0,0,0.18);
+    --text: #1A1A1A;
+    --bright: #000000;
+    --muted: #6E6E6E;
+    --faint: #ABABAB;
+    --green: #1E9E64;
+    --green-bg: rgba(30,158,100,0.08);
+    --red: #CE4444;
+    --red-bg: rgba(206,68,68,0.07);
+    --amber: #A87818;
+    --amber-bg: rgba(168,120,24,0.07);
+    --shadow-pop: 0 12px 40px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.06);
+    --sel: rgba(0,0,0,0.12);
+  }
+  :root {
+    --font-ui: "Inter", -apple-system, "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-mono: "JetBrains Mono", "SF Mono", "Cascadia Code", Consolas, monospace;
+    --r1: 6px; --r2: 8px; --r3: 10px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--font-ui);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.6;
+    letter-spacing: -0.011em;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection { background: var(--sel); }
+  button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; letter-spacing: inherit; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  .mono { font-family: var(--font-mono); letter-spacing: 0; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  .app { display: flex; height: 100vh; }
+
+  /* ---- 图标轨 ---- */
+  .rail {
+    width: 52px; flex-shrink: 0;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 10px 0; gap: 2px;
+    z-index: 30;
+  }
+  .rail-logo {
+    width: 26px; height: 26px; border-radius: var(--r1);
+    background: var(--bright); color: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono); font-weight: 600; font-size: 13px;
+    margin-bottom: 12px;
+  }
+  .rail-btn {
+    width: 34px; height: 34px; border-radius: var(--r2);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted);
+    transition: background .14s, color .14s;
+    position: relative;
+  }
+  .rail-btn:hover { background: var(--hover); color: var(--text); }
+  .rail-btn.active { background: var(--active); color: var(--bright); }
+  .rail-btn .dot {
+    position: absolute; top: 4px; right: 4px;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green);
+  }
+  .rail-spacer { flex: 1; }
+  .rail-divider { width: 20px; height: 1px; background: var(--border); margin: 7px 0; }
+
+  /* ---- 会话侧栏 ---- */
+  .sidebar {
+    width: 0; overflow: hidden; flex-shrink: 0;
+    transition: width .22s cubic-bezier(.4,0,.2,1);
+    border-right: 1px solid transparent;
+  }
+  .sidebar.open { width: 260px; border-right-color: var(--border); }
+  .sidebar-inner { width: 260px; height: 100%; display: flex; flex-direction: column; padding: 12px 8px; }
+  .sidebar-search {
+    display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--r2); padding: 6px 10px;
+    color: var(--faint); font-size: 12.5px;
+    margin: 0 4px 12px;
+    transition: border-color .14s;
+  }
+  .sidebar-search:focus-within { border-color: var(--border-strong); }
+  .sidebar-search input {
+    background: none; border: none; outline: none; color: var(--text);
+    font-size: 12.5px; width: 100%; font-family: inherit; letter-spacing: inherit;
+  }
+  .sidebar-search input::placeholder { color: var(--faint); }
+  kbd {
+    font-family: var(--font-mono); font-size: 10px;
+    background: var(--bg-2); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px; color: var(--faint);
+    letter-spacing: 0;
+  }
+  .session-group { margin-bottom: 16px; }
+  .session-group-title {
+    font-family: var(--font-mono);
+    font-size: 10px; font-weight: 500; letter-spacing: .09em;
+    color: var(--faint); text-transform: uppercase;
+    padding: 0 10px; margin-bottom: 3px;
+  }
+  .session-item {
+    display: block; width: 100%; text-align: left;
+    padding: 6px 10px; border-radius: var(--r1);
+    transition: background .12s;
+    position: relative;
+  }
+  .session-item:hover { background: var(--hover); }
+  .session-item.active { background: var(--active); }
+  .session-item.active::before {
+    content: ""; position: absolute; left: 0; top: 7px; bottom: 7px;
+    width: 2px; border-radius: 1px; background: var(--bright);
+  }
+  .session-item .t {
+    font-size: 13px; font-weight: 500; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .session-item .m {
+    font-family: var(--font-mono);
+    font-size: 10.5px; color: var(--faint); margin-top: 1px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    letter-spacing: 0;
+  }
+  .session-item .run {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: var(--green); flex-shrink: 0;
+    animation: breathe 1.6s ease-in-out infinite;
+  }
+  @keyframes breathe { 50% { opacity: .35; } }
+  .sidebar-footer {
+    margin-top: auto; padding: 10px 10px 2px;
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center; gap: 9px;
+  }
+  .avatar {
+    width: 24px; height: 24px; border-radius: var(--r1);
+    background: var(--bg-2); border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono); font-size: 11px; font-weight: 500; color: var(--text);
+  }
+  .sidebar-footer .name { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); letter-spacing: 0; }
+
+  /* ---- 主区 ---- */
+  .main { flex: 1; display: flex; min-width: 0; position: relative; }
+  .center { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+  .topbar {
+    height: 48px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    position: relative; padding: 0 12px;
+  }
+  .topbar-title {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 13px; font-weight: 550;
+    padding: 5px 9px; border-radius: var(--r1);
+    color: var(--text);
+    transition: background .14s;
+  }
+  .topbar-title:hover { background: var(--hover); }
+  .topbar-title .sid { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); letter-spacing: 0; }
+  .topbar-title svg { color: var(--faint); }
+  .topbar-right { position: absolute; right: 10px; display: flex; gap: 2px; }
+  .icon-btn {
+    width: 30px; height: 30px; border-radius: var(--r1);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted); transition: background .14s, color .14s;
+  }
+  .icon-btn:hover { background: var(--hover); color: var(--text); }
+  .icon-btn.active { color: var(--bright); background: var(--active); }
+
+  /* 会话流 */
+  .stream { flex: 1; overflow-y: auto; padding: 10px 0 26px; }
+  .col { max-width: 44rem; margin: 0 auto; padding: 0 24px; }
+
+  .msg-user { display: flex; justify-content: flex-end; margin: 24px 0; }
+  .msg-user .bubble {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--r3);
+    padding: 9px 14px;
+    max-width: 82%;
+    font-size: 14px;
+  }
+  .msg-ai { margin: 24px 0; display: flex; gap: 12px; }
+  .msg-ai .mark {
+    width: 20px; height: 20px; border-radius: 5px; flex-shrink: 0;
+    background: var(--bright); color: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+    margin-top: 3px;
+  }
+  .msg-ai .body { flex: 1; min-width: 0; font-size: 14px; }
+  .msg-ai .body p { margin-bottom: 10px; }
+  .msg-ai .body code {
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: 0;
+    background: var(--bg-2); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px;
+  }
+
+  /* 工具卡片 */
+  .tool {
+    border: 1px solid var(--border);
+    border-radius: var(--r2);
+    margin: 10px 0;
+    overflow: hidden;
+    background: var(--bg-elev);
+  }
+  .tool-head {
+    display: flex; align-items: center; gap: 9px;
+    padding: 8px 12px;
+    width: 100%; text-align: left;
+    transition: background .12s;
+  }
+  .tool-head:hover { background: var(--hover); }
+  .tool-ico { color: var(--muted); flex-shrink: 0; display: flex; }
+  .tool-name { font-family: var(--font-mono); font-size: 12px; font-weight: 600; letter-spacing: 0; }
+  .tool-arg { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; letter-spacing: 0; }
+  .tool-status { font-family: var(--font-mono); font-size: 11px; color: var(--faint); flex-shrink: 0; letter-spacing: 0; }
+  .tool-status.ok { color: var(--green); }
+  .tool-chevron { color: var(--faint); transition: transform .18s; flex-shrink: 0; }
+  .tool.open .tool-chevron { transform: rotate(90deg); }
+  .tool-body { display: none; border-top: 1px solid var(--border); }
+  .tool.open .tool-body { display: block; }
+
+  /* diff */
+  .diff { font-family: var(--font-mono); font-size: 11.5px; line-height: 1.7; overflow-x: auto; letter-spacing: 0; }
+  .diff-file {
+    padding: 6px 12px; font-size: 11px; color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    display: flex; gap: 10px; align-items: center;
+    background: var(--bg-2);
+  }
+  .badge { font-family: var(--font-mono); font-size: 10.5px; font-weight: 500; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+  .badge.add { color: var(--green); }
+  .badge.del { color: var(--red); }
+  .diff-row { display: flex; white-space: pre; padding: 0 12px 0 0; }
+  .diff-row .ln { width: 34px; flex-shrink: 0; text-align: right; padding-right: 10px; color: var(--faint); user-select: none; font-variant-numeric: tabular-nums; }
+  .diff-row .sign { width: 14px; flex-shrink: 0; user-select: none; }
+  .diff-row.add { background: var(--green-bg); box-shadow: inset 2px 0 0 var(--green); }
+  .diff-row.add .sign { color: var(--green); }
+  .diff-row.del { background: var(--red-bg); box-shadow: inset 2px 0 0 var(--red); }
+  .diff-row.del .sign { color: var(--red); }
+  .diff-row .code { color: var(--text); }
+  .diff-row.ctx .code { color: var(--muted); }
+
+  .term {
+    font-family: var(--font-mono); font-size: 11.5px; line-height: 1.75;
+    padding: 10px 12px; color: var(--muted); letter-spacing: 0;
+  }
+  .term .prompt { color: var(--faint); }
+  .term .ok { color: var(--green); }
+
+  /* 代码块 */
+  .codeblock {
+    border: 1px solid var(--border); border-radius: var(--r2);
+    background: var(--bg-elev); margin: 12px 0; overflow: hidden;
+  }
+  .codeblock-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-2);
+  }
+  .codeblock-head .lang { font-family: var(--font-mono); font-size: 11px; color: var(--muted); letter-spacing: 0; }
+  .codeblock-head .copy { font-family: var(--font-mono); font-size: 11px; color: var(--faint); display: flex; align-items: center; gap: 5px; letter-spacing: 0; }
+  .codeblock-head .copy:hover { color: var(--text); }
+  .codeblock pre {
+    font-family: var(--font-mono); font-size: 12px; line-height: 1.75;
+    padding: 12px 14px; overflow-x: auto; color: var(--text); letter-spacing: 0;
+  }
+  .tk-k { color: #B8A6E8; } .tk-s { color: #8FBC8F; } .tk-f { color: #7FA8D9; }
+  .tk-c { color: var(--faint); font-style: italic; } .tk-t { color: #D98B8B; }
+  [data-theme="light"] .tk-k { color: #7C5CBF; } [data-theme="light"] .tk-s { color: #3E7A3E; }
+  [data-theme="light"] .tk-f { color: #2F5F9E; } [data-theme="light"] .tk-t { color: #B04545; }
+
+  /* 审批卡片 */
+  .approval {
+    border: 1px solid color-mix(in srgb, var(--amber) 32%, transparent);
+    background: var(--amber-bg);
+    border-radius: var(--r2); margin: 12px 0; overflow: hidden;
+  }
+  .approval-head {
+    display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+  }
+  .approval-ico { color: var(--amber); display: flex; flex-shrink: 0; }
+  .approval-title { font-size: 13px; font-weight: 550; }
+  .approval-tag {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: .08em;
+    color: var(--amber); border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
+    border-radius: 4px; padding: 1px 6px; margin-left: auto;
+  }
+  .approval-cmd {
+    margin: 0 12px 10px;
+    font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0;
+    background: rgba(0,0,0,0.22); border: 1px solid var(--border);
+    border-radius: var(--r1); padding: 7px 10px; color: var(--muted);
+  }
+  [data-theme="light"] .approval-cmd { background: rgba(255,255,255,0.6); }
+  .approval-actions { display: flex; gap: 8px; padding: 0 12px 11px; }
+  .btn {
+    font-size: 12.5px; font-weight: 550;
+    border-radius: var(--r1); padding: 6px 13px;
+    transition: background .12s, color .12s, border-color .12s;
+    display: inline-flex; align-items: center;
+  }
+  .btn-primary { background: var(--bright); color: var(--bg); }
+  .btn-primary:hover { opacity: .88; }
+  .btn-ghost { border: 1px solid var(--border-strong); color: var(--muted); }
+  .btn-ghost:hover { background: var(--hover); color: var(--text); }
+  .btn kbd { margin-left: 7px; opacity: .55; background: none; border: none; padding: 0; color: inherit; }
+
+  /* 流式光标 */
+  .caret {
+    display: inline-block; width: 7px; height: 15px;
+    background: var(--text); border-radius: 1px;
+    vertical-align: text-bottom;
+    animation: blink 1s steps(2) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ---- 输入区 ---- */
+  .composer-zone { flex-shrink: 0; padding: 4px 0 16px; }
+  .composer {
+    border: 1px solid var(--border-strong);
+    background: var(--bg-elev);
+    border-radius: var(--r3);
+    box-shadow: var(--shadow-pop);
+    padding: 11px 11px 7px;
+    transition: border-color .15s;
+  }
+  .composer:focus-within { border-color: color-mix(in srgb, var(--bright) 32%, var(--border-strong)); }
+  .composer textarea {
+    width: 100%; border: none; outline: none; resize: none;
+    background: none; color: var(--text);
+    font-family: inherit; font-size: 14px; line-height: 1.55; letter-spacing: inherit;
+    max-height: 160px; padding: 2px 5px;
+  }
+  .composer textarea::placeholder { color: var(--faint); }
+  .composer-bar { display: flex; align-items: center; gap: 3px; margin-top: 5px; }
+  .composer-btn {
+    height: 28px; min-width: 28px; border-radius: var(--r1);
+    display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+    color: var(--muted); font-size: 12px; padding: 0 6px;
+    transition: background .13s, color .13s;
+  }
+  .composer-btn:hover { background: var(--hover); color: var(--text); }
+  .composer-btn span { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0; }
+  .model-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--font-mono); font-size: 11.5px; font-weight: 500; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 4px 10px; margin-left: auto; letter-spacing: 0;
+    transition: background .13s, color .13s;
+  }
+  .model-pill:hover { background: var(--hover); color: var(--text); }
+  .send-btn {
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--bright); color: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    transition: opacity .13s, transform .1s;
+    flex-shrink: 0;
+  }
+  .send-btn:hover { opacity: .85; }
+  .send-btn:active { transform: scale(.92); }
+  .composer-hint { font-family: var(--font-mono); font-size: 10.5px; color: var(--faint); white-space: nowrap; letter-spacing: 0; }
+  .composer-hint kbd { background: none; border: none; padding: 0; }
+
+  /* plan 模式 */
+  .composer.plan { border-style: dashed; border-color: color-mix(in srgb, var(--bright) 40%, transparent); }
+  .plan-tag {
+    display: none;
+    font-family: var(--font-mono); font-size: 9.5px; font-weight: 600; letter-spacing: .12em;
+    color: var(--bg); background: var(--bright);
+    border-radius: 4px; padding: 2px 7px;
+  }
+  .composer.plan .plan-tag { display: inline-block; }
+
+  /* ---- 状态条 ---- */
+  .status-strip {
+    display: flex; align-items: center; gap: 4px;
+    margin-top: 8px; padding: 0 2px;
+    position: relative;
+  }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--font-mono); font-size: 11px; font-weight: 500; letter-spacing: 0;
+    color: var(--muted);
+    border: 1px solid transparent; border-radius: 999px;
+    padding: 4px 10px;
+    transition: background .13s, color .13s, border-color .13s;
+  }
+  .status-pill:hover { background: var(--hover); color: var(--text); }
+  .status-pill.on { background: var(--active); color: var(--bright); border-color: var(--border-strong); }
+  .status-pill .pdot {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: currentColor; opacity: 0; transition: opacity .13s;
+  }
+  .status-pill.on .pdot { opacity: 1; }
+  .status-pill.perm-auto {
+    color: var(--amber);
+    background: var(--amber-bg);
+    border-color: color-mix(in srgb, var(--amber) 30%, transparent);
+  }
+  .status-pill.perm-yolo {
+    color: var(--red);
+    background: var(--red-bg);
+    border-color: color-mix(in srgb, var(--red) 30%, transparent);
+  }
+  .status-spacer { flex: 1; }
+
+  /* 权限下拉 */
+  .perm-wrap { position: relative; }
+  .perm-menu {
+    display: none;
+    position: absolute; bottom: calc(100% + 8px); left: 0;
+    width: 268px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r3);
+    box-shadow: var(--shadow-pop);
+    padding: 4px;
+    z-index: 50;
+  }
+  .perm-menu.open { display: block; }
+  .perm-opt {
+    display: flex; align-items: center; gap: 10px;
+    width: 100%; text-align: left;
+    padding: 8px 9px; border-radius: var(--r2);
+    transition: background .12s;
+  }
+  .perm-opt:hover { background: var(--hover); }
+  .perm-opt.selected { background: var(--active); }
+  .perm-opt .p-ico { color: var(--muted); display: flex; flex-shrink: 0; }
+  .perm-opt[data-mode="auto"] .p-ico { color: var(--amber); }
+  .perm-opt[data-mode="yolo"] .p-ico { color: var(--red); }
+  .perm-opt .p-name { font-size: 12.5px; font-weight: 550; color: var(--text); }
+  .perm-opt .p-desc { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .perm-opt .p-check { margin-left: auto; color: var(--bright); opacity: 0; flex-shrink: 0; }
+  .perm-opt.selected .p-check { opacity: 1; }
+
+  .ctx-ring { transform: rotate(-90deg); }
+  .ctx-ring .track { stroke: var(--border-strong); }
+  .ctx-ring .val { stroke: var(--text); transition: stroke-dashoffset .3s; }
+
+  /* ---- 右侧面板 ---- */
+  .panel {
+    width: 0; overflow: hidden; flex-shrink: 0;
+    border-left: 1px solid transparent;
+    transition: width .25s cubic-bezier(.4,0,.2,1), border-color .25s;
+  }
+  .panel.open { width: 400px; border-left-color: var(--border); }
+  .panel-inner { width: 400px; height: 100%; display: flex; flex-direction: column; }
+  .panel-head {
+    height: 48px; flex-shrink: 0;
+    display: flex; align-items: center; gap: 2px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .panel-tab {
+    font-size: 12.5px; font-weight: 500; color: var(--muted);
+    padding: 5px 9px; border-radius: var(--r1);
+    transition: background .13s, color .13s;
+  }
+  .panel-tab:hover { color: var(--text); }
+  .panel-tab.active { color: var(--bright); background: var(--active); }
+  .panel-tab .n {
+    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0;
+    color: var(--faint); margin-left: 5px; font-variant-numeric: tabular-nums;
+  }
+  .panel-tab.active .n { color: var(--muted); }
+  .panel-body { flex: 1; overflow-y: auto; padding: 12px; }
+  .change-card {
+    border: 1px solid var(--border); border-radius: var(--r2);
+    background: var(--bg-elev); margin-bottom: 8px; overflow: hidden;
+  }
+  .change-head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 11px; width: 100%; text-align: left;
+    transition: background .12s;
+  }
+  .change-head:hover { background: var(--hover); }
+  .change-head .f-ico { color: var(--muted); display: flex; flex-shrink: 0; }
+  .change-head .file { font-family: var(--font-mono); font-size: 11.5px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: 0; }
+  .change-mini { border-top: 1px solid var(--border); display: none; }
+  .change-card.open .change-mini { display: block; }
+  .panel-foot {
+    flex-shrink: 0; padding: 10px 12px;
+    border-top: 1px solid var(--border);
+    display: flex; gap: 8px;
+  }
+  .panel-foot .btn { flex: 1; justify-content: center; padding: 7px 0; }
+
+  .sect-label {
+    font-family: var(--font-mono); font-size: 10px; font-weight: 500;
+    letter-spacing: .09em; color: var(--faint); text-transform: uppercase;
+    padding: 12px 4px 6px;
+  }
+  .filetree { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: 0; }
+  .filetree .row {
+    display: flex; align-items: center; gap: 7px;
+    padding: 4px 8px; border-radius: var(--r1); color: var(--muted);
+    transition: background .12s, color .12s;
+  }
+  .filetree .row:hover { background: var(--hover); color: var(--text); }
+  .filetree .row.dir { color: var(--text); }
+  .filetree .indent { padding-left: 20px; }
+  .filetree .row.cur { color: var(--bright); }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ===== 图标轨 ===== -->
+  <nav class="rail">
+    <div class="rail-logo">K</div>
+    <button class="rail-btn active" id="railSessions" title="会话">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      <span class="dot"></span>
+    </button>
+    <button class="rail-btn" title="新会话">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+    <button class="rail-btn" title="搜索">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+    </button>
+    <div class="rail-spacer"></div>
+    <button class="rail-btn" id="railTheme" title="切换主题">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+    </button>
+    <button class="rail-btn" title="设置">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+    </button>
+  </nav>
+
+  <!-- ===== 会话侧栏 ===== -->
+  <aside class="sidebar open" id="sidebar">
+    <div class="sidebar-inner">
+      <div class="sidebar-search">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input placeholder="搜索会话">
+        <kbd>⌘K</kbd>
+      </div>
+      <div style="flex:1; overflow-y:auto;">
+        <div class="session-group">
+          <div class="session-group-title">今天</div>
+          <button class="session-item active">
+            <div class="t"><span class="run"></span>登录页表单校验</div>
+            <div class="m">kimi-code-desktop · 刚刚</div>
+          </button>
+          <button class="session-item">
+            <div class="t">修复 ACP 重连状态错乱</div>
+            <div class="m">kimi-code-desktop · 2h</div>
+          </button>
+          <button class="session-item">
+            <div class="t">侧边栏收起动画调整</div>
+            <div class="m">kimi-code-desktop · 4h</div>
+          </button>
+        </div>
+        <div class="session-group">
+          <div class="session-group-title">昨天</div>
+          <button class="session-item">
+            <div class="t">diff 预览滚动性能优化</div>
+            <div class="m">kimi-code-desktop · 18:42</div>
+          </button>
+          <button class="session-item">
+            <div class="t">迁移到 Tailwind CSS 4</div>
+            <div class="m">kimi-code-desktop · 15:07</div>
+          </button>
+          <button class="session-item">
+            <div class="t">release 脚本签名报错排查</div>
+            <div class="m">kimi-code-desktop · 11:20</div>
+          </button>
+        </div>
+        <div class="session-group">
+          <div class="session-group-title">本周</div>
+          <button class="session-item">
+            <div class="t">MCP 服务器配置界面</div>
+            <div class="m">kimi-code-desktop · 周三</div>
+          </button>
+          <button class="session-item">
+            <div class="t">会话搜索与批量归档</div>
+            <div class="m">kimi-code-desktop · 周二</div>
+          </button>
+        </div>
+      </div>
+      <div class="sidebar-footer">
+        <div class="avatar">A</div>
+        <span class="name">administer</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ===== 主区 ===== -->
+  <div class="main">
+    <div class="center">
+      <header class="topbar">
+        <button class="topbar-title">
+          登录页表单校验
+          <span class="sid">#a3f9c2</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+        <div class="topbar-right">
+          <button class="icon-btn" title="分享">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="m16 6-4-4-4 4"/><path d="M12 2v13"/></svg>
+          </button>
+          <button class="icon-btn active" id="panelToggle" title="工作区面板">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="stream" id="stream">
+        <div class="col">
+
+          <div class="msg-user">
+            <div class="bubble">给登录页加表单校验：邮箱格式错误、密码为空时给出提示，校验失败时禁用提交按钮。</div>
+          </div>
+
+          <div class="msg-ai">
+            <div class="mark">K</div>
+            <div class="body">
+              <p>我先看一下现有登录页的结构，再加校验逻辑。</p>
+            </div>
+          </div>
+
+          <div class="tool">
+            <button class="tool-head" onclick="toggleTool(this)">
+              <span class="tool-ico">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+              </span>
+              <span class="tool-name">Read</span>
+              <span class="tool-arg">src/pages/Login.tsx</span>
+              <span class="tool-status num">214 行</span>
+              <svg class="tool-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></svg>
+            </button>
+          </div>
+
+          <div class="tool open">
+            <button class="tool-head" onclick="toggleTool(this)">
+              <span class="tool-ico">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+              </span>
+              <span class="tool-name">Edit</span>
+              <span class="tool-arg">src/pages/Login.tsx</span>
+              <span class="tool-status"><span class="badge add">+18</span> <span class="badge del">−3</span></span>
+              <svg class="tool-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></svg>
+            </button>
+            <div class="tool-body">
+              <div class="diff">
+                <div class="diff-file">
+                  <span>src/pages/Login.tsx</span>
+                  <span class="badge add">+18</span><span class="badge del">−3</span>
+                </div>
+                <div class="diff-row ctx"><span class="ln">41</span><span class="sign"></span><span class="code">export function Login() {</span></div>
+                <div class="diff-row ctx"><span class="ln">42</span><span class="sign"></span><span class="code">  const [email, setEmail] = useState("");</span></div>
+                <div class="diff-row del"><span class="ln">43</span><span class="sign">−</span><span class="code"> const [pwd, setPwd] = useState("");</span></div>
+                <div class="diff-row add"><span class="ln">43</span><span class="sign">+</span><span class="code"> const [pwd, setPwd] = useState("");</span></div>
+                <div class="diff-row add"><span class="ln">44</span><span class="sign">+</span><span class="code"> const [errors, setErrors] = useState&lt;{</span></div>
+                <div class="diff-row add"><span class="ln">45</span><span class="sign">+</span><span class="code">   email?: string; pwd?: string</span></div>
+                <div class="diff-row add"><span class="ln">46</span><span class="sign">+</span><span class="code"> }&gt;({});</span></div>
+                <div class="diff-row add"><span class="ln">47</span><span class="sign">+</span><span class="code"></span></div>
+                <div class="diff-row add"><span class="ln">48</span><span class="sign">+</span><span class="code"> const validate = () =&gt; {</span></div>
+                <div class="diff-row add"><span class="ln">49</span><span class="sign">+</span><span class="code">   const next: typeof errors = {};</span></div>
+                <div class="diff-row add"><span class="ln">50</span><span class="sign">+</span><span class="code">   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))</span></div>
+                <div class="diff-row add"><span class="ln">51</span><span class="sign">+</span><span class="code">     next.email = "邮箱格式不正确";</span></div>
+                <div class="diff-row add"><span class="ln">52</span><span class="sign">+</span><span class="code">   if (!pwd) next.pwd = "请输入密码";</span></div>
+                <div class="diff-row add"><span class="ln">53</span><span class="sign">+</span><span class="code">   setErrors(next);</span></div>
+                <div class="diff-row add"><span class="ln">54</span><span class="sign">+</span><span class="code">   return Object.keys(next).length === 0;</span></div>
+                <div class="diff-row add"><span class="ln">55</span><span class="sign">+</span><span class="code"> };</span></div>
+                <div class="diff-row ctx"><span class="ln">56</span><span class="sign"></span><span class="code"></span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="tool open">
+            <button class="tool-head" onclick="toggleTool(this)">
+              <span class="tool-ico">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 7 5 5-5 5"/><path d="M12 19h7"/></svg>
+              </span>
+              <span class="tool-name">Bash</span>
+              <span class="tool-arg">npm test -- Login</span>
+              <span class="tool-status ok">✓ 通过</span>
+              <svg class="tool-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></svg>
+            </button>
+            <div class="tool-body">
+              <div class="term">
+                <div><span class="prompt">$</span> npm test -- Login</div>
+                <div class="ok">✓ Login › 邮箱格式错误时显示提示 (23ms)</div>
+                <div class="ok">✓ Login › 密码为空时禁用提交 (11ms)</div>
+                <div class="ok">✓ Login › 校验通过后可提交 (17ms)</div>
+                <div><span class="ok">Tests: 3 passed, 3 total</span> · 0.84s</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="msg-ai">
+            <div class="mark">K</div>
+            <div class="body">
+              <p>校验逻辑已经加好，3 个测试全部通过。核心是一个纯函数 <code>validate()</code>，返回布尔值并写入错误状态：</p>
+              <div class="codeblock">
+                <div class="codeblock-head">
+                  <span class="lang">typescript</span>
+                  <button class="copy">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                    复制
+                  </button>
+                </div>
+                <pre><span class="tk-k">const</span> <span class="tk-f">validate</span> = () =&gt; {
+  <span class="tk-k">const</span> next: <span class="tk-k">typeof</span> errors = {};
+  <span class="tk-k">if</span> (!<span class="tk-s">/^[^\s@]+@[^\s@]+\.[^\s@]+$/</span>.<span class="tk-f">test</span>(email))
+    next.email = <span class="tk-s">"邮箱格式不正确"</span>;
+  <span class="tk-k">if</span> (!pwd) next.pwd = <span class="tk-s">"请输入密码"</span>;
+  <span class="tk-f">setErrors</span>(next);
+  <span class="tk-k">return</span> Object.<span class="tk-f">keys</span>(next).length === <span class="tk-t">0</span>;
+};</pre>
+              </div>
+              <p>提交按钮现在通过 <code>disabled={!isValid}</code> 联动校验状态。</p>
+            </div>
+          </div>
+
+          <div class="approval">
+            <div class="approval-head">
+              <span class="approval-ico">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+              </span>
+              <span class="approval-title">Kimi 请求执行命令</span>
+              <span class="approval-tag">APPROVAL</span>
+            </div>
+            <div class="approval-cmd">$ npm run build</div>
+            <div class="approval-actions">
+              <button class="btn btn-primary">允许<kbd>⏎</kbd></button>
+              <button class="btn btn-ghost">拒绝<kbd>Esc</kbd></button>
+              <button class="btn btn-ghost">本会话不再询问</button>
+            </div>
+          </div>
+
+          <div class="msg-ai">
+            <div class="mark">K</div>
+            <div class="body">
+              <p>等你确认后我会继续跑构建验证<span class="caret"></span></p>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- 输入区 -->
+      <div class="composer-zone">
+        <div class="col">
+          <div class="composer" id="composer">
+            <textarea rows="2" placeholder="给 Kimi 布置任务… (@ 引用文件 · / 命令)"></textarea>
+            <div class="composer-bar">
+              <button class="composer-btn" title="附件">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+              <button class="composer-btn" title="命令">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg>
+                <span>命令</span>
+              </button>
+              <button class="composer-btn" title="上下文">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+                <span>上下文</span>
+              </button>
+              <span class="plan-tag">PLAN</span>
+              <button class="model-pill">
+                kimi-k2
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+              </button>
+              <button class="send-btn" title="发送">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="status-strip">
+            <div class="perm-wrap">
+              <button class="status-pill" id="permBtn">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>
+                <span id="permLabel">批准</span>
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m6 9 6 6 6-6"/></svg>
+              </button>
+              <div class="perm-menu" id="permMenu">
+                <button class="perm-opt selected" data-mode="ask">
+                  <span class="p-ico">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg>
+                  </span>
+                  <span>
+                    <span class="p-name">批准</span>
+                    <span class="p-desc">每个操作执行前逐一确认</span>
+                  </span>
+                  <svg class="p-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                </button>
+                <button class="perm-opt" data-mode="auto">
+                  <span class="p-ico">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>
+                  </span>
+                  <span>
+                    <span class="p-name">自动</span>
+                    <span class="p-desc">安全操作自动批准，危险操作仍询问</span>
+                  </span>
+                  <svg class="p-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                </button>
+                <button class="perm-opt" data-mode="yolo">
+                  <span class="p-ico">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>
+                  </span>
+                  <span>
+                    <span class="p-name">全放</span>
+                    <span class="p-desc">全部自动批准，不再询问，风险自负</span>
+                  </span>
+                  <svg class="p-check" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                </button>
+              </div>
+            </div>
+            <button class="status-pill" id="swarmBtn" title="Swarm 多智能体模式">
+              <span class="pdot"></span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M7.5 4.21 12 6.81l4.5-2.6"/><path d="m7.5 19.79.02-4.03L3 13.14"/><path d="m21 13.14-4.52 2.62.02 4.03"/><path d="m12 22.08.02-4.07L12 18l-.02.01z"/><path d="m12 11.99.01-.01L12 12l-.01-.01z"/><path d="M12 12v.01"/></svg>
+              swarm
+            </button>
+            <button class="status-pill" id="planBtn" title="Plan 模式：只研究不改动">
+              <span class="pdot"></span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 12h6"/><path d="M9 16h6"/></svg>
+              plan
+            </button>
+            <div class="status-spacer"></div>
+            <button class="status-pill num" title="上下文用量：66.3K / 200K tokens">
+              <svg class="ctx-ring" width="13" height="13" viewBox="0 0 18 18">
+                <circle class="track" cx="9" cy="9" r="7" fill="none" stroke-width="2"/>
+                <circle class="val" cx="9" cy="9" r="7" fill="none" stroke-width="2" stroke-linecap="round" stroke-dasharray="43.98" stroke-dashoffset="29.7"/>
+              </svg>
+              32.4%
+            </button>
+            <span class="composer-hint"><kbd>Enter</kbd> 发送 · <kbd>⇧⏎</kbd> 换行</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 右侧工作区面板 ===== -->
+    <aside class="panel open" id="panel">
+      <div class="panel-inner">
+        <div class="panel-head">
+          <button class="panel-tab active">更改<span class="n">2</span></button>
+          <button class="panel-tab">文件</button>
+          <button class="panel-tab">Agent</button>
+          <div style="flex:1"></div>
+          <button class="icon-btn" onclick="togglePanel()" title="关闭">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <div class="panel-body">
+          <div class="change-card open">
+            <button class="change-head" onclick="this.parentElement.classList.toggle('open')">
+              <span class="f-ico">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+              </span>
+              <span class="file">src/pages/Login.tsx</span>
+              <span class="badge add">+18</span><span class="badge del">−3</span>
+            </button>
+            <div class="change-mini">
+              <div class="diff">
+                <div class="diff-row add"><span class="ln">48</span><span class="sign">+</span><span class="code"> const validate = () =&gt; {</span></div>
+                <div class="diff-row add"><span class="ln">49</span><span class="sign">+</span><span class="code">   const next: typeof errors = {};</span></div>
+                <div class="diff-row add"><span class="ln">50</span><span class="sign">+</span><span class="code">   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))</span></div>
+                <div class="diff-row add"><span class="ln">51</span><span class="sign">+</span><span class="code">     next.email = "邮箱格式不正确";</span></div>
+                <div class="diff-row add"><span class="ln">52</span><span class="sign">+</span><span class="code">   if (!pwd) next.pwd = "请输入密码";</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="change-card">
+            <button class="change-head" onclick="this.parentElement.classList.toggle('open')">
+              <span class="f-ico">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+              </span>
+              <span class="file">src/pages/Login.test.tsx</span>
+              <span class="badge add">+34</span><span class="badge del">−0</span>
+            </button>
+            <div class="change-mini">
+              <div class="diff">
+                <div class="diff-row add"><span class="ln">1</span><span class="sign">+</span><span class="code"> describe("Login 校验", () =&gt; {</span></div>
+                <div class="diff-row add"><span class="ln">2</span><span class="sign">+</span><span class="code">   it("邮箱格式错误时显示提示", ...</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="sect-label">工作目录</div>
+          <div class="filetree">
+            <div class="row dir">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+              src
+            </div>
+            <div class="row indent dir">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+              pages
+            </div>
+            <div class="row indent indent cur">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+              Login.tsx
+            </div>
+            <div class="row indent indent">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>
+              Login.test.tsx
+            </div>
+          </div>
+        </div>
+        <div class="panel-foot">
+          <button class="btn btn-primary">全部接受</button>
+          <button class="btn btn-ghost">全部拒绝</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+  const sidebar = document.getElementById('sidebar');
+  const panel = document.getElementById('panel');
+  const panelToggle = document.getElementById('panelToggle');
+
+  document.getElementById('railSessions').addEventListener('click', () => {
+    sidebar.classList.toggle('open');
+  });
+  function togglePanel() {
+    panel.classList.toggle('open');
+    panelToggle.classList.toggle('active', panel.classList.contains('open'));
+  }
+  panelToggle.addEventListener('click', togglePanel);
+
+  document.getElementById('railTheme').addEventListener('click', () => {
+    const html = document.documentElement;
+    html.dataset.theme = html.dataset.theme === 'dark' ? 'light' : 'dark';
+  });
+
+  function toggleTool(headBtn) {
+    headBtn.parentElement.classList.toggle('open');
+  }
+
+  document.querySelectorAll('.session-item').forEach(item => {
+    item.addEventListener('click', () => {
+      document.querySelectorAll('.session-item').forEach(i => i.classList.remove('active'));
+      item.classList.add('active');
+    });
+  });
+  document.querySelectorAll('.panel-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+    });
+  });
+
+  const permBtn = document.getElementById('permBtn');
+  const permMenu = document.getElementById('permMenu');
+  const permLabel = document.getElementById('permLabel');
+  const permModes = { ask: '批准', auto: '自动', yolo: '全放' };
+  permBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    permMenu.classList.toggle('open');
+  });
+  document.querySelectorAll('.perm-opt').forEach(opt => {
+    opt.addEventListener('click', () => {
+      document.querySelectorAll('.perm-opt').forEach(o => o.classList.remove('selected'));
+      opt.classList.add('selected');
+      const mode = opt.dataset.mode;
+      permLabel.textContent = permModes[mode];
+      permBtn.classList.remove('perm-auto', 'perm-yolo');
+      if (mode !== 'ask') permBtn.classList.add('perm-' + mode);
+      permMenu.classList.remove('open');
+    });
+  });
+  document.addEventListener('click', () => permMenu.classList.remove('open'));
+
+  const composer = document.getElementById('composer');
+  document.getElementById('swarmBtn').addEventListener('click', function() {
+    this.classList.toggle('on');
+  });
+  document.getElementById('planBtn').addEventListener('click', function() {
+    this.classList.toggle('on');
+    composer.classList.toggle('plan', this.classList.contains('on'));
+  });
+</script>
+</body>
+</html>
