@@ -5,6 +5,7 @@ import { useSessions } from "@/hooks/useSessions";
 import type { LiveMessage } from "@/hooks/types";
 import type { SessionStatus } from "@/lib/api/models";
 import { shouldPauseForRuntimeReadiness } from "@/lib/runtime-readiness";
+import { openKimiCodeWebsite } from "@/lib/kimi-code-link";
 import {
 	checkRuntimeReadiness,
 	isTauri,
@@ -16,8 +17,10 @@ import {
 	type ConversationStreamApi,
 } from "@/modules/conversation/conversation-view";
 import { AppRail } from "@/modules/rail/app-rail";
+import { ReadinessOverlay } from "@/modules/readiness/readiness-overlay";
 import { CreateSessionDialog } from "@/modules/sessions/create-session-dialog";
 import { SessionsSidebar } from "@/modules/sessions/sessions-sidebar";
+import { SettingsDialog } from "@/modules/settings/settings-dialog";
 import { Topbar } from "@/modules/topbar/topbar";
 import { ChangesPanel } from "@/modules/workspace/changes-panel";
 import { deriveChanges, derivePendingApprovals } from "@/modules/workspace/derive-changes";
@@ -36,6 +39,7 @@ export default function App() {
 	const [sidebarOpen, setSidebarOpen] = useState(true);
 	const [panelOpen, setPanelOpen] = useState(false);
 	const [showCreateDialog, setShowCreateDialog] = useState(false);
+	const [showSettings, setShowSettings] = useState(false);
 	const [runtimeReadiness, setRuntimeReadiness] =
 		useState<RuntimeReadiness | null>(null);
 	const [runtimeCheckError, setRuntimeCheckError] = useState<string | null>(
@@ -182,25 +186,17 @@ export default function App() {
 
 	if (shouldPauseRuntime) {
 		return (
-			<div className="flex h-dvh flex-col items-center justify-center gap-3 bg-background text-foreground">
-				<div className="flex size-10 items-center justify-center rounded-r2 bg-bright font-mono text-[17px] font-semibold text-background">
-					K
-				</div>
-				<p className="font-mono text-[13px] text-muted">
-					{isCheckingRuntime
-						? "正在检查运行环境…"
-						: (runtimeCheckError ?? "运行时未就绪")}
-				</p>
-				{!isCheckingRuntime && (
-					<button
-						type="button"
-						onClick={runRuntimeReadinessCheck}
-						className="rounded-r1 bg-bright px-3 py-1.5 text-[12.5px] font-medium text-background"
-					>
-						重试
-					</button>
-				)}
-			</div>
+			<ReadinessOverlay
+				checking={isCheckingRuntime}
+				readiness={runtimeReadiness}
+				error={runtimeCheckError}
+				onRetry={runRuntimeReadinessCheck}
+				onContinue={() => {
+					setRuntimeCheckError(null);
+					setHasAcknowledgedRuntime(true);
+				}}
+				onOpenDownload={() => void openKimiCodeWebsite()}
+			/>
 		);
 	}
 
@@ -214,7 +210,7 @@ export default function App() {
 						onToggleSessions={() => setSidebarOpen((v) => !v)}
 						onNewSession={() => setShowCreateDialog(true)}
 						onOpenSearch={() => {}}
-						onOpenSettings={() => {}}
+						onOpenSettings={() => setShowSettings(true)}
 					/>
 				}
 				sidebar={
@@ -267,6 +263,7 @@ export default function App() {
 				fetchWorkDirs={fetchWorkDirs}
 				fetchStartupDir={fetchStartupDir}
 			/>
+			<SettingsDialog open={showSettings} onOpenChange={setShowSettings} />
 			<Toaster position="top-right" />
 		</>
 	);
