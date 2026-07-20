@@ -29,13 +29,12 @@ function Invoke-Native {
 function Invoke-LocalScript {
     param(
         [string]$ScriptPath,
-        [string[]]$Arguments = @()
+        [hashtable]$Parameters = @{}
     )
 
-    & $ScriptPath @Arguments
+    & $ScriptPath @Parameters
     if (-not $?) {
-        $commandText = (@($ScriptPath) + $Arguments) -join " "
-        throw "Script failed: $commandText"
+        throw "Script failed: $ScriptPath"
     }
 }
 
@@ -289,7 +288,7 @@ try {
     Invoke-Native "node" @("scripts/sync-version.js")
 
     if (-not $SkipPreflight) {
-        Invoke-LocalScript (Join-Path $PSScriptRoot "release-preflight.ps1") @("-SkipTauriBuild")
+        Invoke-LocalScript (Join-Path $PSScriptRoot "release-preflight.ps1") @{ SkipTauriBuild = $true }
     }
 
     Write-Host ""
@@ -302,11 +301,15 @@ try {
     Assert-MsiUninstallSupport
 
     if ($Sign) {
-        Invoke-LocalScript (Join-Path $PSScriptRoot "sign-windows.ps1") @("-Artifacts", $ReleaseExe, $msi.FullName)
+        Invoke-LocalScript (Join-Path $PSScriptRoot "sign-windows.ps1") @{
+            Artifacts = @($ReleaseExe, $msi.FullName)
+        }
     }
 
     Write-LocalReleaseManifest
-    Invoke-LocalScript (Join-Path $PSScriptRoot "validate-release-manifest.ps1") @("-ProjectRoot", $ProjectRoot)
+    Invoke-LocalScript (Join-Path $PSScriptRoot "validate-release-manifest.ps1") @{
+        ProjectRoot = $ProjectRoot
+    }
     Write-ReleaseMetadata -Msi $msi
 }
 finally {
