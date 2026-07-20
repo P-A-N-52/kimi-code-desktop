@@ -4,7 +4,7 @@ import type { TokenUsage } from "@/hooks/wireTypes";
 import { cn } from "@/lib/utils";
 import { StatusPill } from "@/ui/status-pill";
 import { ContextRing } from "./context-ring";
-import { type PermissionMode, usePermissionMode } from "./permission-mode";
+import type { PermissionMode } from "./permission-mode";
 
 const MODES: {
 	key: PermissionMode;
@@ -12,33 +12,39 @@ const MODES: {
 	desc: string;
 	icon: typeof ShieldCheck;
 }[] = [
-	{ key: "ask", label: "批准", desc: "每个操作执行前逐一确认", icon: ShieldCheck },
-	{ key: "auto", label: "自动", desc: "安全操作自动批准，危险操作仍询问", icon: Zap },
-	{ key: "yolo", label: "全放", desc: "全部自动批准，不再询问，风险自负", icon: Flame },
+	{ key: "manual", label: "manual", desc: "每个有副作用的操作执行前逐一确认", icon: ShieldCheck },
+	{
+		key: "yolo",
+		label: "yolo",
+		desc: "普通工具调用自动批准；敏感文件与退出 Plan 仍询问",
+		icon: Flame,
+	},
+	{
+		key: "auto",
+		label: "auto",
+		desc: "全自动无人值守：含敏感操作，且不再向你提问",
+		icon: Zap,
+	},
 ];
 
-export function usePermissionModeState(sessionId: string | null) {
-	return usePermissionMode(sessionId);
-}
-
 export function StatusStrip({
-	sessionId,
 	permissionMode,
 	onPermissionModeChange,
 	planMode,
 	swarmMode,
 	onPlanModeChange,
 	onSwarmModeChange,
+	modeControlsDisabled,
 	contextUsage,
 	tokenUsage,
 }: {
-	sessionId: string | null;
 	permissionMode: PermissionMode;
 	onPermissionModeChange: (mode: PermissionMode) => void;
 	planMode: boolean;
 	swarmMode: boolean;
 	onPlanModeChange: (enabled: boolean) => void;
 	onSwarmModeChange: (enabled: boolean) => void;
+	modeControlsDisabled: boolean;
 	contextUsage: number;
 	tokenUsage: TokenUsage | null;
 }) {
@@ -60,6 +66,7 @@ export function StatusStrip({
 			<div ref={menuRef} className="relative">
 				<StatusPill
 					tone={permissionMode === "auto" ? "amber" : permissionMode === "yolo" ? "red" : "neutral"}
+					disabled={modeControlsDisabled}
 					onClick={() => setMenuOpen((v) => !v)}
 				>
 					<current.icon size={12} strokeWidth={1.5} />
@@ -88,7 +95,7 @@ export function StatusStrip({
 										"shrink-0",
 										m.key === "auto" && "text-warn",
 										m.key === "yolo" && "text-danger",
-										m.key === "ask" && "text-muted",
+										m.key === "manual" && "text-muted",
 									)}
 								/>
 								<span className="min-w-0">
@@ -105,11 +112,19 @@ export function StatusStrip({
 					</div>
 				)}
 			</div>
-			<StatusPill on={swarmMode} onClick={() => onSwarmModeChange(!swarmMode)}>
+			<StatusPill
+				on={swarmMode}
+				disabled={modeControlsDisabled}
+				onClick={() => onSwarmModeChange(!swarmMode)}
+			>
 				<Boxes size={12} strokeWidth={1.5} />
 				swarm
 			</StatusPill>
-			<StatusPill on={planMode} onClick={() => onPlanModeChange(!planMode)}>
+			<StatusPill
+				on={planMode}
+				disabled={modeControlsDisabled}
+				onClick={() => onPlanModeChange(!planMode)}
+			>
 				<ClipboardList size={12} strokeWidth={1.5} />
 				plan
 			</StatusPill>

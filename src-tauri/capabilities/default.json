@@ -1,21 +1,37 @@
 {
+
   "$schema": "../gen/schemas/desktop-schema.json",
+
   "identifier": "default",
+
   "description": "主窗口默认能力 / Default capabilities for the main window",
+
   "windows": ["main"],
+
   "permissions": [
-    "core:default",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        {
-          "name": "kimi-sidecar",
-          "sidecar": true,
-          "args": true
-        }
-      ]
-    },
+
+    "core:path:default",
+
+    "core:event:default",
+
+    "core:window:default",
+
+    "core:webview:default",
+
+    "core:app:default",
+
+    "core:image:default",
+
+    "core:resources:default",
+
+    "core:menu:default",
+
+    "core:tray:default",
+
     "notification:default",
+
     "global-shortcut:allow-register"
+
   ]
+
 }

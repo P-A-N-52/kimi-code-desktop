@@ -60,9 +60,14 @@ if ($env:WINDOWS_CERT_PATH) {
     if (!(Test-Path $env:WINDOWS_CERT_PATH)) {
         throw "WINDOWS_CERT_PATH does not exist: $env:WINDOWS_CERT_PATH"
     }
-    $baseArgs += @("/f", $env:WINDOWS_CERT_PATH)
     if ($env:WINDOWS_CERT_PASSWORD) {
-        $baseArgs += @("/p", $env:WINDOWS_CERT_PASSWORD)
+        Write-Host "Importing signing certificate from PFX without exposing password on the command line."
+        $securePassword = ConvertTo-SecureString $env:WINDOWS_CERT_PASSWORD -AsPlainText -Force
+        $imported = Import-PfxCertificate -FilePath $env:WINDOWS_CERT_PATH -Password $securePassword -CertStoreLocation Cert:\CurrentUser\My -Exportable
+        $baseArgs += @("/sha1", $imported.Thumbprint)
+    }
+    else {
+        $baseArgs += @("/f", $env:WINDOWS_CERT_PATH)
     }
 }
 elseif ($env:WINDOWS_CERT_SHA1) {

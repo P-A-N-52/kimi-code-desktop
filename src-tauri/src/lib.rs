@@ -1,16 +1,29 @@
+pub mod acp;
+pub mod acp_desktop;
+pub mod acp_translate;
 pub mod commands;
+pub mod git_diff;
+pub mod global_config;
+pub mod managed_usage;
+pub mod mcp_config;
 pub mod notify;
+pub mod runtime_backend;
 pub mod runtime_check;
-pub mod sidecar;
+pub mod security;
+pub mod session_files;
+pub mod session_store;
+#[cfg(test)]
+pub mod test_env;
 pub mod tray;
+pub mod wire_events;
 
 use tauri::Manager;
 
 pub fn run() {
     let app = tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
-        .manage(sidecar::WireProcessManager::new())
+        .manage(acp::AcpProcessManager::new())
+        .manage(acp_desktop::AcpDesktopClient::new())
         .invoke_handler(tauri::generate_handler![
             commands::wire_connect,
             commands::wire_disconnect,
@@ -19,6 +32,8 @@ pub fn run() {
             commands::list_sessions,
             commands::get_session,
             commands::replay_session_history,
+            commands::get_session_swarm_mode,
+            commands::migrate_session_swarm_mode,
             commands::create_session,
             commands::delete_session,
             commands::update_session,
@@ -46,13 +61,13 @@ pub fn run() {
             commands::open_external,
             commands::open_in_explorer,
             commands::open_in_editor,
+            commands::fetch_managed_usage,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
             tray::setup_tray(&handle)?;
             // Keep the main window hidden until React has mounted and invokes
             // show_window. This avoids exposing a blank webview during startup.
-            sidecar::prewarm_desktop_api_process(handle.clone());
 
             #[cfg(desktop)]
             {
@@ -63,7 +78,10 @@ pub fn run() {
                         builder
                             .with_handler(|app, shortcut, event| {
                                 if event.state == ShortcutState::Pressed
-                                    && shortcut.matches(Modifiers::CONTROL, Code::KeyK)
+                                    && shortcut.matches(
+                                        Modifiers::CONTROL | Modifiers::SHIFT,
+                                        Code::KeyK,
+                                    )
                                 {
                                     if let Some(window) = app.get_webview_window("main") {
                                         if window.is_visible().unwrap_or(false) {
@@ -103,9 +121,8 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         if let tauri::RunEvent::ExitRequested { .. } = event {
-            let manager = app_handle.state::<sidecar::WireProcessManager>();
-            manager.stop_all();
-            sidecar::stop_desktop_api_process();
+            let acp_manager = app_handle.state::<acp::AcpProcessManager>();
+            acp_manager.stop_all();
         }
     });
 }

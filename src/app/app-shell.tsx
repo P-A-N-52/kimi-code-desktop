@@ -1,12 +1,11 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
-export const RAIL_WIDTH = 52;
 export const SIDEBAR_WIDTH = 260;
+export const SIDEBAR_COLLAPSED_WIDTH = 52;
 export const PANEL_WIDTH = 400;
 
 export function AppShell({
-	rail,
 	sidebar,
 	sidebarOpen,
 	topbar,
@@ -14,7 +13,6 @@ export function AppShell({
 	panelOpen,
 	children,
 }: {
-	rail: ReactNode;
 	sidebar: ReactNode;
 	sidebarOpen: boolean;
 	topbar: ReactNode;
@@ -25,22 +23,11 @@ export function AppShell({
 	return (
 		<div className="flex h-dvh overflow-hidden bg-background text-foreground">
 			<div
-				className="flex shrink-0 flex-col items-center gap-0.5 py-2.5"
-				style={{ width: RAIL_WIDTH }}
-			>
-				{rail}
-			</div>
-			<div
 				data-slot="sessions-sidebar"
-				className={cn(
-					"shrink-0 overflow-hidden border-r transition-[width,border-color] duration-200",
-					sidebarOpen ? "border-line" : "border-transparent",
-				)}
-				style={{ width: sidebarOpen ? SIDEBAR_WIDTH : 0 }}
+				className="shrink-0 overflow-hidden border-r border-line transition-[width] duration-[250ms] ease-out motion-reduce:transition-none"
+				style={{ width: sidebarOpen ? SIDEBAR_WIDTH : SIDEBAR_COLLAPSED_WIDTH }}
 			>
-				<div className="h-full" style={{ width: SIDEBAR_WIDTH }}>
-					{sidebar}
-				</div>
+				<div className="h-full w-full">{sidebar}</div>
 			</div>
 			<div className="flex min-w-0 flex-1 flex-col">
 				<div className="relative flex h-12 shrink-0 items-center justify-center px-3">

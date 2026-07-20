@@ -11,8 +11,7 @@ echo.
 set "SCRIPT_DIR=%~dp0"
 set "APP_DIR=%SCRIPT_DIR%"
 set "APP_ROOT=%SCRIPT_DIR:~0,-1%"
-set "CONFIG_FILE=%USERPROFILE%\.kimi\config.toml"
-set "SIDECAR_EXE=%APP_DIR%src-tauri\sidecar\kimi-sidecar-x86_64-pc-windows-msvc.exe"
+set "CONFIG_FILE=%USERPROFILE%\.kimi-code\config.toml"
 set "DEBUG_EXE=%APP_DIR%src-tauri\target\debug\kimi-code-desktop.exe"
 set "RELEASE_EXE=%APP_DIR%src-tauri\target\release\kimi-code-desktop.exe"
 set "RELEASE_MANIFEST=%APP_DIR%src-tauri\target\release\kimi-code-desktop.release.json"
@@ -85,9 +84,9 @@ if errorlevel 1 (
 >> "%START_LOG%" echo App: %APP_EXE%
 >> "%START_LOG%" echo Dir: %APP_EXE_DIR%
 
-echo [1/5] Launch mode: built executable
-echo [2/5] App: %APP_EXE%
-echo [3/5] Checking Kimi runtime readiness...
+echo [1/4] Launch mode: built executable
+echo [2/4] App: %APP_EXE%
+echo [3/4] Checking Kimi runtime readiness...
 call :runtime_check "release"
 if errorlevel 1 (
     echo [ERROR] Startup check failed.
@@ -96,13 +95,13 @@ if errorlevel 1 (
 )
 
 if /i "%KIMI_CLEAN_START%"=="1" (
-    echo [4/5] Clean start requested
+    echo [4/4] Clean start requested
     >> "%START_LOG%" echo Clean start requested
     call :cleanup_desktop
     goto :start_new_desktop
 )
 
-echo [4/5] Checking existing desktop process
+echo [4/4] Checking existing desktop process
 call :focus_existing
 set "FOCUS_RESULT=%ERRORLEVEL%"
 if "%FOCUS_RESULT%"=="0" (
@@ -116,15 +115,9 @@ if "%FOCUS_RESULT%"=="2" (
     >> "%START_LOG%" echo Existing process had no focusable window; cleaning before launch
     echo      Existing process had no focusable window; cleaning before launch
     call :cleanup_desktop
-) else (
-    >> "%START_LOG%" echo No existing desktop process found; cleaning orphan sidecars
-    taskkill /F /IM kimi-sidecar.exe >nul 2>&1
 )
 
 :start_new_desktop
-call :ensure_sidecar_sibling "%APP_EXE%"
-if errorlevel 1 exit /b %ERRORLEVEL%
-
 echo.
 echo [5/5] Starting Kimi Code Desktop...
 echo        Release mode was requested explicitly. Default launch mode is dev.
@@ -174,7 +167,7 @@ if not defined NPM_CMD if exist "%ProgramFiles%\nodejs\npm.cmd" set "NPM_CMD=%Pr
 if not defined NODE_EXE set "NODE_EXE=node.exe"
 if not defined NPM_CMD set "NPM_CMD=npm.cmd"
 
-echo [1/7] Checking Node.js...
+echo [1/6] Checking Node.js...
 "%NODE_EXE%" --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Node.js not found. Please install Node.js ^(v20+^) or set KIMI_NODE_EXE.
@@ -189,7 +182,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [2/7] Checking Rust/Tauri toolchain...
+echo [2/6] Checking Rust/Tauri toolchain...
 call cargo --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Cargo not found. Please install Rust and reopen the terminal.
@@ -197,18 +190,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [3/7] Checking desktop sidecar...
-if not exist "%SIDECAR_EXE%" (
-    echo [ERROR] Sidecar not found:
-    echo   %SIDECAR_EXE%
-    echo.
-    echo Please run: npm run sidecar:build
-    pause
-    exit /b 1
-)
-echo [INFO] Sidecar: %SIDECAR_EXE%
-
-echo [4/7] Checking Kimi runtime readiness...
+echo [3/6] Checking Kimi runtime readiness...
 call :runtime_check "dev"
 if errorlevel 1 (
     echo [ERROR] Startup check failed.
@@ -216,12 +198,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [5/7] Cleaning up dev processes...
+echo [4/6] Cleaning up dev processes...
 call :cleanup_all
 ping -n 2 127.0.0.1 >nul
 echo [INFO] Dev processes cleaned.
 
-echo [6/7] Checking frontend dependencies...
+echo [5/6] Checking frontend dependencies...
 if not exist "%APP_DIR%node_modules" (
     echo [INFO] First run, installing frontend dependencies...
     pushd "%APP_DIR%"
@@ -242,11 +224,10 @@ echo ============================================
 echo   Launching Tauri dev desktop window...
 echo   Startup check: passed
 echo   Default launch mode: dev
-echo   Communication: Tauri IPC/events to Rust WireProcessManager to sidecar stdio Wire
-echo   Worker: kimi-sidecar __desktop-worker [session_id]
-echo   API:    kimi-sidecar __desktop-api-server
+echo   Communication: Tauri IPC/events to Rust AcpProcessManager to kimi acp
+echo   Runtime: user-installed Kimi Code CLI (``kimi acp``)
 echo.
-echo   Model/API config checked from %CONFIG_FILE%
+echo   Config checked from %CONFIG_FILE%
 echo   No separate local HTTP backend needed.
 echo ============================================
 echo.
@@ -266,31 +247,8 @@ echo Press any key to close...
 pause >nul
 exit /b %EXIT_CODE%
 
-:ensure_sidecar_sibling
-set "EXE_PATH=%~1"
-for %%P in ("%EXE_PATH%") do set "EXE_DIR=%%~dpP"
-
-if not exist "%SIDECAR_EXE%" (
-    echo [ERROR] Sidecar not found:
-    echo   %SIDECAR_EXE%
-    pause
-    exit /b 1
-)
-
-echo [INFO] Syncing sidecar beside release executable...
-
-copy /Y "%SIDECAR_EXE%" "%EXE_DIR%kimi-sidecar.exe" >nul
-if errorlevel 1 (
-    echo [ERROR] Failed to copy sidecar to:
-    echo   %EXE_DIR%kimi-sidecar.exe
-    pause
-    exit /b 1
-)
-exit /b 0
-
 :cleanup_desktop
 taskkill /F /IM kimi-code-desktop.exe >nul 2>&1
-taskkill /F /IM kimi-sidecar.exe >nul 2>&1
 exit /b 0
 
 :focus_existing
@@ -304,7 +262,6 @@ goto :runtime_check_full
 
 :runtime_check_fast
 if not exist "%CONFIG_FILE%" goto :runtime_check_full
-if not exist "%SIDECAR_EXE%" goto :runtime_check_full
 echo [INFO] Fast startup check passed. Full startup check is the default; unset KIMI_FAST_STARTUP_CHECK to restore it.
 exit /b 0
 
@@ -314,7 +271,7 @@ exit /b %ERRORLEVEL%
 
 :cleanup_all
 call :cleanup_desktop
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":1420" ^| findstr "LISTENING"') do (
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr /C:"127.0.0.1:1420" ^| findstr "LISTENING"') do (
     echo [INFO] Killing process %%a occupying port 1420...
     taskkill /F /PID %%a >nul 2>&1
 )

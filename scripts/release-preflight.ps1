@@ -1,12 +1,11 @@
 param(
-    [switch]$SkipSecretScan
+    [switch]$SkipSecretScan,
+    [switch]$SkipTauriBuild
 )
 
 $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
-$SidecarExe = Join-Path $ProjectRoot "src-tauri\sidecar\kimi-sidecar-x86_64-pc-windows-msvc.exe"
-$SidecarManifest = Join-Path $ProjectRoot "src-tauri\sidecar\kimi-sidecar.manifest.json"
 $TauriConfig = Join-Path $ProjectRoot "src-tauri\tauri.conf.json"
 
 function Invoke-Step {
@@ -34,19 +33,66 @@ function Invoke-Native {
     }
 }
 
+function Test-SecretScanExcludedPath {
+    param([string]$RelativePath)
+
+    $normalized = $RelativePath -replace '\\', '/'
+    return (
+        $normalized -match '(^|/)node_modules(/|$)' -or
+        $normalized -match '(^|/)dist(/|$)' -or
+        $normalized -match '(^|/)src-tauri/target(/|$)' -or
+        $normalized -match '(^|/)src-tauri/gen(/|$)'
+    )
+}
+
+function Invoke-SecretScanPowerShell {
+    $pattern = "(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|sk-[A-Za-z0-9_-]{20,}|BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY)"
+    $matches = @()
+
+    Get-ChildItem -Path $ProjectRoot -Recurse -File -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            $relativePath = $_.FullName.Substring($ProjectRoot.Length).TrimStart('\', '/')
+            if (Test-SecretScanExcludedPath $relativePath) {
+                return
+            }
+
+            $results = Select-String -Path $_.FullName -Pattern $pattern -AllMatches -ErrorAction SilentlyContinue
+            if ($results) {
+                $matches += $results
+            }
+        }
+
+    if ($matches.Count -gt 0) {
+        $matches | ForEach-Object { Write-Host "$($_.Path):$($_.LineNumber):$($_.Line.Trim())" }
+        throw "High-confidence secret pattern found. Review the matches before release."
+    }
+
+    Write-Host "No high-confidence secrets found (PowerShell fallback scan)."
+}
+
 function Invoke-SecretScan {
     if ($SkipSecretScan) {
         Write-Host "Secret scan skipped by request."
         return
     }
 
+    $pattern = "(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|sk-[A-Za-z0-9_-]{20,}|BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY)"
     $rg = Get-Command rg -ErrorAction SilentlyContinue
     if (-not $rg) {
-        Write-Warning "ripgrep is not installed; skipping high-confidence secret scan."
+        $choco = Get-Command choco -ErrorAction SilentlyContinue
+        if ($choco) {
+            Write-Host "ripgrep not found; installing via Chocolatey..."
+            Invoke-Native "choco" @("install", "ripgrep", "-y", "--no-progress")
+            $rg = Get-Command rg -ErrorAction SilentlyContinue
+        }
+    }
+
+    if (-not $rg) {
+        Write-Warning "ripgrep is not installed; using PowerShell fallback secret scan."
+        Invoke-SecretScanPowerShell
         return
     }
 
-    $pattern = "(AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|sk-[A-Za-z0-9_-]{20,}|BEGIN (RSA |EC |OPENSSH |)PRIVATE KEY)"
     $args = @(
         "-n",
         "-i",
@@ -54,10 +100,7 @@ function Invoke-SecretScan {
         "-g", "!node_modules",
         "-g", "!dist",
         "-g", "!src-tauri/target",
-        "-g", "!src-tauri/gen",
-        "-g", "!sidecar-adapter/.venv",
-        "-g", "!sidecar-adapter/build",
-        "-g", "!sidecar-adapter/dist"
+        "-g", "!src-tauri/gen"
     )
 
     $output = & rg @args 2>&1
@@ -87,23 +130,21 @@ function Test-CargoClippy {
     return $exitCode -eq 0
 }
 
-function Assert-SidecarManifest {
-    if (!(Test-Path $SidecarExe)) {
-        throw "Missing sidecar executable: $SidecarExe. Run npm run sidecar:build before releasing."
-    }
-    if (!(Test-Path $SidecarManifest)) {
-        throw "Missing sidecar manifest: $SidecarManifest. Run npm run sidecar:build before releasing."
-    }
-
-    $manifest = Get-Content $SidecarManifest -Raw | ConvertFrom-Json
-    $hash = (Get-FileHash -Algorithm SHA256 $SidecarExe).Hash
-    if ($manifest.sha256 -ne $hash) {
-        throw "Sidecar manifest hash does not match $SidecarExe. Run npm run sidecar:build."
+function Assert-KimiCodeCli {
+    $program = $env:KIMI_CODE_BIN
+    if ([string]::IsNullOrWhiteSpace($program)) {
+        $command = Get-Command kimi -ErrorAction SilentlyContinue
+        if ($command -and $command.Source) {
+            $program = $command.Source
+        } else {
+            $program = "kimi"
+        }
     }
 
-    $sizeMb = [math]::Round((Get-Item $SidecarExe).Length / 1MB, 2)
-    Write-Host "Sidecar found: $SidecarExe ($sizeMb MiB)"
-    Write-Host "Sidecar manifest: $SidecarManifest"
+    Write-Host "Checking Kimi Code CLI: $program"
+    Invoke-Native $program @("--version")
+    Invoke-Native $program @("acp", "--help")
+    Write-Host "Kimi Code CLI checks passed."
 }
 
 function Assert-TauriWindowUrls {
@@ -185,6 +226,12 @@ function Show-GitState {
         if ($status.Count -gt 30) {
             Write-Host "  ... $($status.Count - 30) more entries"
         }
+        Write-Warning @"
+Public releases should use a clean working tree and an annotated version tag.
+Commit or stash local changes, run 'npm run version:set <version>', commit the
+version bump, tag with 'git tag v<version>', then build or push the tag.
+The release manifest will record dirty=true until the tree is clean.
+"@
     } else {
         Write-Host "Git working tree is clean."
     }
@@ -192,12 +239,8 @@ function Show-GitState {
 
 Push-Location $ProjectRoot
 try {
-    Invoke-Step "Building sidecar binary" {
-        Invoke-Native "npm" @("run", "sidecar:build")
-    }
-
-    Invoke-Step "Checking required sidecar binary" {
-        Assert-SidecarManifest
+    Invoke-Step "Checking Kimi Code CLI prerequisite" {
+        Assert-KimiCodeCli
     }
 
     Invoke-Step "Checking Tauri packaged window entry" {
@@ -227,26 +270,17 @@ try {
         Invoke-Native "npm" @("run", "rust:clippy")
     }
 
-    Invoke-Step "Tauri no-bundle release build" {
-        Invoke-Native "npm" @("run", "desktop:release")
+    Invoke-Step "Rust unit tests" {
+        Invoke-Native "npm" @("run", "rust:test")
     }
 
-    Invoke-Step "Python sidecar compile check" {
-        Push-Location (Join-Path $ProjectRoot "sidecar-adapter")
-        try {
-            Invoke-Native "python" @("-m", "compileall", "-q", "kimi_desktop_sidecar")
-        } finally {
-            Pop-Location
+    if (-not $SkipTauriBuild) {
+        Invoke-Step "Tauri no-bundle release build" {
+            Invoke-Native "npm" @("run", "desktop:release")
         }
-    }
-
-    Invoke-Step "Python sidecar tests" {
-        Push-Location (Join-Path $ProjectRoot "sidecar-adapter")
-        try {
-            Invoke-Native "uv" @("run", "pytest", "-q")
-        } finally {
-            Pop-Location
-        }
+    } else {
+        Write-Host ""
+        Write-Host "==> Tauri no-bundle release build (skipped; caller will produce release artifacts)"
     }
 
     Invoke-Step "Dependency audit gate" {

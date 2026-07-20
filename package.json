@@ -2,7 +2,7 @@
   "name": "kimi-code-desktop",
   "private": true,
   "license": "Apache-2.0",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Kimi Code 桌面应用 / Kimi Code Desktop App",
   "type": "module",
   "scripts": {

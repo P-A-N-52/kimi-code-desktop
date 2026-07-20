@@ -5,7 +5,6 @@ $ReleaseDir = Join-Path $ProjectRoot "src-tauri\target\release"
 $ReleaseExe = Join-Path $ReleaseDir "kimi-code-desktop.exe"
 $ReleaseManifest = Join-Path $ReleaseDir "kimi-code-desktop.release.json"
 $DistIndex = Join-Path $ProjectRoot "dist\index.html"
-$SidecarExe = Join-Path $ProjectRoot "src-tauri\sidecar\kimi-sidecar-x86_64-pc-windows-msvc.exe"
 
 function Invoke-Native {
     param(
@@ -22,26 +21,21 @@ function Invoke-Native {
 }
 
 function Stop-KimiDesktopProcesses {
-    $names = @("kimi-code-desktop", "kimi-sidecar")
-    foreach ($name in $names) {
-        $processes = @(Get-Process -Name $name -ErrorAction SilentlyContinue)
-        if (-not $processes) {
-            continue
-        }
+    $processes = @(Get-Process -Name "kimi-code-desktop" -ErrorAction SilentlyContinue)
+    if (-not $processes) {
+        return
+    }
 
-        foreach ($process in $processes) {
-            Write-Host "Stopping $($process.ProcessName) (PID $($process.Id))"
-            Stop-Process -Id $process.Id -Force -ErrorAction Stop
-        }
+    foreach ($process in $processes) {
+        Write-Host "Stopping $($process.ProcessName) (PID $($process.Id))"
+        Stop-Process -Id $process.Id -Force -ErrorAction Stop
     }
 
     Start-Sleep -Milliseconds 500
-    foreach ($name in $names) {
-        $remaining = @(Get-Process -Name $name -ErrorAction SilentlyContinue)
-        if ($remaining) {
-            $ids = ($remaining | ForEach-Object { $_.Id }) -join ", "
-            throw "Could not stop $name process(es): $ids"
-        }
+    $remaining = @(Get-Process -Name "kimi-code-desktop" -ErrorAction SilentlyContinue)
+    if ($remaining) {
+        $ids = ($remaining | ForEach-Object { $_.Id }) -join ", "
+        throw "Could not stop kimi-code-desktop process(es): $ids"
     }
 }
 
@@ -69,9 +63,6 @@ function Write-ReleaseManifest {
     if (!(Test-Path $DistIndex)) {
         throw "Frontend index was not created: $DistIndex"
     }
-    if (!(Test-Path $SidecarExe)) {
-        throw "Sidecar executable is missing: $SidecarExe. Run npm run sidecar:build."
-    }
 
     $manifest = [ordered]@{
         schema = 1
@@ -81,7 +72,6 @@ function Write-ReleaseManifest {
         files = [ordered]@{
             releaseExe = Get-FileEntry $ReleaseExe
             distIndex = Get-FileEntry $DistIndex
-            sidecarSource = Get-FileEntry $SidecarExe
         }
     }
 

@@ -1,70 +1,23 @@
-import { useCallback, useEffect, useState } from "react";
+import type { PermissionMode } from "@/hooks/wireTypes";
 
-export type PermissionMode = "ask" | "auto" | "yolo";
+export type { PermissionMode } from "@/hooks/wireTypes";
 
-export const SAFE_AUTO_APPROVE_TOOLS = [
-	"Read",
-	"Glob",
-	"Grep",
-	"List",
-	"LS",
-	"Search",
-	"TodoWrite",
-];
-
-const STORAGE_KEY = "kimi-code-desktop.permission-mode-by-session.v1";
-
+/**
+ * Client-side auto-approve for approval cards that still reach the UI.
+ * Source of truth for the active mode is Kimi Code itself:
+ * - session history: `permission.set_mode` in wire.jsonl
+ * - defaults: `default_permission_mode` in config.toml
+ * Desktop only mirrors that mode via ACP `session/set_mode`.
+ *
+ * Policy (matches Kimi Code CLI):
+ * - manual: never auto-approve
+ * - yolo: auto-approve regular tool calls (file/command/etc.)
+ * - auto: fully unattended — approve everything
+ */
 export function shouldAutoApprove(
 	mode: PermissionMode,
-	toolTitle: string,
+	_toolTitle?: string,
+	_toolKind?: string | null,
 ): boolean {
-	if (mode === "yolo") return true;
-	if (mode === "auto") {
-		return SAFE_AUTO_APPROVE_TOOLS.some(
-			(t) => toolTitle.toLowerCase() === t.toLowerCase(),
-		);
-	}
-	return false;
-}
-
-function readMode(sessionId: string | null): PermissionMode {
-	if (!sessionId) return "ask";
-	try {
-		const raw = localStorage.getItem(STORAGE_KEY);
-		const map = raw ? (JSON.parse(raw) as Record<string, PermissionMode>) : {};
-		const mode = map[sessionId];
-		return mode === "auto" || mode === "yolo" ? mode : "ask";
-	} catch {
-		return "ask";
-	}
-}
-
-export function usePermissionMode(sessionId: string | null) {
-	const [mode, setModeState] = useState<PermissionMode>(() =>
-		readMode(sessionId),
-	);
-
-	useEffect(() => {
-		setModeState(readMode(sessionId));
-	}, [sessionId]);
-
-	const setMode = useCallback(
-		(next: PermissionMode) => {
-			setModeState(next);
-			if (!sessionId) return;
-			try {
-				const raw = localStorage.getItem(STORAGE_KEY);
-				const map = raw
-					? (JSON.parse(raw) as Record<string, PermissionMode>)
-					: {};
-				map[sessionId] = next;
-				localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
-			} catch {
-				// ignore storage failures
-			}
-		},
-		[sessionId],
-	);
-
-	return { mode, setMode };
+	return mode === "yolo" || mode === "auto";
 }

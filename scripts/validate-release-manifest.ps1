@@ -12,7 +12,6 @@ $ReleaseDir = Join-Path $ProjectRoot "src-tauri\target\release"
 $ReleaseExe = Join-Path $ReleaseDir "kimi-code-desktop.exe"
 $ReleaseManifest = Join-Path $ReleaseDir "kimi-code-desktop.release.json"
 $DistIndex = Join-Path $ProjectRoot "dist\index.html"
-$SidecarExe = Join-Path $ProjectRoot "src-tauri\sidecar\kimi-sidecar-x86_64-pc-windows-msvc.exe"
 
 function Get-PackageVersion {
     return (Get-Content (Join-Path $ProjectRoot "package.json") -Raw | ConvertFrom-Json).version
@@ -47,6 +46,5 @@ if ($manifest.version -ne $currentVersion) {
 
 Assert-HashMatches $ReleaseExe $manifest.files.releaseExe.sha256 "Release executable"
 Assert-HashMatches $DistIndex $manifest.files.distIndex.sha256 "Frontend dist index"
-Assert-HashMatches $SidecarExe $manifest.files.sidecarSource.sha256 "Sidecar source executable"
 
 Write-Host "Release manifest validated: $ReleaseManifest"

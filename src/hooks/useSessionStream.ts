@@ -119,6 +119,7 @@ import type { SessionStatus } from "@/lib/api/models";
 import { getAuthToken } from "@/lib/auth";
 import {
   type ContentPart,
+  type PermissionMode,
   type TokenUsage,
   type WireMessage,
   type WireEvent,
@@ -143,11 +144,25 @@ import {
 import { createMessageId, getApiBaseUrl } from "./utils";
 import { resolveKimiCliVersion } from "@/lib/version";
 import {
+  classifySlashDispatch,
   filterDesktopSlashCommands,
+  formatDesktopHelpReport,
   type SlashCommandDef,
 } from "@/lib/slash-command-catalog";
 import {
+  formatStatusReport,
+  formatUsageReport,
+  parseManagedUsageFetchResult,
+  type SessionUsageContext,
+} from "@/lib/managed-usage";
+import {
+  fetchManagedUsage,
+  getGlobalConfig,
+  getKimiCliVersion,
+  getSession,
+  getSessionSwarmMode,
   isTauri,
+  migrateSessionSwarmMode,
   onWireMessage,
   replaySessionHistory,
   wireConnect,
@@ -184,42 +199,68 @@ const BROWSER_URL_PROTOCOLS = new Set(["http:", "https:", "data:", "blob:"]);
 const WIRE_PROTOCOL_VERSION = "1.10";
 const THINK_OPEN_TAG = "<think>";
 const THINK_CLOSE_TAG = "</think>";
-const SWARM_MODE_STORAGE_KEY = "kimi-code-desktop.swarm-mode-by-session.v1";
+const LEGACY_SWARM_MODE_STORAGE_KEY = "kimi-code-desktop.swarm-mode-by-session.v1";
 
-function readPersistedSwarmMode(sessionId: string | null): boolean {
-  if (!(sessionId && typeof window !== "undefined")) {
-    return false;
+function readLegacySwarmModes(): Record<string, boolean> {
+  if (typeof window === "undefined") {
+    return {};
   }
   try {
-    const value = window.localStorage.getItem(SWARM_MODE_STORAGE_KEY);
+    const value = window.localStorage.getItem(LEGACY_SWARM_MODE_STORAGE_KEY);
     if (!value) {
-      return false;
+      return {};
     }
-    const stored = JSON.parse(value) as Record<string, boolean>;
-    return stored[sessionId] === true;
+    const stored = JSON.parse(value) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(stored).filter((entry): entry is [string, boolean] =>
+        typeof entry[1] === "boolean"
+      ),
+    );
   } catch {
-    return false;
+    return {};
   }
 }
 
-function persistSwarmMode(sessionId: string | null, enabled: boolean): void {
-  if (!(sessionId && typeof window !== "undefined")) {
+function writeLegacySwarmModes(stored: Record<string, boolean>): void {
+  if (typeof window === "undefined") {
     return;
   }
   try {
-    const value = window.localStorage.getItem(SWARM_MODE_STORAGE_KEY);
-    const stored = value
-      ? (JSON.parse(value) as Record<string, boolean>)
-      : {};
-    if (enabled) {
-      stored[sessionId] = true;
+    if (Object.keys(stored).length === 0) {
+      window.localStorage.removeItem(LEGACY_SWARM_MODE_STORAGE_KEY);
     } else {
-      delete stored[sessionId];
+      window.localStorage.setItem(LEGACY_SWARM_MODE_STORAGE_KEY, JSON.stringify(stored));
     }
-    window.localStorage.setItem(SWARM_MODE_STORAGE_KEY, JSON.stringify(stored));
   } catch {
-    // Storage can be unavailable in private or locked-down webviews.
+    // Legacy cleanup is best-effort; it is never used as the live source of truth.
   }
+}
+
+async function migrateLegacySwarmModes(): Promise<Map<string, boolean>> {
+  const remaining = readLegacySwarmModes();
+  const migrated = new Map<string, boolean>();
+  for (const [sessionId, enabled] of Object.entries(remaining)) {
+    try {
+      await migrateSessionSwarmMode(sessionId, enabled);
+      migrated.set(sessionId, enabled);
+      delete remaining[sessionId];
+    } catch (error) {
+      console.warn(
+        `[SessionStream] Failed to migrate legacy Swarm mode for ${sessionId}:`,
+        error,
+      );
+    }
+  }
+  writeLegacySwarmModes(remaining);
+  return migrated;
+}
+
+async function loadSessionSwarmMode(sessionId: string): Promise<boolean> {
+  const migrated = await migrateLegacySwarmModes();
+  if (migrated.has(sessionId)) {
+    return migrated.get(sessionId) ?? false;
+  }
+  return getSessionSwarmMode(sessionId);
 }
 
 type InlineThinkParseState = {
@@ -433,7 +474,7 @@ type UseSessionStreamOptions = {
   autoConnect?: boolean;
 };
 
-type UseSessionStreamReturn = {
+export type UseSessionStreamReturn = {
   /** Current messages */
   messages: LiveMessage[];
   /** Chat status */
@@ -444,6 +485,8 @@ type UseSessionStreamReturn = {
   isReplayingHistory: boolean;
   /** Whether waiting for the first response after sending a prompt */
   isAwaitingFirstResponse: boolean;
+  /** Whether there is a real prompt that can currently be cancelled */
+  canCancel: boolean;
   /** Current context usage (0-1) */
   contextUsage: number;
   /** Current token usage for the active step, if available */
@@ -483,6 +526,10 @@ type UseSessionStreamReturn = {
   planMode: boolean;
   /** Set plan mode via silent RPC (no context message) */
   sendSetPlanMode: (enabled: boolean) => boolean;
+  /** Current approval behavior, independent from Plan mode */
+  permissionMode: PermissionMode;
+  /** Set the ACP permission mode while preserving Plan mode */
+  sendSetPermissionMode: (mode: PermissionMode) => boolean;
   /** Whether coordinated multi-agent execution is active */
   swarmMode: boolean;
   /** Set Swarm mode via silent RPC */
@@ -499,9 +546,11 @@ type StreamConnection = {
 
 type TauriWireConnection = StreamConnection & {
   replaceUnlisten: (unlisten: () => void) => void;
+  markOpen: () => void;
   markClosed: () => void;
 };
 
+const STREAM_CONNECTING = 0;
 const STREAM_OPEN = 1;
 const STREAM_CLOSED = 3;
 
@@ -538,6 +587,13 @@ type OptimisticUserMessage = {
   turnIndex: number;
 };
 
+type PromptTiming = {
+  startedAt: number;
+  workerReadyAt?: number;
+  promptSubmittedAt?: number;
+  firstEventAt?: number;
+};
+
 /**
  * Hook for connecting to a session's WebSocket stream
  */
@@ -563,13 +619,17 @@ export function useSessionStream(
   const [contextUsage, setContextUsage] = useState(0);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const [planMode, setPlanMode] = useState(false);
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>("manual");
   const [swarmMode, setSwarmMode] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
   const [isConnected, setIsConnected] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
+  const [error, setErrorState] = useState<Error | null>(null);
   const [isAwaitingFirstResponse, setIsAwaitingFirstResponse] = useState(false);
   const [isReplayingHistory, setIsReplayingHistory] = useState(true);
   const [slashCommands, setSlashCommands] = useState<SlashCommandDef[]>([]);
+  const slashCommandsRef = useRef<SlashCommandDef[]>([]);
+  const contextUsageRef = useRef(0);
+  const tokenUsageRef = useRef<TokenUsage | null>(null);
 
   // Refs
   /**
@@ -600,17 +660,23 @@ export function useSessionStream(
   const pendingMessageRef = useRef<string | null>(null); // Message to send after connection
   const pendingModeUpdatesRef = useRef<{
     planMode?: boolean;
+    permissionMode?: PermissionMode;
     swarmMode?: boolean;
   }>({});
   const planModeRef = useRef(false);
+  const permissionModeRef = useRef<PermissionMode>("manual");
   const swarmModeRef = useRef(false);
   const awaitingIdleRef = useRef(false); // Track pending idle after cancel
   const awaitingFirstResponseRef = useRef(false); // Track if waiting for first event of a turn
+  const errorRef = useRef<Error | null>(null); // Synchronous guard against later idle snapshots
+  const promptTimingRef = useRef<PromptTiming | null>(null);
   const preserveMessagesOnConnectRef = useRef(false);
+  const skipReplayOnConnectRef = useRef(false);
   const hasMessagesRef = useRef(false);
   const autoConnectRef = useRef(autoConnect);
   autoConnectRef.current = autoConnect;
   planModeRef.current = planMode;
+  permissionModeRef.current = permissionMode;
   swarmModeRef.current = swarmMode;
   const lastStatusSeqRef = useRef<number | null>(null);
   const lastWsMessageTimeRef = useRef<number>(0); // Last time a stream message was received
@@ -646,6 +712,10 @@ export function useSessionStream(
   const currentToolCallIdRef = useRef<string | null>(null);
   const thinkingMessageIdRef = useRef<string | null>(null);
   const textMessageIdRef = useRef<string | null>(null);
+  // IDs of every thinking/text block created since the last step reset. Live
+  // ACP seals blocks at tool-call boundaries, so the "current" refs alone no
+  // longer cover all blocks a retry must discard.
+  const turnStreamBlockIdsRef = useRef<string[]>([]);
   const pendingApprovalRequestsRef = useRef<Map<string, PendingApprovalEntry>>(
     new Map(),
   );
@@ -676,16 +746,54 @@ export function useSessionStream(
     setMessagesInternal(action);
   }, []);
 
+  const setError = useCallback((nextError: Error | null) => {
+    errorRef.current = nextError;
+    setErrorState(nextError);
+  }, []);
+
   const setAwaitingFirstResponse = useCallback((value: boolean) => {
     awaitingFirstResponseRef.current = value;
+    if (!value) {
+      promptTimingRef.current = null;
+    }
     setIsAwaitingFirstResponse(value);
   }, []);
   const clearAwaitingFirstResponse = useCallback(() => {
     if (!awaitingFirstResponseRef.current) {
       return;
     }
+    const timing = promptTimingRef.current;
+    if (timing) {
+      const firstVisibleResponseAt = performance.now();
+      const rounded = (value: number | undefined) =>
+        value === undefined ? null : Math.round(value);
+      console.info("[SessionStream][TTFR]", {
+        sessionId,
+        workerReadyMs: rounded(
+          timing.workerReadyAt === undefined
+            ? undefined
+            : timing.workerReadyAt - timing.startedAt,
+        ),
+        promptSubmittedMs: rounded(
+          timing.promptSubmittedAt === undefined
+            ? undefined
+            : timing.promptSubmittedAt - timing.startedAt,
+        ),
+        firstEventMs: rounded(
+          timing.firstEventAt === undefined
+            ? undefined
+            : timing.firstEventAt - timing.startedAt,
+        ),
+        firstVisibleResponseMs: rounded(firstVisibleResponseAt - timing.startedAt),
+        modelWaitMs: rounded(
+          timing.promptSubmittedAt === undefined
+            ? undefined
+            : firstVisibleResponseAt - timing.promptSubmittedAt,
+        ),
+      });
+    }
     setAwaitingFirstResponse(false);
-  }, [setAwaitingFirstResponse]);
+  }, [sessionId, setAwaitingFirstResponse]);
 
   const normalizeSessionStatus = useCallback(
     (payload: SessionStatusPayload): SessionStatus => ({
@@ -812,6 +920,7 @@ export function useSessionStream(
           break;
         }
         case "error": {
+          setError(new Error(normalized.detail || "消息发送失败"));
           setStatus("error");
           setAwaitingFirstResponse(false);
           awaitingIdleRef.current = false;
@@ -829,7 +938,7 @@ export function useSessionStream(
             break;
           }
 
-          setStatus("ready");
+          setStatus(errorRef.current ? "error" : "ready");
           setAwaitingFirstResponse(false);
           awaitingIdleRef.current = false;
           completeStreamingMessages();
@@ -856,6 +965,15 @@ export function useSessionStream(
             break;
           }
 
+          if (errorRef.current) {
+            setStatus("error");
+            setAwaitingFirstResponse(false);
+            awaitingIdleRef.current = false;
+            completeStreamingMessages();
+            interruptStaleToolCalls();
+            break;
+          }
+
           setStatus("ready");
           setAwaitingFirstResponse(false);
           awaitingIdleRef.current = false;
@@ -871,6 +989,7 @@ export function useSessionStream(
       interruptStaleToolCalls,
       normalizeSessionStatus,
       onSessionStatus,
+      setError,
     ],
   );
 
@@ -1245,6 +1364,8 @@ export function useSessionStream(
   const applyBufferedStreamContent = useCallback(() => {
     const thinkingMessageId = thinkingMessageIdRef.current;
     const textMessageId = textMessageIdRef.current;
+    const thinkingContent = currentThinkingRef.current;
+    const textContent = currentTextRef.current;
     if (!thinkingMessageId && !textMessageId) {
       return;
     }
@@ -1254,13 +1375,13 @@ export function useSessionStream(
         if (thinkingMessageId && msg.id === thinkingMessageId) {
           return {
             ...msg,
-            thinking: currentThinkingRef.current,
+            thinking: thinkingContent,
           };
         }
         if (textMessageId && msg.id === textMessageId) {
           return {
             ...msg,
-            content: currentTextRef.current,
+            content: textContent,
           };
         }
         return msg;
@@ -1293,10 +1414,15 @@ export function useSessionStream(
         return;
       }
 
+      if (!isReplay) {
+        clearAwaitingFirstResponse();
+      }
+
       currentThinkingRef.current += delta;
       if (!thinkingMessageIdRef.current) {
         thinkingCompletedRef.current = false;
         thinkingMessageIdRef.current = getNextMessageId("assistant");
+        turnStreamBlockIdsRef.current.push(thinkingMessageIdRef.current);
         const thinkingMsg: LiveMessage = {
           id: thinkingMessageIdRef.current,
           role: "assistant",
@@ -1325,13 +1451,23 @@ export function useSessionStream(
 
       scheduleBufferedStreamUpdate();
     },
-    [getNextMessageId, scheduleBufferedStreamUpdate, setMessages, upsertMessage],
+    [
+      clearAwaitingFirstResponse,
+      getNextMessageId,
+      scheduleBufferedStreamUpdate,
+      setMessages,
+      upsertMessage,
+    ],
   );
 
   const appendTextContent = useCallback(
     (delta: string, isReplay: boolean) => {
       if (!delta) {
         return;
+      }
+
+      if (!isReplay) {
+        clearAwaitingFirstResponse();
       }
 
       if (thinkingMessageIdRef.current && !thinkingCompletedRef.current) {
@@ -1348,6 +1484,7 @@ export function useSessionStream(
       currentTextRef.current += delta;
       if (!textMessageIdRef.current) {
         textMessageIdRef.current = getNextMessageId("assistant");
+        turnStreamBlockIdsRef.current.push(textMessageIdRef.current);
         upsertMessage({
           id: textMessageIdRef.current,
           role: "assistant",
@@ -1362,7 +1499,13 @@ export function useSessionStream(
 
       scheduleBufferedStreamUpdate();
     },
-    [getNextMessageId, scheduleBufferedStreamUpdate, setMessages, upsertMessage],
+    [
+      clearAwaitingFirstResponse,
+      getNextMessageId,
+      scheduleBufferedStreamUpdate,
+      setMessages,
+      upsertMessage,
+    ],
   );
 
   const appendInlineThinkSegments = useCallback(
@@ -1391,6 +1534,31 @@ export function useSessionStream(
   flushBufferedStreamUpdateRef.current = flushBufferedStreamUpdate;
   flushInlineThinkBufferRef.current = flushInlineThinkBuffer;
 
+  // Seal the currently streaming thinking/text blocks at a message boundary
+  // (e.g. a tool call). Live ACP never emits StepBegin, so without this the
+  // next thinking/text chunk would keep merging into the first block of the
+  // turn instead of opening a new block after the boundary.
+  const sealOpenStreamBlocks = useCallback(() => {
+    flushBufferedStreamUpdate();
+    const thinkingMessageId = thinkingMessageIdRef.current;
+    const textMessageId = textMessageIdRef.current;
+    if (!thinkingMessageId && !textMessageId) {
+      return;
+    }
+    setMessages((prev) =>
+      prev.map((msg) =>
+        msg.id === thinkingMessageId || msg.id === textMessageId
+          ? { ...msg, isStreaming: false }
+          : msg,
+      ),
+    );
+    currentThinkingRef.current = "";
+    currentTextRef.current = "";
+    thinkingCompletedRef.current = false;
+    thinkingMessageIdRef.current = null;
+    textMessageIdRef.current = null;
+  }, [flushBufferedStreamUpdate, setMessages]);
+
   // Reset state for new step
   const resetStepState = useCallback(() => {
     flushInlineThinkBuffer(isReplayingRef.current);
@@ -1401,6 +1569,7 @@ export function useSessionStream(
     thinkingCompletedRef.current = false;
     thinkingMessageIdRef.current = null;
     textMessageIdRef.current = null;
+    turnStreamBlockIdsRef.current = [];
   }, [flushBufferedStreamUpdate, flushInlineThinkBuffer]);
 
   const clearStepRetryStatus = useCallback(() => {
@@ -1447,6 +1616,9 @@ export function useSessionStream(
   const discardRetryAttemptMessages = useCallback(() => {
     const messageIds = new Set<string>();
     const discardedToolCallIds = new Set<string>();
+    for (const id of turnStreamBlockIdsRef.current) {
+      messageIds.add(id);
+    }
     if (thinkingMessageIdRef.current) {
       messageIds.add(thinkingMessageIdRef.current);
     }
@@ -1510,6 +1682,8 @@ export function useSessionStream(
     setTokenUsage(null);
     setPlanMode(false);
     planModeRef.current = false;
+    setPermissionMode("manual");
+    permissionModeRef.current = "manual";
     setSwarmMode(false);
     swarmModeRef.current = false;
     setError(null);
@@ -1539,7 +1713,7 @@ export function useSessionStream(
     } else if (slashCommandsLenRef.current > 0) {
       usingCachedCommandsRef.current = true;
     }
-  }, [resetStepState, setAwaitingFirstResponse]);
+  }, [resetStepState, setAwaitingFirstResponse, setError]);
 
   // Process a SubagentEvent: accumulate inner events into parent Agent tool's subagentSteps
   const processSubagentEvent = useCallback(
@@ -1727,6 +1901,12 @@ export function useSessionStream(
   // Process a single wire event
   const processEvent = useCallback(
     (event: WireEvent, isReplay = false, rpcMessageId?: string | number) => {
+      if (!isReplay && awaitingFirstResponseRef.current) {
+        const timing = promptTimingRef.current;
+        if (timing && timing.firstEventAt === undefined) {
+          timing.firstEventAt = performance.now();
+        }
+      }
       switch (event.type) {
         case "TurnBegin": {
           // Reset step state to ensure slash commands create new messages
@@ -1830,8 +2010,10 @@ export function useSessionStream(
 
         case "ContentPart": {
           clearStepRetryStatus();
+          // Live ACP does not emit StepBegin; promote status on the first
+          // content chunk so the composer/status strip leave "submitted".
           if (!isReplay) {
-            clearAwaitingFirstResponse();
+            setStatus("streaming");
           }
           if (event.payload.type === "think" && event.payload.think) {
             flushInlineThinkBuffer(isReplay);
@@ -1851,6 +2033,9 @@ export function useSessionStream(
           ) {
             const media = event.payload[event.payload.type];
             if (media?.url) {
+              if (!isReplay) {
+                clearAwaitingFirstResponse();
+              }
               // Finish the preceding text block so later text is inserted after
               // the attachment instead of being merged ahead of it.
               flushBufferedStreamUpdate();
@@ -1906,7 +2091,12 @@ export function useSessionStream(
           clearStepRetryStatus();
           if (!isReplay) {
             clearAwaitingFirstResponse();
+            setStatus("streaming");
           }
+          // A tool call is a hard boundary: seal any open thinking/text block
+          // so later chunks open new blocks after the tool card (live ACP
+          // never emits StepBegin to do this for us).
+          sealOpenStreamBlocks();
           const toolCall = event.payload;
           currentToolCallIdRef.current = toolCall.id;
 
@@ -2144,6 +2334,7 @@ export function useSessionStream(
           description: payload.description,
           sender: payload.sender,
           toolCallId: payload.tool_call_id,
+          toolKind: payload.kind ?? null,
           rpcMessageId,
           submitted: true,
           resolved: true,
@@ -2202,6 +2393,7 @@ export function useSessionStream(
             description: payload.description,
             sender: payload.sender,
             toolCallId: payload.tool_call_id,
+            toolKind: payload.kind ?? null,
             rpcMessageId,
             submitted: false,
             resolved: false,
@@ -2597,11 +2789,22 @@ export function useSessionStream(
             planModeRef.current = nextPlanMode;
           }
 
+          const rawPermissionMode = event.payload.permission_mode;
+          const nextPermissionMode =
+            rawPermissionMode === "ask" ? "manual" : rawPermissionMode;
+          if (
+            nextPermissionMode === "manual" ||
+            nextPermissionMode === "auto" ||
+            nextPermissionMode === "yolo"
+          ) {
+            setPermissionMode(nextPermissionMode);
+            permissionModeRef.current = nextPermissionMode;
+          }
+
           const nextSwarmMode = event.payload.swarm_mode;
           if (typeof nextSwarmMode === "boolean") {
             setSwarmMode(nextSwarmMode);
             swarmModeRef.current = nextSwarmMode;
-            persistSwarmMode(sessionId, nextSwarmMode);
           }
 
           // If we have a message_id, create a special message to display it
@@ -2854,13 +3057,14 @@ export function useSessionStream(
       appendThinkingContent,
       appendInlineThinkSegments,
       flushInlineThinkBuffer,
+      sealOpenStreamBlocks,
       sessionId,
     ],
   );
 
   const createTauriWireConnection = useCallback(
     (sid: string): TauriWireConnection => {
-      let state = STREAM_OPEN;
+      let state = STREAM_CONNECTING;
       let unlisten: (() => void) | undefined;
       let disconnecting = false;
       const pendingSends: Promise<void>[] = [];
@@ -2926,6 +3130,11 @@ export function useSessionStream(
           }
           unlisten = nextUnlisten;
         },
+        markOpen() {
+          if (state !== STREAM_CLOSED) {
+            state = STREAM_OPEN;
+          }
+        },
         markClosed() {
           state = STREAM_CLOSED;
           if (unlisten) {
@@ -2935,7 +3144,7 @@ export function useSessionStream(
         },
       };
     },
-    [onError],
+    [onError, setError],
   );
 
   // Helper to send initialize message
@@ -2975,12 +3184,21 @@ export function useSessionStream(
   const flushPendingModeUpdates = useCallback(
     async (connection: StreamConnection) => {
       const pending = pendingModeUpdatesRef.current;
-      const updates: Array<["set_plan_mode" | "set_swarm_mode", boolean]> = [];
+      const updates: Array<
+        | ["set_permission_mode", { mode: PermissionMode }]
+        | ["set_plan_mode" | "set_swarm_mode", { enabled: boolean }]
+      > = [];
+      if (pending.permissionMode) {
+        updates.push([
+          "set_permission_mode",
+          { mode: pending.permissionMode },
+        ]);
+      }
       if (typeof pending.planMode === "boolean") {
-        updates.push(["set_plan_mode", pending.planMode]);
+        updates.push(["set_plan_mode", { enabled: pending.planMode }]);
       }
       if (typeof pending.swarmMode === "boolean") {
-        updates.push(["set_swarm_mode", pending.swarmMode]);
+        updates.push(["set_swarm_mode", { enabled: pending.swarmMode }]);
       }
       if (updates.length === 0) {
         return;
@@ -2990,6 +3208,10 @@ export function useSessionStream(
         planModeRef.current = pending.planMode;
         setPlanMode(pending.planMode);
       }
+      if (pending.permissionMode) {
+        permissionModeRef.current = pending.permissionMode;
+        setPermissionMode(pending.permissionMode);
+      }
       if (typeof pending.swarmMode === "boolean") {
         swarmModeRef.current = pending.swarmMode;
         setSwarmMode(pending.swarmMode);
@@ -2997,23 +3219,27 @@ export function useSessionStream(
 
       pendingModeUpdatesRef.current = {};
       try {
-        for (const [method, enabled] of updates) {
+        for (const [method, params] of updates) {
           await Promise.resolve(
             connection.send(
               JSON.stringify({
                 jsonrpc: "2.0",
                 method,
                 id: uuidV4(),
-                params: { enabled },
+                params,
               }),
             ),
           );
         }
       } catch (error) {
-        for (const [method, enabled] of updates) {
-          pendingModeUpdatesRef.current[
-            method === "set_plan_mode" ? "planMode" : "swarmMode"
-          ] = enabled;
+        for (const [method, params] of updates) {
+          if (method === "set_permission_mode") {
+            pendingModeUpdatesRef.current.permissionMode = params.mode;
+          } else {
+            pendingModeUpdatesRef.current[
+              method === "set_plan_mode" ? "planMode" : "swarmMode"
+            ] = params.enabled;
+          }
         }
         throw error;
       }
@@ -3045,13 +3271,22 @@ export function useSessionStream(
       try {
         setAwaitingFirstResponse(true);
         setStatus("submitted");
-        await Promise.resolve(ws.send(JSON.stringify(message)));
+        if (promptTimingRef.current) {
+          promptTimingRef.current.promptSubmittedAt = performance.now();
+        }
+        // `wireSend` resolves only after the Tauri prompt command finishes. Clear
+        // the connection-level queue before awaiting it so the terminal `idle`
+        // event cannot mistake an already-finished prompt for an unsent one.
         pendingMessageRef.current = null;
+        await Promise.resolve(ws.send(JSON.stringify(message)));
         console.log(
           "[SessionStream] Sent pending message after connect:",
           pendingMessage,
         );
       } catch (err) {
+        if (pendingMessageRef.current === null) {
+          pendingMessageRef.current = pendingMessage;
+        }
         promptRequestIdsRef.current.delete(messageId);
         optimisticUserMessagesRef.current.shift();
         const error = err instanceof Error ? err : new Error(String(err));
@@ -3062,7 +3297,7 @@ export function useSessionStream(
         throw error;
       }
     },
-    [onError, setAwaitingFirstResponse],
+    [onError, setAwaitingFirstResponse, setError],
   );
 
   // Handle incoming stream message
@@ -3186,17 +3421,26 @@ export function useSessionStream(
           promptRequestIdsRef.current.delete(promptResultId);
           optimisticUserMessagesRef.current.shift();
           const result = message.result as { status?: string } | undefined;
+          const finishedWithoutVisibleResponse =
+            result?.status === "finished" && awaitingFirstResponseRef.current;
           if (result?.status === "finished" || result?.status === "cancelled") {
             console.log(`[SessionStream] Stream ${result.status}`);
           }
-          setStatus("ready");
           clearStepRetryStatus();
           setAwaitingFirstResponse(false);
           awaitingIdleRef.current = false;
           isReplayingRef.current = false;
           setIsReplayingHistory(false);
           completeStreamingMessages();
-          if (result?.status === "finished") {
+          if (finishedWithoutVisibleResponse) {
+            const emptyResponseError = new Error("模型未返回可显示内容");
+            setError(emptyResponseError);
+            onError?.(emptyResponseError);
+            setStatus("error");
+          } else {
+            setStatus("ready");
+          }
+          if (result?.status === "finished" && !finishedWithoutVisibleResponse) {
             triggerFirstTurnComplete();
           }
           return;
@@ -3361,6 +3605,7 @@ export function useSessionStream(
       clearStepRetryStatus,
       syncTauriStatusSnapshot,
       triggerFirstTurnComplete,
+      setError,
     ],
   );
   handleMessageRef.current = handleMessage;
@@ -3456,13 +3701,14 @@ export function useSessionStream(
 
       clearStepRetryStatus();
       completeStreamingMessages();
-      setStatus("ready");
+      setStatus(errorRef.current ? "error" : "ready");
     },
     [
       clearStepRetryStatus,
       completeStreamingMessages,
       onError,
       setAwaitingFirstResponse,
+      setError,
     ],
   );
 
@@ -3653,6 +3899,9 @@ export function useSessionStream(
   const connect = useCallback(() => {
     if (!sessionId) return;
 
+    const skipReplay = skipReplayOnConnectRef.current;
+    skipReplayOnConnectRef.current = false;
+
     initializeRetryCountRef.current = 0; // Reset retry count for new connection
 
     const existing = wsRef.current;
@@ -3685,7 +3934,7 @@ export function useSessionStream(
       resetState(true);  // preserve slashCommands on reconnect
       setMessages([]);
     }
-    setStatus("submitted");
+    setStatus(skipReplay ? "ready" : "submitted");
     setAwaitingFirstResponse(Boolean(pendingMessageRef.current));
 
     if (isTauri()) {
@@ -3733,10 +3982,16 @@ export function useSessionStream(
         void wireConnect(sessionId)
           .then(async () => {
             if (wsRef.current !== connection) {
-              connection.close();
+              connection.markClosed();
+              void wireDisconnect(sessionId).catch(() => undefined);
               return;
             }
 
+            connection.markOpen();
+            const promptTiming = promptTimingRef.current;
+            if (promptTiming && promptTiming.workerReadyAt === undefined) {
+              promptTiming.workerReadyAt = performance.now();
+            }
             console.log("[SessionStream] Connected to Tauri wire session:", sessionId);
             setIsConnected(true);
             setError(null);
@@ -3752,6 +4007,11 @@ export function useSessionStream(
               isReplayingRef.current = false;
               setIsReplayingHistory(false);
               await sendPendingMessage(connection);
+              return;
+            }
+
+            if (skipReplay) {
+              setStatus("ready");
               return;
             }
 
@@ -3846,6 +4106,7 @@ export function useSessionStream(
         setError(err);
         onError?.(err);
         setAwaitingFirstResponse(false);
+        setStatus("error");
         clearStepRetryStatus();
         awaitingIdleRef.current = false;
         pendingMessageRef.current = null; // Clear pending message on error
@@ -3886,6 +4147,7 @@ export function useSessionStream(
     sendPendingMessage,
     setAwaitingFirstResponse,
     clearStepRetryStatus,
+    setError,
   ]);
 
   // Send cancel message to server
@@ -3946,6 +4208,17 @@ export function useSessionStream(
 
   // Send cancel request or disconnect if stream not ready
   const cancel = useCallback(() => {
+    const hasActivePrompt =
+      pendingMessageRef.current !== null ||
+      promptRequestIdsRef.current.size > 0 ||
+      (status === "streaming" && !isReplayingRef.current);
+    if (!hasActivePrompt) {
+      console.log(
+        "[SessionStream] Ignoring cancel without an active prompt",
+      );
+      return;
+    }
+
     const ws = wsRef.current;
     if (!ws || ws.readyState !== STREAM_OPEN) {
       console.log(
@@ -4129,7 +4402,14 @@ export function useSessionStream(
       onError?.(error);
       setStatus("error");
     }
-  }, [status, disconnect, onError, setAwaitingFirstResponse, setMessages]);
+  }, [
+    status,
+    disconnect,
+    onError,
+    setAwaitingFirstResponse,
+    setMessages,
+    setError,
+  ]);
 
   // Reconnect
   const reconnect = useCallback(() => {
@@ -4146,6 +4426,9 @@ export function useSessionStream(
   reconnectRef.current = reconnect;
   resetStateRef.current = resetState;
   statusRef.current = status;
+  slashCommandsRef.current = slashCommands;
+  contextUsageRef.current = contextUsage;
+  tokenUsageRef.current = tokenUsage;
 
   const sendModeUpdate = useCallback(
     (
@@ -4163,14 +4446,25 @@ export function useSessionStream(
       } else {
         swarmModeRef.current = enabled;
         setSwarmMode(enabled);
-        persistSwarmMode(sessionId, enabled);
       }
 
       const connection = wsRef.current;
-      if (connection?.readyState === STREAM_OPEN) {
+      const canFlushImmediately =
+        connection?.readyState === STREAM_OPEN &&
+        statusRef.current === "ready" &&
+        initializeIdRef.current === null &&
+        replayIdRef.current === null;
+      if (canFlushImmediately && connection) {
         void flushPendingModeUpdates(connection).catch((error) => {
           console.warn(`[SessionStream] Failed to set ${key}:`, error);
         });
+        return true;
+      }
+
+      // An initialize or replay is already in progress. Keep only the latest
+      // requested value and let the ready-state effect apply it; reconnecting
+      // here would tear down the worker that is still starting.
+      if (connection) {
         return true;
       }
 
@@ -4180,6 +4474,64 @@ export function useSessionStream(
     },
     [connect, flushPendingModeUpdates, sessionId],
   );
+
+  const sendSetPermissionMode = useCallback(
+    (mode: PermissionMode): boolean => {
+      if (!sessionId) {
+        return false;
+      }
+
+      pendingModeUpdatesRef.current.permissionMode = mode;
+      permissionModeRef.current = mode;
+      setPermissionMode(mode);
+
+      const connection = wsRef.current;
+      const canFlushImmediately =
+        connection?.readyState === STREAM_OPEN &&
+        statusRef.current === "ready" &&
+        initializeIdRef.current === null &&
+        replayIdRef.current === null;
+      if (canFlushImmediately && connection) {
+        void flushPendingModeUpdates(connection).catch((error) => {
+          console.warn("[SessionStream] Failed to set permission mode:", error);
+        });
+        return true;
+      }
+
+      if (connection) {
+        return true;
+      }
+
+      preserveMessagesOnConnectRef.current = hasMessagesRef.current;
+      connect();
+      return true;
+    },
+    [connect, flushPendingModeUpdates, sessionId],
+  );
+
+  useEffect(() => {
+    if (status !== "ready") {
+      return;
+    }
+    if (
+      typeof pendingModeUpdatesRef.current.planMode !== "boolean" &&
+      !pendingModeUpdatesRef.current.permissionMode &&
+      typeof pendingModeUpdatesRef.current.swarmMode !== "boolean"
+    ) {
+      return;
+    }
+    const connection = wsRef.current;
+    if (
+      connection?.readyState !== STREAM_OPEN ||
+      initializeIdRef.current !== null ||
+      replayIdRef.current !== null
+    ) {
+      return;
+    }
+    void flushPendingModeUpdates(connection).catch((error) => {
+      console.warn("[SessionStream] Failed to apply deferred mode update:", error);
+    });
+  }, [flushPendingModeUpdates, status]);
 
   const sendSetPlanMode = useCallback(
     (enabled: boolean) => sendModeUpdate("planMode", enabled),
@@ -4197,20 +4549,132 @@ export function useSessionStream(
       if (!text.trim()) return;
 
       const trimmedText = text.trim();
-      const swarmCommand = trimmedText.match(/^\/swarm(?:\s+(on|off))?$/i);
-      if (swarmCommand) {
-        const nextMode = swarmCommand[1]
-          ? swarmCommand[1].toLowerCase() === "on"
-          : !swarmModeRef.current;
+      const slashDecision = classifySlashDispatch(
+        trimmedText,
+        slashCommandsRef.current ?? [],
+      );
+
+      if (slashDecision.kind === "local" && slashDecision.name === "swarm") {
+        const arg = slashDecision.args.trim().toLowerCase();
+        const nextMode =
+          arg === "on" ? true : arg === "off" ? false : !swarmModeRef.current;
         if (!sendSetSwarmMode(nextMode)) {
           throw new Error("No session selected");
         }
         return;
       }
 
+      if (slashDecision.kind === "blocked") {
+        addOptimisticUserMessage(trimmedText);
+        const statusMessageId = getNextMessageId("assistant");
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: statusMessageId,
+            role: "assistant",
+            variant: "status",
+            content: slashDecision.message,
+            isStreaming: false,
+          },
+        ]);
+        return;
+      }
+
+      if (slashDecision.kind === "local") {
+        addOptimisticUserMessage(trimmedText);
+        const statusMessageId = getNextMessageId("assistant");
+        let content = "";
+        try {
+          if (slashDecision.name === "help") {
+            content = formatDesktopHelpReport(slashCommandsRef.current ?? []);
+          } else {
+            const managedRaw = isTauri()
+              ? await fetchManagedUsage()
+              : {
+                  kind: "error" as const,
+                  message: "Managed usage is only available in the desktop app.",
+                };
+            const managed = parseManagedUsageFetchResult(managedRaw);
+            const sessionUsage: SessionUsageContext = {
+              contextUsage: contextUsageRef.current,
+              tokenInput: tokenUsageRef.current?.input_other ?? null,
+              tokenOutput: tokenUsageRef.current?.output ?? null,
+              tokenCacheRead: tokenUsageRef.current?.input_cache_read ?? null,
+              tokenCacheCreation:
+                tokenUsageRef.current?.input_cache_creation ?? null,
+            };
+            if (slashDecision.name === "usage") {
+              content = formatUsageReport({ managed, session: sessionUsage });
+            } else {
+              let version: string | null = null;
+              let model: string | null = null;
+              let workDir: string | null = null;
+              if (isTauri()) {
+                try {
+                  version = await getKimiCliVersion();
+                } catch {
+                  version = null;
+                }
+                try {
+                  const config = await getGlobalConfig();
+                  model = config.defaultModel || null;
+                } catch {
+                  model = null;
+                }
+                if (sessionId) {
+                  try {
+                    const session = await getSession(sessionId);
+                    workDir = session?.workDir ?? null;
+                  } catch {
+                    workDir = null;
+                  }
+                }
+              }
+              content = formatStatusReport({
+                managed,
+                status: {
+                  version,
+                  model,
+                  workDir,
+                  sessionId,
+                  permissionMode: permissionModeRef.current,
+                  planMode: planModeRef.current,
+                  swarmMode: swarmModeRef.current,
+                },
+                session: sessionUsage,
+              });
+            }
+          }
+        } catch (err) {
+          content =
+            err instanceof Error
+              ? err.message
+              : `Failed to run /${slashDecision.name}`;
+        }
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: statusMessageId,
+            role: "assistant",
+            variant: "status",
+            content,
+            isStreaming: false,
+          },
+        ]);
+        return;
+      }
+
       clearStepRetryStatus();
       resetStepState();
+      setError(null);
       addOptimisticUserMessage(trimmedText);
+      const startedAt = performance.now();
+      promptTimingRef.current = {
+        startedAt,
+        ...(wsRef.current?.readyState === STREAM_OPEN
+          ? { workerReadyAt: startedAt }
+          : {}),
+      };
       setAwaitingFirstResponse(true);
       setStatus("submitted");
 
@@ -4222,6 +4686,9 @@ export function useSessionStream(
 
         pendingMessageRef.current = trimmedText;
         preserveMessagesOnConnectRef.current = true;
+        if (wsRef.current?.readyState === STREAM_CONNECTING) {
+          return;
+        }
         connect();
         return;
       }
@@ -4242,8 +4709,23 @@ export function useSessionStream(
 
       const connection = wsRef.current;
       try {
-        await Promise.resolve(connection.send(JSON.stringify(message)));
-        awaitingIdleRef.current = false;
+        if (promptTimingRef.current) {
+          promptTimingRef.current.promptSubmittedAt = performance.now();
+        }
+        const sendResult = Promise.resolve(connection.send(JSON.stringify(message)));
+        void sendResult
+          .then(() => {
+            awaitingIdleRef.current = false;
+          })
+          .catch((err) => {
+            promptRequestIdsRef.current.delete(messageId);
+            optimisticUserMessagesRef.current.shift();
+            const error = err instanceof Error ? err : new Error(String(err));
+            setError(error);
+            onError?.(error);
+            setAwaitingFirstResponse(false);
+            setStatus("error");
+          });
       } catch (err) {
         promptRequestIdsRef.current.delete(messageId);
         optimisticUserMessagesRef.current.shift();
@@ -4264,6 +4746,9 @@ export function useSessionStream(
       addOptimisticUserMessage,
       clearStepRetryStatus,
       resetStepState,
+      setError,
+      getNextMessageId,
+      setMessages,
     ],
   );
 
@@ -4300,77 +4785,97 @@ export function useSessionStream(
       disconnectRef.current();
     }
 
-    // Reset state for new session (preserve slash commands to avoid empty gap before initialize response)
-    const persistedSwarmMode = readPersistedSwarmMode(sessionId);
-    pendingModeUpdatesRef.current = sessionId
-      ? { swarmMode: persistedSwarmMode }
-      : {};
+    // Reset state for the new session. Swarm is loaded from Kimi's per-session
+    // state below; localStorage is only consulted for one-time migration.
+    pendingModeUpdatesRef.current = {};
     resetStateRef.current(true);
-    setSwarmMode(persistedSwarmMode);
-    swarmModeRef.current = persistedSwarmMode;
+    setSwarmMode(false);
+    swarmModeRef.current = false;
     setMessages([]);
     useToolEventsStore.getState().clearTodoItems();
     useToolEventsStore.getState().clearCurrentGoal();
 
-    // In Tauri, opening a completed session should not pay the full worker
-    // startup cost. Read persisted history first; connect the worker only for
-    // running sessions or when the user sends a prompt.
-    if (sessionId) {
+    let cancelled = false;
+    const startSession = async () => {
+      if (!sessionId) {
+        setIsReplayingHistory(false);
+        return;
+      }
+
+      let persistedSwarmMode = false;
+      if (isTauri()) {
+        try {
+          persistedSwarmMode = await loadSessionSwarmMode(sessionId);
+          if (cancelled) {
+            return;
+          }
+          setSwarmMode(persistedSwarmMode);
+          swarmModeRef.current = persistedSwarmMode;
+        } catch (error) {
+          console.warn("[SessionStream] Failed to load session Swarm mode:", error);
+        }
+      }
+
+      if (cancelled) {
+        return;
+      }
+
+      // In Tauri, opening a completed session should not pay the full worker
+      // startup cost. Read persisted history first; connect the worker only for
+      // running sessions or when the user sends a prompt.
       if (isTauri() && !autoConnectRef.current) {
-        let cancelled = false;
         setStatus("submitted");
         isReplayingRef.current = true;
         setIsReplayingHistory(true);
 
-        void replaySessionHistory(sessionId)
-          .then((historyMessages) => {
-            if (cancelled) {
-              return;
-            }
-            for (const message of historyMessages) {
-              handleMessageRef.current(message);
-            }
-            flushInlineThinkBufferRef.current(true);
-            flushBufferedStreamUpdateRef.current();
-            isReplayingRef.current = false;
-            setIsReplayingHistory(false);
-            if (pendingMessageRef.current) {
-              connectRef.current();
-            } else {
-              setStatus("ready");
-            }
-          })
-          .catch((err) => {
-            if (cancelled) {
-              return;
-            }
-            const historyError =
-              err instanceof Error ? err : new Error(String(err));
-            console.warn("[SessionStream] Fast history replay failed:", historyError);
-            setError(historyError);
-            onError?.(historyError);
-            isReplayingRef.current = false;
-            setIsReplayingHistory(false);
+        try {
+          const historyMessages = await replaySessionHistory(sessionId);
+          if (cancelled) {
+            return;
+          }
+          for (const message of historyMessages) {
+            handleMessageRef.current(message);
+          }
+          flushInlineThinkBufferRef.current(true);
+          flushBufferedStreamUpdateRef.current();
+          isReplayingRef.current = false;
+          setIsReplayingHistory(false);
+          if (pendingMessageRef.current) {
+            connectRef.current();
+          } else {
             setStatus("ready");
-          });
-
-        return () => {
-          cancelled = true;
-          disconnectRef.current();
-        };
+            preserveMessagesOnConnectRef.current = true;
+            skipReplayOnConnectRef.current = true;
+            connectRef.current();
+          }
+          setSwarmMode(persistedSwarmMode);
+          swarmModeRef.current = persistedSwarmMode;
+        } catch (err) {
+          if (cancelled) {
+            return;
+          }
+          const historyError = err instanceof Error ? err : new Error(String(err));
+          console.warn("[SessionStream] Fast history replay failed:", historyError);
+          setError(historyError);
+          onError?.(historyError);
+          isReplayingRef.current = false;
+          setIsReplayingHistory(false);
+          setStatus("ready");
+        }
+        return;
       }
 
       connectRef.current();
-      return () => {
-        disconnectRef.current();
-      };
-    }
+      setSwarmMode(persistedSwarmMode);
+      swarmModeRef.current = persistedSwarmMode;
+    };
 
-    setIsReplayingHistory(false);
+    void startSession();
     return () => {
+      cancelled = true;
       disconnectRef.current();
     };
-  }, [onError, sessionId, setMessages]);
+  }, [onError, sessionId, setMessages, setError]);
 
   // Cleanup on unmount
   useEffect(
@@ -4397,6 +4902,9 @@ export function useSessionStream(
     status,
     sessionStatus,
     isAwaitingFirstResponse,
+    canCancel:
+      !isReplayingHistory &&
+      (isAwaitingFirstResponse || status === "streaming"),
     contextUsage,
     tokenUsage,
     currentStep,
@@ -4414,6 +4922,8 @@ export function useSessionStream(
     error,
     planMode,
     sendSetPlanMode,
+    permissionMode,
+    sendSetPermissionMode,
     swarmMode,
     sendSetSwarmMode,
     slashCommands,

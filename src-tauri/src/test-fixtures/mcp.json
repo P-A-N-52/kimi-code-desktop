@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "codex_mcp_smoke": {
+      "command": "node",
+      "args": ["server.mjs"],
+      "transport": "stdio"
+    },
+    "disabled_server": {
+      "command": "node",
+      "args": ["off.mjs"],
+      "disabled": true
+    }
+  }
+}

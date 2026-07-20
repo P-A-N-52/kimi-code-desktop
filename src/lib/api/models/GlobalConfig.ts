@@ -46,6 +46,12 @@ export interface GlobalConfig {
      */
     defaultPlanMode: boolean;
     /**
+     * Current default permission mode from Kimi Code
+     * @type {string}
+     * @memberof GlobalConfig
+     */
+    defaultPermissionMode: string;
+    /**
      * All configured models
      * @type {Array<ConfigModel>}
      * @memberof GlobalConfig
@@ -60,6 +66,7 @@ export function instanceOfGlobalConfig(value: object): value is GlobalConfig {
     if (!('defaultModel' in value) || value['defaultModel'] === undefined) return false;
     if (!('defaultThinking' in value) || value['defaultThinking'] === undefined) return false;
     if (!('defaultPlanMode' in value) || value['defaultPlanMode'] === undefined) return false;
+    if (!('defaultPermissionMode' in value) || value['defaultPermissionMode'] === undefined) return false;
     if (!('models' in value) || value['models'] === undefined) return false;
     return true;
 }
@@ -77,6 +84,7 @@ export function GlobalConfigFromJSONTyped(json: any, ignoreDiscriminator: boolea
         'defaultModel': json['default_model'],
         'defaultThinking': json['default_thinking'],
         'defaultPlanMode': Boolean(json['default_plan_mode']),
+        'defaultPermissionMode': json['default_permission_mode'] ?? 'manual',
         'models': ((json['models'] as Array<any>).map(ConfigModelFromJSON)),
     };
 }
@@ -95,6 +103,7 @@ export function GlobalConfigToJSONTyped(value?: GlobalConfig | null, ignoreDiscr
         'default_model': value['defaultModel'],
         'default_thinking': value['defaultThinking'],
         'default_plan_mode': value['defaultPlanMode'],
+        'default_permission_mode': value['defaultPermissionMode'],
         'models': ((value['models'] as Array<any>).map(ConfigModelToJSON)),
     };
 }

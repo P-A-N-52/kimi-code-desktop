@@ -106,6 +106,30 @@ export async function getKimiCliVersion(): Promise<string> {
 	return invoke<string>("get_kimi_cli_version");
 }
 
+export type ManagedUsageInvokeResult =
+	| { kind: "ok"; payload: unknown }
+	| { kind: "error"; message: string };
+
+export async function fetchManagedUsage(): Promise<ManagedUsageInvokeResult> {
+	if (!isTauri()) {
+		return {
+			kind: "error",
+			message: "Managed usage is only available in the desktop app.",
+		};
+	}
+	const raw = await invoke<Record<string, unknown>>("fetch_managed_usage");
+	if (raw.kind === "ok") {
+		return { kind: "ok", payload: raw.payload };
+	}
+	return {
+		kind: "error",
+		message:
+			typeof raw.message === "string" && raw.message.length > 0
+				? raw.message
+				: "Failed to fetch usage",
+	};
+}
+
 export async function checkRuntimeReadiness(): Promise<RuntimeReadiness> {
 	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("check_runtime_readiness");
@@ -212,6 +236,19 @@ export async function replaySessionHistory(
 	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<unknown[]>("replay_session_history", { sessionId });
 	return raw.map(String);
+}
+
+export async function getSessionSwarmMode(sessionId: string): Promise<boolean> {
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+	return Boolean(await invoke<unknown>("get_session_swarm_mode", { sessionId }));
+}
+
+export async function migrateSessionSwarmMode(
+	sessionId: string,
+	enabled: boolean,
+): Promise<void> {
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+	return invoke<void>("migrate_session_swarm_mode", { sessionId, enabled });
 }
 
 export async function createSession(
@@ -589,6 +626,9 @@ function normalizeGlobalConfig(raw: Record<string, unknown>): GlobalConfig {
 		defaultModel: String(raw.default_model ?? raw.defaultModel ?? ""),
 		defaultThinking: Boolean(raw.default_thinking ?? raw.defaultThinking),
 		defaultPlanMode: Boolean(raw.default_plan_mode ?? raw.defaultPlanMode),
+		defaultPermissionMode: String(
+			raw.default_permission_mode ?? raw.defaultPermissionMode ?? "manual",
+		),
 		models: models.map((model) => ({
 			provider: String(model.provider ?? ""),
 			model: String(model.model ?? ""),

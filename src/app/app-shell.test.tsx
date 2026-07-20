@@ -6,7 +6,6 @@ describe("AppShell", () => {
 	it("渲染主内容区", () => {
 		render(
 			<AppShell
-				rail={<div />}
 				sidebar={<div />}
 				sidebarOpen
 				topbar={<div />}
@@ -21,7 +20,6 @@ describe("AppShell", () => {
 	it("panelOpen=false 时面板宽度为 0", () => {
 		const { container } = render(
 			<AppShell
-				rail={<div />}
 				sidebar={<div />}
 				sidebarOpen
 				topbar={<div />}
@@ -35,10 +33,9 @@ describe("AppShell", () => {
 		expect(panel).not.toBeNull();
 		expect((panel as HTMLElement).style.width).toBe("0px");
 	});
-	it("sidebarOpen=false 时侧栏宽度为 0", () => {
+	it("sidebarOpen=false 时侧栏收起为窄条", () => {
 		const { container } = render(
 			<AppShell
-				rail={<div />}
 				sidebar={<div>S</div>}
 				sidebarOpen={false}
 				topbar={<div />}
@@ -49,6 +46,6 @@ describe("AppShell", () => {
 			</AppShell>,
 		);
 		const sidebar = container.querySelector("[data-slot=sessions-sidebar]");
-		expect((sidebar as HTMLElement).style.width).toBe("0px");
+		expect((sidebar as HTMLElement).style.width).toBe("52px");
 	});
 });

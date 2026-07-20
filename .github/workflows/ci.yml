@@ -28,6 +28,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Biome lint check
+        run: npm run lint:check
+
       - name: Run Vitest
         run: npm run test
 
@@ -60,37 +63,14 @@ jobs:
         with:
           workspaces: ./src-tauri
 
-      - name: Create Tauri sidecar placeholder
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path sidecar | Out-Null
-          Set-Content -Path sidecar/kimi-sidecar-x86_64-pc-windows-msvc.exe -Value "ci-placeholder"
-
       - name: Cargo check
         run: cargo check --all-targets
 
       - name: Cargo clippy
         run: cargo clippy --all-targets -- -D warnings
 
-  sidecar-test:
-    name: Sidecar Tests
-    runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: ./sidecar-adapter
-    steps:
-      - uses: actions/checkout@v4
+      - name: Cargo test
+        run: cargo test --all-targets
 
-      - name: Setup uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-
-      - name: Run pytest
-        run: uv run pytest -q
-
-      - name: Python compile check
-        run: python -m compileall -q kimi_desktop_sidecar
+      - name: Cargo fmt check
+        run: cargo fmt --check

@@ -1,20 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { SAFE_AUTO_APPROVE_TOOLS, shouldAutoApprove } from "./permission-mode";
+import { shouldAutoApprove } from "./permission-mode";
 
 describe("shouldAutoApprove", () => {
-	it("ask 模式全部不自动批准", () => {
-		expect(shouldAutoApprove("ask", "Read")).toBe(false);
-		expect(shouldAutoApprove("ask", "Bash")).toBe(false);
+	it("manual 模式全部不自动批准", () => {
+		expect(shouldAutoApprove("manual", "Read", "read")).toBe(false);
+		expect(shouldAutoApprove("manual", "Bash", "execute")).toBe(false);
 	});
-	it("yolo 模式全部自动批准", () => {
-		expect(shouldAutoApprove("yolo", "Bash")).toBe(true);
-		expect(shouldAutoApprove("yolo", "Edit")).toBe(true);
+
+	it("yolo 模式自动批准普通工具调用", () => {
+		expect(shouldAutoApprove("yolo", "Bash", "execute")).toBe(true);
+		expect(shouldAutoApprove("yolo", "Edit", "edit")).toBe(true);
+		expect(shouldAutoApprove("yolo", "Read", "read")).toBe(true);
 	});
-	it("auto 模式只放行白名单（大小写不敏感）", () => {
-		expect(shouldAutoApprove("auto", "Read")).toBe(true);
-		expect(shouldAutoApprove("auto", "grep")).toBe(true);
-		expect(shouldAutoApprove("auto", "Bash")).toBe(false);
-		expect(shouldAutoApprove("auto", "Edit")).toBe(false);
-		expect(SAFE_AUTO_APPROVE_TOOLS).toContain("Glob");
+
+	it("auto 模式全部自动批准", () => {
+		expect(shouldAutoApprove("auto", "Read", "read")).toBe(true);
+		expect(shouldAutoApprove("auto", "Bash", "execute")).toBe(true);
+		expect(shouldAutoApprove("auto", "Edit", "edit")).toBe(true);
 	});
 });

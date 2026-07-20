@@ -25,7 +25,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
-      "@ai-elements": path.resolve(__dirname, "./src/components/ai-elements/index.ts"),
+      "@ai-elements": path.resolve(__dirname, "./src/components/ai-elements"),
     },
   },
 });

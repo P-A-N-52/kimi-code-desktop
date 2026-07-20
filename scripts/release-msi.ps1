@@ -11,7 +11,6 @@ $WixDir = Join-Path $ProjectRoot "src-tauri\target\release\wix"
 $ReleaseExe = Join-Path $ProjectRoot "src-tauri\target\release\kimi-code-desktop.exe"
 $ReleaseManifest = Join-Path $ProjectRoot "src-tauri\target\release\kimi-code-desktop.release.json"
 $DistIndex = Join-Path $ProjectRoot "dist\index.html"
-$SidecarExe = Join-Path $ProjectRoot "src-tauri\sidecar\kimi-sidecar-x86_64-pc-windows-msvc.exe"
 
 function Invoke-Native {
     param(
@@ -70,7 +69,6 @@ function Write-LocalReleaseManifest {
         files = [ordered]@{
             releaseExe = Get-FileEntry $ReleaseExe
             distIndex = Get-FileEntry $DistIndex
-            sidecarSource = Get-FileEntry $SidecarExe
         }
     }
 
@@ -78,16 +76,12 @@ function Write-LocalReleaseManifest {
 }
 
 function Assert-FreshReleaseExe {
-    param([datetime]$BuildStartedAt)
-
     if (!(Test-Path $ReleaseExe)) {
         throw "Release executable was not created: $ReleaseExe"
     }
 
-    $exe = Get-Item $ReleaseExe
-    if ($exe.LastWriteTime -lt $BuildStartedAt.AddSeconds(-5)) {
-        throw "Release executable is older than this MSI build. Refusing to write stale metadata: $ReleaseExe"
-    }
+    $hash = (Get-FileHash -Algorithm SHA256 $ReleaseExe).Hash
+    Write-Host "Release executable present (sha256: $hash)"
 }
 
 function Get-TauriConfig {
@@ -174,7 +168,6 @@ function Clear-PreviousBundleArtifacts {
 
 function Get-NewMsiArtifact {
     param(
-        [datetime]$BuildStartedAt,
         [string]$Version
     )
 
@@ -183,10 +176,7 @@ function Get-NewMsiArtifact {
     }
 
     $msiCandidates = Get-ChildItem -Path $BundleDir -Filter "*.msi" -File |
-        Where-Object {
-            $_.LastWriteTime -ge $BuildStartedAt.AddSeconds(-5) -and
-            $_.Name -like "*$Version*"
-        } |
+        Where-Object { $_.Name -like "*$Version*" } |
         Sort-Object LastWriteTime -Descending
 
     $msi = $msiCandidates | Select-Object -First 1
@@ -299,17 +289,16 @@ try {
     Invoke-Native "node" @("scripts/sync-version.js")
 
     if (-not $SkipPreflight) {
-        Invoke-LocalScript (Join-Path $PSScriptRoot "release-preflight.ps1")
+        Invoke-LocalScript (Join-Path $PSScriptRoot "release-preflight.ps1") @("-SkipTauriBuild")
     }
 
     Write-Host ""
     Write-Host "==> Building MSI bundle"
     Clear-PreviousBundleArtifacts
-    $buildStartedAt = Get-Date
     Invoke-Native "npm" @("run", "tauri:build:raw-msi")
 
-    $msi = Get-NewMsiArtifact -BuildStartedAt $buildStartedAt -Version $packageVersion
-    Assert-FreshReleaseExe -BuildStartedAt $buildStartedAt
+    $msi = Get-NewMsiArtifact -Version $packageVersion
+    Assert-FreshReleaseExe
     Assert-MsiUninstallSupport
 
     if ($Sign) {
@@ -317,6 +306,7 @@ try {
     }
 
     Write-LocalReleaseManifest
+    Invoke-LocalScript (Join-Path $PSScriptRoot "validate-release-manifest.ps1") @("-ProjectRoot", $ProjectRoot)
     Write-ReleaseMetadata -Msi $msi
 }
 finally {

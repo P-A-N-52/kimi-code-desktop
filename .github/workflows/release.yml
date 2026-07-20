@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 env:
   CARGO_TERM_COLOR: always
@@ -65,6 +66,10 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/release-msi.ps1
 
+      - name: ACP smoke test
+        shell: pwsh
+        run: npm run smoke:acp
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -92,6 +97,11 @@ jobs:
             $env:INPUT_TAG.Trim()
           } else {
             "v$($package.version)"
+          }
+
+          $expectedTag = "v$($package.version)"
+          if ($tag -ne $expectedTag) {
+            throw "Release tag '$tag' does not match package.json version '$($package.version)' (expected '$expectedTag')."
           }
 
           $bundleDir = Join-Path $PWD "src-tauri\target\release\bundle\msi"

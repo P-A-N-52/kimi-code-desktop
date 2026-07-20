@@ -1,15 +1,12 @@
-use serde::{Deserialize, Serialize};
+use crate::acp::{resolve_acp_command_validated, validate_kimi_acp_command};
+use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
-use tauri_plugin_shell::process::CommandEvent;
-use tauri_plugin_shell::ShellExt;
 
-const BUNDLED_RUNTIME_INFO_TIMEOUT: Duration = Duration::from_secs(12);
-const KIMI_CLI_INFO_TIMEOUT: Duration = Duration::from_secs(5);
 const KIMI_CLI_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 const KIMI_CLI_VERSION_COMMANDS: &[&[&str]] = &[&["version"], &["--version"]];
 
@@ -76,138 +73,185 @@ pub struct ConfigReadiness {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BundledRuntimeInfo {
-    #[serde(default)]
-    available: bool,
-    kimi_cli_version: Option<String>,
-    kimi_cli_package_path: Option<String>,
-    executable: Option<String>,
+pub async fn check_runtime_readiness(_app: &AppHandle) -> RuntimeReadiness {
+    check_kimi_code_runtime_readiness()
 }
 
-pub async fn check_runtime_readiness(app: &AppHandle) -> RuntimeReadiness {
+fn check_kimi_code_runtime_readiness() -> RuntimeReadiness {
     let mut checks = Vec::new();
     let mut issues = Vec::new();
     let mut warnings = Vec::new();
 
-    let bundled_runtime = probe_bundled_runtime(app).await;
-    if bundled_runtime.available {
+    let program = match resolve_kimi_code_cli_program_blocking() {
+        Ok(program) => {
+            checks.push(RuntimeReadinessCheck {
+                id: "kimiCodeCli",
+                label: "Kimi Code CLI",
+                status: CheckStatus::Ok,
+                detail: format!("Kimi Code CLI found: {program}"),
+            });
+            program
+        }
+        Err(error) => {
+            issues.push(error.clone());
+            checks.push(RuntimeReadinessCheck {
+                id: "kimiCodeCli",
+                label: "Kimi Code CLI",
+                status: CheckStatus::Error,
+                detail: error,
+            });
+            return build_kimi_code_runtime_readiness(checks, issues, warnings, None, None);
+        }
+    };
+
+    let version = match resolve_kimi_code_cli_version_for_program(&program) {
+        Ok(version) => {
+            checks.push(RuntimeReadinessCheck {
+                id: "kimiCodeCliVersion",
+                label: "Kimi Code CLI version",
+                status: CheckStatus::Ok,
+                detail: format!("Resolved Kimi Code CLI version: v{version}"),
+            });
+            Some(version)
+        }
+        Err(error) => {
+            issues.push(error.clone());
+            checks.push(RuntimeReadinessCheck {
+                id: "kimiCodeCliVersion",
+                label: "Kimi Code CLI version",
+                status: CheckStatus::Error,
+                detail: error,
+            });
+            None
+        }
+    };
+
+    if let Err(error) = validate_kimi_acp_command(&program) {
+        issues.push(error.clone());
         checks.push(RuntimeReadinessCheck {
-            id: "bundledRuntime",
-            label: "Bundled Kimi CLI runtime",
-            status: CheckStatus::Ok,
-            detail: bundled_runtime
-                .version
-                .as_ref()
-                .map(|version| format!("Bundled runtime is available: v{}", version))
-                .unwrap_or_else(|| "Bundled runtime is available.".to_string()),
+            id: "kimiAcpEntrypoint",
+            label: "Kimi ACP entrypoint",
+            status: CheckStatus::Error,
+            detail: error,
         });
     } else {
-        let detail = bundled_runtime
-            .error
-            .clone()
-            .unwrap_or_else(|| "Bundled runtime is unavailable.".to_string());
-        issues.push(format!(
-            "Bundled Kimi CLI runtime is unavailable: {}",
-            detail
-        ));
         checks.push(RuntimeReadinessCheck {
-            id: "bundledRuntime",
-            label: "Bundled Kimi CLI runtime",
-            status: CheckStatus::Error,
-            detail,
+            id: "kimiAcpEntrypoint",
+            label: "Kimi ACP entrypoint",
+            status: CheckStatus::Ok,
+            detail: format!("`{program} acp --help` succeeded"),
         });
     }
 
-    let external_cli = probe_external_cli();
-    if external_cli.available {
+    let config = check_kimi_code_config_readiness();
+    match &config {
+        ConfigReadiness {
+            path: Some(path),
+            exists: true,
+            ready: true,
+            ..
+        } => {
+            checks.push(RuntimeReadinessCheck {
+                id: "kimiCodeConfig",
+                label: "Kimi Code config.toml",
+                status: CheckStatus::Ok,
+                detail: format!("Kimi Code config is readable: {path}"),
+            });
+        }
+        ConfigReadiness {
+            path: Some(_path),
+            exists: true,
+            ready: false,
+            error: Some(error),
+            ..
+        } => {
+            issues.push(error.clone());
+            checks.push(RuntimeReadinessCheck {
+                id: "kimiCodeConfig",
+                label: "Kimi Code config.toml",
+                status: CheckStatus::Error,
+                detail: error.clone(),
+            });
+        }
+        ConfigReadiness {
+            path: Some(path),
+            exists: false,
+            ..
+        } => {
+            let detail = format!(
+                "Kimi Code config path resolved but file is not present yet: {path}. Run `kimi login` or `kimi migrate` if migrating from legacy."
+            );
+            warnings.push(detail.clone());
+            checks.push(RuntimeReadinessCheck {
+                id: "kimiCodeConfig",
+                label: "Kimi Code config.toml",
+                status: CheckStatus::Warning,
+                detail,
+            });
+        }
+        ConfigReadiness {
+            error: Some(error), ..
+        } => {
+            issues.push(error.clone());
+            checks.push(RuntimeReadinessCheck {
+                id: "kimiCodeConfig",
+                label: "Kimi Code config.toml",
+                status: CheckStatus::Error,
+                detail: error.clone(),
+            });
+        }
+        _ => {}
+    }
+
+    checks.push(RuntimeReadinessCheck {
+        id: "credentials",
+        label: "Kimi Code login",
+        status: CheckStatus::Ok,
+        detail:
+            "ACP login uses terminal device-code flow. Run `kimi login` before connecting sessions."
+                .to_string(),
+    });
+
+    if let Some(hint) = legacy_migration_hint() {
+        warnings.push(hint.clone());
         checks.push(RuntimeReadinessCheck {
-            id: "externalCli",
-            label: "External legacy Kimi CLI",
-            status: CheckStatus::Ok,
-            detail: match (&external_cli.program, &external_cli.version) {
-                (Some(program), Some(version)) => {
-                    format!(
-                        "Compatible legacy login helper found: {} (v{})",
-                        program, version
-                    )
-                }
-                (Some(program), None) => {
-                    format!("Compatible legacy login helper found: {}", program)
-                }
-                _ => "Compatible legacy login helper found.".to_string(),
-            },
-        });
-    } else {
-        let detail = external_cli.error.clone().unwrap_or_else(|| {
-            "External legacy 'kimi' command was not found. The desktop app can use the bundled runtime, but terminal login/setup needs the Python kimi-cli runtime.".to_string()
-        });
-        warnings.push(detail.clone());
-        checks.push(RuntimeReadinessCheck {
-            id: "externalCli",
-            label: "External legacy Kimi CLI",
+            id: "legacyMigration",
+            label: "Legacy Kimi migration",
             status: CheckStatus::Warning,
-            detail,
+            detail: hint,
         });
     }
 
-    let config = check_config_readiness();
-    if config.ready {
-        checks.push(RuntimeReadinessCheck {
-            id: "config",
-            label: "Kimi config.toml",
-            status: CheckStatus::Ok,
-            detail: config
-                .path
-                .as_ref()
-                .map(|path| format!("Config structure is usable: {}", path))
-                .unwrap_or_else(|| "Config structure is usable.".to_string()),
-        });
+    build_kimi_code_runtime_readiness(checks, issues, warnings, Some(program), version)
+}
+
+fn build_kimi_code_runtime_readiness(
+    checks: Vec<RuntimeReadinessCheck>,
+    issues: Vec<String>,
+    warnings: Vec<String>,
+    program: Option<String>,
+    version: Option<String>,
+) -> RuntimeReadiness {
+    let config = check_kimi_code_config_readiness();
+    let available = program.is_some() && version.is_some();
+    let external_error = if program.is_some() && version.is_none() {
+        Some("Kimi Code CLI version could not be resolved.".to_string())
     } else {
-        let detail = config
-            .error
-            .clone()
-            .unwrap_or_else(|| "Kimi config.toml is not ready.".to_string());
-        issues.push(detail.clone());
-        checks.push(RuntimeReadinessCheck {
-            id: "config",
-            label: "Kimi config.toml",
-            status: CheckStatus::Error,
-            detail,
-        });
-    }
-
-    if config.ready && config.has_credential_source {
-        checks.push(RuntimeReadinessCheck {
-            id: "credentials",
-            label: "Credential source",
-            status: CheckStatus::Ok,
-            detail: format!(
-                "Credential source detected: {}",
-                config.credential_sources.join(", ")
-            ),
-        });
-    } else if config.ready && external_cli.available {
-        let detail = "No credential source was detected. Launch can continue because a compatible legacy Kimi CLI is available for login/setup.".to_string();
-        warnings.push(detail.clone());
-        checks.push(RuntimeReadinessCheck {
-            id: "credentials",
-            label: "Credential source",
-            status: CheckStatus::Warning,
-            detail,
-        });
-    } else if config.ready {
-        let detail = "No credential source was detected and no compatible legacy Kimi CLI is available for login/setup.".to_string();
-        issues.push(detail.clone());
-        checks.push(RuntimeReadinessCheck {
-            id: "credentials",
-            label: "Credential source",
-            status: CheckStatus::Error,
-            detail,
-        });
-    }
-
+        None
+    };
+    let external_cli = ExternalCliStatus {
+        available,
+        program,
+        version,
+        error: external_error,
+    };
+    let bundled_runtime = BundledRuntimeStatus {
+        available: false,
+        version: None,
+        package_path: None,
+        executable: None,
+        error: None,
+    };
     let has_blocking_issues = !issues.is_empty();
     RuntimeReadiness {
         ok: !has_blocking_issues && warnings.is_empty(),
@@ -221,275 +265,183 @@ pub async fn check_runtime_readiness(app: &AppHandle) -> RuntimeReadiness {
     }
 }
 
-pub async fn resolve_runtime_kimi_cli_version(app: &AppHandle) -> Result<String, String> {
-    let bundled = probe_bundled_runtime(app).await;
-    if let Some(version) = bundled.version {
-        return Ok(version);
+fn legacy_migration_hint() -> Option<String> {
+    let home = user_home_dir().ok()?;
+    let legacy_dir = home.join(".kimi");
+    if !legacy_dir.exists() {
+        return None;
     }
 
-    resolve_external_kimi_cli_version_blocking()
-}
-
-pub fn resolve_external_kimi_cli_program_blocking() -> Result<String, String> {
-    let mut errors = Vec::new();
-    for program in kimi_cli_version_candidates() {
-        match resolve_compatible_kimi_cli_version_for_program(&program) {
-            Ok(_) => return Ok(program),
-            Err(error) => errors.push(format!("{}: {}", program, error)),
+    let kimi_code_dir = kimi_code_home_dir().ok()?;
+    if kimi_code_dir.exists() {
+        let has_config = kimi_code_dir.join("config.toml").is_file();
+        let has_entries = fs::read_dir(&kimi_code_dir)
+            .ok()
+            .map(|entries| entries.filter_map(Result::ok).next().is_some())
+            .unwrap_or(false);
+        if has_config || has_entries {
+            return None;
         }
     }
 
-    Err(format!("Unable to find Kimi CLI ({})", errors.join("; ")))
-}
-
-fn resolve_external_kimi_cli_version_blocking() -> Result<String, String> {
-    let mut errors = Vec::new();
-    for program in kimi_cli_version_candidates() {
-        match resolve_compatible_kimi_cli_version_for_program(&program) {
-            Ok(version) => return Ok(version),
-            Err(error) => errors.push(format!("{}: {}", program, error)),
-        }
-    }
-
-    Err(format!(
-        "Unable to resolve compatible legacy Kimi CLI version ({})",
-        errors.join("; ")
-    ))
-}
-
-async fn probe_bundled_runtime(app: &AppHandle) -> BundledRuntimeStatus {
-    match run_bundled_sidecar_command(
-        app,
-        &["__desktop-runtime-info"],
-        BUNDLED_RUNTIME_INFO_TIMEOUT,
+    Some(
+        "Legacy ~/.kimi configuration detected and ~/.kimi-code is empty. Run `kimi migrate` to import settings."
+            .to_string(),
     )
-    .await
-    {
-        Ok(output) => match serde_json::from_str::<BundledRuntimeInfo>(output.trim()) {
-            Ok(info) => BundledRuntimeStatus {
-                available: info.available,
-                version: info.kimi_cli_version,
-                package_path: info.kimi_cli_package_path,
-                executable: info.executable,
-                error: None,
-            },
-            Err(error) => BundledRuntimeStatus {
-                available: false,
-                version: None,
-                package_path: None,
-                executable: None,
-                error: Some(format!(
-                    "Bundled sidecar returned invalid runtime info: {}",
-                    error
-                )),
-            },
-        },
-        Err(error) => BundledRuntimeStatus {
-            available: false,
-            version: None,
-            package_path: None,
-            executable: None,
-            error: Some(error),
-        },
-    }
 }
 
-async fn run_bundled_sidecar_command(
-    app: &AppHandle,
-    args: &[&str],
-    timeout: Duration,
-) -> Result<String, String> {
-    let command = app
-        .shell()
-        .sidecar("kimi-sidecar")
-        .map_err(|e| format!("Failed to create bundled sidecar command: {}", e))?
-        .args(args);
-
-    let (mut rx, child) = command
-        .spawn()
-        .map_err(|e| format!("Failed to spawn bundled sidecar: {}", e))?;
-
-    let collect = async {
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(bytes) => stdout.extend_from_slice(&bytes),
-                CommandEvent::Stderr(bytes) => stderr.extend_from_slice(&bytes),
-                CommandEvent::Terminated(_) => break,
-                _ => {}
-            }
-        }
-
-        if stdout.is_empty() {
-            let stderr_text = String::from_utf8_lossy(&stderr).trim().to_string();
-            if stderr_text.is_empty() {
-                return Err("Bundled sidecar produced no runtime info.".to_string());
-            }
-            return Err(stderr_text);
-        }
-
-        Ok(String::from_utf8_lossy(&stdout).to_string())
-    };
-
-    match tokio::time::timeout(timeout, collect).await {
-        Ok(result) => result,
-        Err(_) => {
-            let _ = child.kill();
-            Err(format!(
-                "Bundled sidecar timed out after {}s.",
-                timeout.as_secs()
-            ))
-        }
-    }
+/// Resolve the Kimi Code CLI program used for ACP (`KIMI_CODE_BIN`, then `kimi`).
+pub fn resolve_kimi_code_cli_program_blocking() -> Result<String, String> {
+    let program = resolve_acp_command_validated()?;
+    resolve_kimi_code_cli_version_for_program(&program).map(|_| program)
 }
 
-fn probe_external_cli() -> ExternalCliStatus {
-    match resolve_external_kimi_cli_program_and_version() {
-        Ok((program, version)) => ExternalCliStatus {
-            available: true,
-            program: Some(program),
-            version: Some(version),
-            error: None,
-        },
-        Err(error) => ExternalCliStatus {
-            available: false,
-            program: None,
-            version: None,
-            error: Some(error),
-        },
-    }
+pub fn resolve_kimi_code_cli_version_blocking() -> Result<String, String> {
+    let program = resolve_acp_command_validated()?;
+    resolve_kimi_code_cli_version_for_program(&program)
 }
 
-fn resolve_external_kimi_cli_program_and_version() -> Result<(String, String), String> {
-    let mut errors = Vec::new();
-    for program in kimi_cli_version_candidates() {
-        match resolve_compatible_kimi_cli_version_for_program(&program) {
-            Ok(version) => return Ok((program, version)),
-            Err(error) => errors.push(format!("{}: {}", program, error)),
-        }
-    }
-
-    Err(format!(
-        "Unable to find compatible legacy Kimi CLI ({})",
-        errors.join("; ")
-    ))
-}
-
-fn kimi_cli_version_candidates() -> Vec<String> {
-    let mut candidates = Vec::new();
-
-    if let Ok(bin) = std::env::var("KIMI_CLI_BIN") {
-        push_unique_candidate(&mut candidates, bin);
-    }
-
-    push_unique_candidate(&mut candidates, "kimi");
-
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(user_profile) = std::env::var("USERPROFILE") {
-            push_unique_candidate(
-                &mut candidates,
-                Path::new(&user_profile)
-                    .join(".local")
-                    .join("bin")
-                    .join("kimi.exe")
-                    .to_string_lossy()
-                    .to_string(),
-            );
-            push_unique_candidate(
-                &mut candidates,
-                Path::new(&user_profile)
-                    .join(".kimi")
-                    .join("Scripts")
-                    .join("kimi.exe")
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
-
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            push_unique_candidate(
-                &mut candidates,
-                Path::new(&appdata)
-                    .join("uv")
-                    .join("tools")
-                    .join("kimi-cli")
-                    .join("Scripts")
-                    .join("kimi.exe")
-                    .to_string_lossy()
-                    .to_string(),
-            );
-        }
-    }
-
-    candidates
-}
-
-fn push_unique_candidate(candidates: &mut Vec<String>, value: impl Into<String>) {
-    let value = value.into();
-    let trimmed = value.trim().trim_matches('"');
-    if trimmed.is_empty() {
-        return;
-    }
-
-    if !candidates
-        .iter()
-        .any(|existing| existing.eq_ignore_ascii_case(trimmed))
-    {
-        candidates.push(trimmed.to_string());
-    }
-}
-
-fn resolve_compatible_kimi_cli_version_for_program(program: &str) -> Result<String, String> {
-    match run_kimi_command(program, &["info"], KIMI_CLI_INFO_TIMEOUT) {
-        Ok(output) => {
-            if let Some(version) = parse_legacy_kimi_info_version(&output) {
-                return Ok(version);
-            }
-            let detected_version = resolve_kimi_cli_version_for_program(program).ok();
-            let suffix = detected_version
-                .map(|version| format!(" Detected version: v{}.", version))
-                .unwrap_or_default();
-            Err(format!(
-                "not a compatible legacy Python kimi-cli runtime; `kimi info` did not report kimi-cli, wire, and Python runtime details.{}",
-                suffix
-            ))
-        }
-        Err(info_error) => match resolve_kimi_cli_version_for_program(program) {
-            Ok(version) => Err(format!(
-                "found Kimi CLI v{}, but it does not expose the legacy Python `kimi info` runtime contract required by Kimi Code Desktop: {}",
-                version, info_error
-            )),
-            Err(version_error) => Err(format!(
-                "not a runnable compatible Kimi CLI (info: {}; version: {})",
-                info_error, version_error
-            )),
-        },
-    }
-}
-
-fn resolve_kimi_cli_version_for_program(program: &str) -> Result<String, String> {
+fn resolve_kimi_code_cli_version_for_program(program: &str) -> Result<String, String> {
     let mut errors = Vec::new();
     for args in KIMI_CLI_VERSION_COMMANDS {
         let command_label = args.join(" ");
         match run_kimi_command(program, args, KIMI_CLI_VERSION_TIMEOUT) {
             Ok(output) => {
-                if let Some(version) = parse_version_from_output(&output) {
+                if let Some(version) = parse_kimi_code_version_output(&output) {
                     return Ok(version);
                 }
                 errors.push(format!(
-                    "{} returned unparseable output: {}",
-                    command_label,
+                    "{command_label} returned unparseable output: {}",
                     output.trim()
                 ));
             }
-            Err(error) => errors.push(format!("{}: {}", command_label, error)),
+            Err(error) => errors.push(format!("{command_label}: {error}")),
         }
     }
 
-    Err(errors.join("; "))
+    Err(format!(
+        "Unable to resolve Kimi Code CLI version for `{program}` ({})",
+        errors.join("; ")
+    ))
+}
+
+pub fn kimi_code_home_dir() -> Result<PathBuf, String> {
+    kimi_code_home_dir_from_values(
+        std::env::var("KIMI_CODE_HOME").ok().as_deref(),
+        user_home_dir().ok().as_deref(),
+    )
+}
+
+pub fn kimi_code_home_dir_from_values(
+    kimi_code_home: Option<&str>,
+    user_home: Option<&Path>,
+) -> Result<PathBuf, String> {
+    if let Some(home) = kimi_code_home {
+        let trimmed = home.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+
+    user_home
+        .map(|home| home.join(".kimi-code"))
+        .ok_or_else(|| "Unable to resolve Kimi Code home directory".to_string())
+}
+
+pub fn kimi_code_config_path() -> Result<PathBuf, String> {
+    kimi_code_config_file_path(
+        "config.toml",
+        std::env::var("KIMI_CODE_HOME").ok().as_deref(),
+        user_home_dir().ok().as_deref(),
+    )
+}
+
+pub fn kimi_code_config_file_path(
+    file_name: &str,
+    kimi_code_home: Option<&str>,
+    user_home: Option<&Path>,
+) -> Result<PathBuf, String> {
+    Ok(kimi_code_home_dir_from_values(kimi_code_home, user_home)?.join(file_name))
+}
+
+pub fn parse_kimi_code_version_output(output: &str) -> Option<String> {
+    parse_version_from_output(output)
+}
+
+fn check_kimi_code_config_readiness() -> ConfigReadiness {
+    let path = match kimi_code_config_path() {
+        Ok(path) => path,
+        Err(error) => {
+            return ConfigReadiness {
+                path: None,
+                exists: false,
+                ready: false,
+                has_default_model: false,
+                has_provider_section: false,
+                has_model_section: false,
+                has_credential_source: false,
+                credential_sources: Vec::new(),
+                error: Some(error),
+            };
+        }
+    };
+
+    let path_string = path.to_string_lossy().to_string();
+    if !path.exists() {
+        return ConfigReadiness {
+            path: Some(path_string),
+            exists: false,
+            ready: false,
+            has_default_model: false,
+            has_provider_section: false,
+            has_model_section: false,
+            has_credential_source: false,
+            credential_sources: Vec::new(),
+            error: None,
+        };
+    }
+
+    let content = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) => {
+            return ConfigReadiness {
+                path: Some(path_string),
+                exists: true,
+                ready: false,
+                has_default_model: false,
+                has_provider_section: false,
+                has_model_section: false,
+                has_credential_source: false,
+                credential_sources: Vec::new(),
+                error: Some(format!("Failed to read {}: {}", path.display(), error)),
+            };
+        }
+    };
+
+    match content.parse::<toml::Value>() {
+        Ok(_) => ConfigReadiness {
+            path: Some(path_string),
+            exists: true,
+            ready: true,
+            has_default_model: false,
+            has_provider_section: false,
+            has_model_section: false,
+            has_credential_source: false,
+            credential_sources: Vec::new(),
+            error: None,
+        },
+        Err(error) => ConfigReadiness {
+            path: Some(path_string),
+            exists: true,
+            ready: false,
+            has_default_model: false,
+            has_provider_section: false,
+            has_model_section: false,
+            has_credential_source: false,
+            credential_sources: Vec::new(),
+            error: Some(format!("Invalid Kimi Code config TOML: {error}")),
+        },
+    }
 }
 
 fn run_kimi_command(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
@@ -534,25 +486,6 @@ fn run_kimi_command(program: &str, args: &[&str], timeout: Duration) -> Result<S
     }
 }
 
-fn parse_legacy_kimi_info_version(output: &str) -> Option<String> {
-    let normalized = output.to_ascii_lowercase();
-    if !normalized.contains("kimi-cli version")
-        || !normalized.contains("wire protocol")
-        || !normalized.contains("python version")
-    {
-        return None;
-    }
-
-    output.lines().find_map(|line| {
-        let (label, value) = line.split_once(':')?;
-        if label.trim().eq_ignore_ascii_case("kimi-cli version") {
-            parse_version_from_output(value)
-        } else {
-            None
-        }
-    })
-}
-
 fn parse_version_from_output(output: &str) -> Option<String> {
     output
         .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '+'))
@@ -567,114 +500,6 @@ fn parse_version_from_output(output: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn check_config_readiness() -> ConfigReadiness {
-    let path = match user_home_dir() {
-        Ok(home) => home.join(".kimi").join("config.toml"),
-        Err(error) => {
-            return ConfigReadiness {
-                path: None,
-                exists: false,
-                ready: false,
-                has_default_model: false,
-                has_provider_section: false,
-                has_model_section: false,
-                has_credential_source: false,
-                credential_sources: Vec::new(),
-                error: Some(error),
-            };
-        }
-    };
-
-    if !path.exists() {
-        return ConfigReadiness {
-            path: Some(path.to_string_lossy().to_string()),
-            exists: false,
-            ready: false,
-            has_default_model: false,
-            has_provider_section: false,
-            has_model_section: false,
-            has_credential_source: false,
-            credential_sources: credential_sources(false, false),
-            error: Some(format!("Kimi config not found: {}", path.display())),
-        };
-    }
-
-    let content = match fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(error) => {
-            return ConfigReadiness {
-                path: Some(path.to_string_lossy().to_string()),
-                exists: true,
-                ready: false,
-                has_default_model: false,
-                has_provider_section: false,
-                has_model_section: false,
-                has_credential_source: false,
-                credential_sources: credential_sources(false, false),
-                error: Some(format!("Failed to read {}: {}", path.display(), error)),
-            };
-        }
-    };
-
-    let parsed = match content.parse::<toml::Value>() {
-        Ok(value) => value,
-        Err(error) => {
-            return ConfigReadiness {
-                path: Some(path.to_string_lossy().to_string()),
-                exists: true,
-                ready: false,
-                has_default_model: false,
-                has_provider_section: false,
-                has_model_section: false,
-                has_credential_source: false,
-                credential_sources: credential_sources(false, false),
-                error: Some(format!("Invalid Kimi config TOML: {}", error)),
-            };
-        }
-    };
-
-    let has_default_model = parsed
-        .get("default_model")
-        .and_then(toml::Value::as_str)
-        .map(|value| !value.trim().is_empty())
-        .unwrap_or(false);
-    let has_provider_section = has_non_empty_table(parsed.get("providers"));
-    let has_model_section = has_non_empty_table(parsed.get("models"));
-    let has_config_api_key = toml_has_non_empty_key(&parsed, "api_key");
-    let has_config_env = toml_has_key(&parsed, "env");
-    let sources = credential_sources(has_config_api_key, has_config_env);
-    let has_credential_source = !sources.is_empty();
-    let ready = has_default_model && has_provider_section && has_model_section;
-
-    let error = if ready {
-        None
-    } else {
-        let mut missing = Vec::new();
-        if !has_default_model {
-            missing.push("default_model");
-        }
-        if !has_provider_section {
-            missing.push("[providers.*]");
-        }
-        if !has_model_section {
-            missing.push("[models.*]");
-        }
-        Some(format!("config.toml is missing {}.", missing.join(", ")))
-    };
-
-    ConfigReadiness {
-        path: Some(path.to_string_lossy().to_string()),
-        exists: true,
-        ready,
-        has_default_model,
-        has_provider_section,
-        has_model_section,
-        has_credential_source,
-        credential_sources: sources,
-        error,
-    }
-}
-
 fn user_home_dir() -> Result<PathBuf, String> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
@@ -683,135 +508,62 @@ fn user_home_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "Unable to resolve user home directory".to_string())
 }
 
-fn has_non_empty_table(value: Option<&toml::Value>) -> bool {
-    value
-        .and_then(toml::Value::as_table)
-        .map(|table| !table.is_empty())
-        .unwrap_or(false)
-}
-
-fn toml_has_non_empty_key(value: &toml::Value, key: &str) -> bool {
-    match value {
-        toml::Value::Table(table) => table.iter().any(|(candidate, nested)| {
-            if candidate == key {
-                return match nested {
-                    toml::Value::String(value) => !value.trim().is_empty(),
-                    toml::Value::Boolean(_) => true,
-                    toml::Value::Integer(_) => true,
-                    toml::Value::Float(_) => true,
-                    toml::Value::Datetime(_) => true,
-                    toml::Value::Array(values) => !values.is_empty(),
-                    toml::Value::Table(values) => !values.is_empty(),
-                };
-            }
-            toml_has_non_empty_key(nested, key)
-        }),
-        toml::Value::Array(values) => values
-            .iter()
-            .any(|nested| toml_has_non_empty_key(nested, key)),
-        _ => false,
-    }
-}
-
-fn toml_has_key(value: &toml::Value, key: &str) -> bool {
-    match value {
-        toml::Value::Table(table) => table
-            .iter()
-            .any(|(candidate, nested)| candidate == key || toml_has_key(nested, key)),
-        toml::Value::Array(values) => values.iter().any(|nested| toml_has_key(nested, key)),
-        _ => false,
-    }
-}
-
-fn credential_sources(has_config_api_key: bool, has_config_env: bool) -> Vec<String> {
-    let mut sources = Vec::new();
-    if has_config_api_key {
-        sources.push("config api_key".to_string());
-    }
-    if has_config_env {
-        sources.push("config env".to_string());
-    }
-    sources.extend(runtime_env_credential_sources());
-    if has_credential_files() {
-        sources.push("Kimi credential file".to_string());
-    }
-    sources
-}
-
-fn runtime_env_credential_sources() -> Vec<String> {
-    let keys = [
-        "KIMI_API_KEY",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "GEMINI_API_KEY",
-        "GOOGLE_API_KEY",
-        "VERTEXAI_PROJECT",
-    ];
-    keys.iter()
-        .filter(|key| {
-            std::env::var(key)
-                .map(|value| !value.trim().is_empty())
-                .unwrap_or(false)
-        })
-        .map(|key| format!("{} env", key))
-        .collect()
-}
-
-fn has_credential_files() -> bool {
-    let Ok(home) = user_home_dir() else {
-        return false;
-    };
-
-    if home.join(".kimi.json").is_file() {
-        return true;
-    }
-
-    let credentials_dir = home.join(".kimi").join("credentials");
-    let Ok(entries) = fs::read_dir(credentials_dir) else {
-        return false;
-    };
-
-    entries.filter_map(Result::ok).any(|entry| {
-        let path = entry.path();
-        path.is_file()
-            && path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext.eq_ignore_ascii_case("json"))
-                .unwrap_or(false)
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{parse_legacy_kimi_info_version, parse_version_from_output};
+    use super::{
+        kimi_code_config_file_path, kimi_code_home_dir_from_values, legacy_migration_hint,
+        parse_kimi_code_version_output, parse_version_from_output,
+    };
+    use std::path::{Path, PathBuf};
 
     #[test]
-    fn parses_legacy_python_kimi_info_version() {
-        let output = "\
-kimi-cli version: 1.45.0
-agent spec versions: 1
-wire protocol: 1.10
-python version: 3.13.2
-";
+    fn kimi_code_home_defaults_to_user_home_dot_kimi_code() {
+        let home = Path::new(r"C:\Users\alice");
         assert_eq!(
-            parse_legacy_kimi_info_version(output),
-            Some("1.45.0".to_string())
+            kimi_code_home_dir_from_values(None, Some(home)).unwrap(),
+            home.join(".kimi-code")
         );
     }
 
     #[test]
-    fn rejects_plain_node_kimi_code_version_as_legacy_info() {
-        assert_eq!(parse_legacy_kimi_info_version("0.6.0"), None);
+    fn kimi_code_home_honors_kimi_code_home_override() {
+        assert_eq!(
+            kimi_code_home_dir_from_values(
+                Some(r"D:\kimi-data"),
+                Some(Path::new(r"C:\Users\alice"))
+            )
+            .unwrap(),
+            Path::new(r"D:\kimi-data")
+        );
     }
 
     #[test]
-    fn rejects_incomplete_info_output() {
-        let output = "\
-kimi-cli version: 1.45.0
-python version: 3.13.2
-";
-        assert_eq!(parse_legacy_kimi_info_version(output), None);
+    fn kimi_code_config_path_appends_config_toml() {
+        let home = Path::new(r"C:\Users\alice");
+        let kimi_home = kimi_code_home_dir_from_values(None, Some(home)).unwrap();
+        assert_eq!(
+            kimi_home.join("config.toml"),
+            home.join(".kimi-code").join("config.toml")
+        );
+    }
+
+    #[test]
+    fn kimi_config_path_uses_kimi_code_home() {
+        let path = kimi_code_config_file_path("config.toml", None, Some(Path::new(r"C:\Users\u")))
+            .unwrap();
+        assert_eq!(path, PathBuf::from(r"C:\Users\u\.kimi-code\config.toml"));
+    }
+
+    #[test]
+    fn parses_kimi_code_version_output() {
+        assert_eq!(
+            parse_kimi_code_version_output("0.18.0\n"),
+            Some("0.18.0".to_string())
+        );
+        assert_eq!(
+            parse_kimi_code_version_output("kimi-code version 0.18.0"),
+            Some("0.18.0".to_string())
+        );
     }
 
     #[test]
@@ -820,5 +572,15 @@ python version: 3.13.2
             parse_version_from_output("kimi, version 1.45.0"),
             Some("1.45.0".to_string())
         );
+    }
+
+    #[test]
+    fn legacy_migration_hint_is_none_without_legacy_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("USERPROFILE", temp.path());
+        std::env::set_var("HOME", temp.path());
+        assert!(legacy_migration_hint().is_none());
+        std::env::remove_var("USERPROFILE");
+        std::env::remove_var("HOME");
     }
 }

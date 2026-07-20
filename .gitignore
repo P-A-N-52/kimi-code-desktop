@@ -1,26 +1,21 @@
 # Dependencies
 node_modules/
-sidecar-adapter/.venv/
 
 # Build outputs
 dist/
+coverage/
 src-tauri/target/
 src-tauri/gen/
-sidecar-adapter/build/
-sidecar-adapter/dist/
 src-tauri/sidecar/*.exe
 src-tauri/sidecar/*.manifest.json
 __pycache__/
 *.py[cod]
 
-# Generated sidecar files
-sidecar-adapter/kimi-sidecar.spec
-sidecar-adapter/pyinstaller-entrypoint.py
-
 # Logs and local runtime data
 *.log
 *.tmp
 *.temp
+tmp/
 
 # TypeScript / Vite caches
 *.tsbuildinfo
@@ -44,4 +39,3 @@ Thumbs.db
 # Python tooling caches
 .pytest_cache/
 .ruff_cache/
-sidecar-adapter/*.egg-info/

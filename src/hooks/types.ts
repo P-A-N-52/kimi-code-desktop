@@ -110,6 +110,8 @@ export type LiveMessage = {
       description: string;
       sender: string;
       toolCallId?: string;
+      /** ACP tool kind used for safe auto-approve matching */
+      toolKind?: string | null;
       submitted?: boolean;
       resolved?: boolean;
       approved?: boolean;

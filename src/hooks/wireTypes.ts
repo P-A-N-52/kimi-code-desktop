@@ -136,6 +136,8 @@ export type TokenUsage = {
   input_cache_creation: number;
 };
 
+export type PermissionMode = "manual" | "yolo" | "auto";
+
 export type StatusUpdateEvent = {
   type: "StatusUpdate";
   payload: {
@@ -143,6 +145,7 @@ export type StatusUpdateEvent = {
     token_usage?: TokenUsage | null;
     message_id?: string;
     plan_mode?: boolean | null;
+    permission_mode?: PermissionMode | "ask" | null;
     swarm_mode?: boolean | null;
   };
 };
@@ -185,6 +188,8 @@ export type ApprovalRequestEvent = {
     description: string;
     sender: string;
     tool_call_id: string;
+    /** ACP tool kind (read/search/execute/…) — preferred for auto-approve */
+    kind?: string | null;
     /** Display blocks with preview content (diffs, shell commands) */
     display?: Array<{ type: string; data: unknown }>;
     source_kind?: "foreground_turn" | "background_agent" | null;
@@ -444,6 +449,7 @@ export type ToolApprovalState = {
   description: string;
   sender: string;
   toolCallId: string;
+  toolKind?: string | null;
   rpcMessageId?: string | number;
   submitted?: boolean;
   resolved?: boolean;

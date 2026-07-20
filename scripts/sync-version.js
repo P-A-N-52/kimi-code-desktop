@@ -10,6 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -53,8 +54,8 @@ function parsePackageLock(content) {
 }
 
 function parseCargoToml(content) {
-  const match = content.match(/^\s*version\s*=\s*"([^"]+)"/m);
-  return match?.[1] ?? null;
+  const data = parseToml(content);
+  return data.package?.version ?? null;
 }
 
 function parseTauriConf(content) {
@@ -78,7 +79,12 @@ function replacePackageLockVersion(content, newVersion) {
 }
 
 function replaceCargoTomlVersion(content, newVersion) {
-  return content.replace(/^(\s*version\s*=\s*")[^"]+(")/m, `$1${newVersion}$2`);
+  const data = parseToml(content);
+  if (!data.package) {
+    throw new Error("Cargo.toml is missing a [package] section");
+  }
+  data.package.version = newVersion;
+  return `${stringifyToml(data)}\n`;
 }
 
 const parsers = {
@@ -97,10 +103,7 @@ const replacers = {
 
 function getVersions() {
   return Object.fromEntries(
-    Object.entries(files).map(([name, filePath]) => [
-      name,
-      readVersion(filePath, parsers[name]),
-    ])
+    Object.entries(files).map(([name, filePath]) => [name, readVersion(filePath, parsers[name])]),
   );
 }
 

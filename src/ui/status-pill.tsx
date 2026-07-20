@@ -3,7 +3,7 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 const pillVariants = cva(
-	"inline-flex items-center gap-1.5 rounded-full border border-transparent px-2.5 py-1 font-mono text-[11px] font-medium transition-colors",
+	"inline-flex items-center gap-1.5 rounded-full border border-transparent px-2.5 py-1 font-mono text-[11px] font-medium transition-colors disabled:pointer-events-none disabled:opacity-45",
 	{
 		variants: {
 			tone: {

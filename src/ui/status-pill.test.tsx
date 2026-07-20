@@ -10,8 +10,8 @@ describe("StatusPill", () => {
 		expect(pill?.className).toContain("bg-active");
 	});
 	it("tone=red 使用危险色", () => {
-		render(<StatusPill tone="red">全放</StatusPill>);
-		const pill = screen.getByText("全放").closest("button");
+		render(<StatusPill tone="red">yolo</StatusPill>);
+		const pill = screen.getByText("yolo").closest("button");
 		expect(pill?.className).toContain("text-danger");
 	});
 });

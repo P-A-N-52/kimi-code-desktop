@@ -5,10 +5,10 @@ import { dirname, join } from "node:path";
 
 const home = process.env.USERPROFILE || process.env.HOME;
 if (!home) {
-  throw new Error("Unable to resolve USERPROFILE/HOME for ~/.kimi/mcp.json");
+  throw new Error("Unable to resolve USERPROFILE/HOME for ~/.kimi-code/mcp.json");
 }
 
-const kimiDir = join(home, ".kimi");
+const kimiDir = join(home, ".kimi-code");
 const mcpPath = join(kimiDir, "mcp.json");
 const originalMcp = existsSync(mcpPath) ? readFileSync(mcpPath, "utf8") : null;
 const tempDir = mkdtempSync(join(tmpdir(), "kimi-mcp-smoke-"));
