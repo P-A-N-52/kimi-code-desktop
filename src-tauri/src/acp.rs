@@ -2443,7 +2443,10 @@ mod tests {
                 "content": { "type": "text", "text": "Wrote 71 bytes to plan.md" }
             }]
         });
-        assert!(!sync_plan_mode_exit_from_tool_result(&worker, &write_update));
+        assert!(!sync_plan_mode_exit_from_tool_result(
+            &worker,
+            &write_update
+        ));
         assert!(*worker.plan_mode.lock().unwrap());
 
         // In-progress updates never flip plan mode.

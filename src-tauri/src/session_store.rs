@@ -1071,10 +1071,7 @@ mod tests {
                 .unwrap();
         assert_eq!(enabled["title"], "Keep me");
         assert_eq!(enabled["custom"]["existing"], "value");
-        assert_eq!(
-            enabled["custom"]["kimi_code_desktop"]["swarm_mode"],
-            true
-        );
+        assert_eq!(enabled["custom"]["kimi_code_desktop"]["swarm_mode"], true);
 
         update_session_swarm_mode(session_id, false).expect("disable swarm");
         assert!(!session_swarm_mode(session_id).expect("read disabled"));

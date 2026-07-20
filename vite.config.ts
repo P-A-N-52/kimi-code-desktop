@@ -98,15 +98,15 @@ function manualChunks(id: string): string | undefined {
     return undefined;
   }
 
-	if (normalizedId.includes("@tauri-apps")) {
-		return "vendor-tauri";
-	}
-	if (normalizedId.includes("@radix-ui") || normalizedId.includes("/radix-ui/")) {
-		return "vendor-radix";
-	}
-	if (normalizedId.includes("lucide-react")) {
-		return "vendor-icons";
-	}
+  if (normalizedId.includes("@tauri-apps")) {
+    return "vendor-tauri";
+  }
+  if (normalizedId.includes("@radix-ui") || normalizedId.includes("/radix-ui/")) {
+    return "vendor-radix";
+  }
+  if (normalizedId.includes("lucide-react")) {
+    return "vendor-icons";
+  }
   if (
     normalizedId.includes("zustand") ||
     normalizedId.includes("/swr/") ||
@@ -145,11 +145,11 @@ export default defineConfig({
     __KIMI_CLI_VERSION__: JSON.stringify(kimiCliVersion),
     __APP_VERSION__: JSON.stringify(readPackageVersion()),
   },
-	resolve: {
-		alias: {
-			"@": path.resolve(__dirname, "./src"),
-		},
-	},
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+    },
+  },
   server: {
     host: "127.0.0.1",
     port: 1420,

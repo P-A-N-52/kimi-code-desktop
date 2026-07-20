@@ -43,16 +43,34 @@ function Get-PackageVersion {
     return (Get-Content (Join-Path $ProjectRoot "package.json") -Raw | ConvertFrom-Json).version
 }
 
+function Get-Sha256Hash {
+    param([string]$Path)
+
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $bytes = $sha256.ComputeHash($stream)
+            return [System.BitConverter]::ToString($bytes).Replace("-", "")
+        }
+        finally {
+            $sha256.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+}
+
 function Get-FileEntry {
     param([string]$Path)
 
     $item = Get-Item $Path
-    $hash = Get-FileHash -Algorithm SHA256 $item.FullName
     return [ordered]@{
         path = $item.FullName
         bytes = $item.Length
         lastWriteTimeUtc = $item.LastWriteTimeUtc.ToString("o")
-        sha256 = $hash.Hash
+        sha256 = Get-Sha256Hash $item.FullName
     }
 }
 

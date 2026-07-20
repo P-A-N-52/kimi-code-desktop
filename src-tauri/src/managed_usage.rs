@@ -56,7 +56,9 @@ fn fetch_managed_usage_inner() -> Result<Value, String> {
 }
 
 fn is_auth_error(message: &str) -> bool {
-    message.to_ascii_lowercase().contains("authorization failed")
+    message
+        .to_ascii_lowercase()
+        .contains("authorization failed")
         || message.contains("HTTP 401")
 }
 
@@ -150,20 +152,19 @@ fn load_token_bundle(path: &Path) -> Result<TokenBundle, String> {
                 .to_string(),
         );
     }
-    let content = fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read credentials: {e}"))?;
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("Failed to read credentials: {e}"))?;
     // PowerShell / editors may write UTF-8 BOM; serde_json rejects it.
     let content = content.strip_prefix('\u{feff}').unwrap_or(content.as_str());
-    let value: Value = serde_json::from_str(content)
-        .map_err(|e| format!("Invalid credentials file: {e}"))?;
+    let value: Value =
+        serde_json::from_str(content).map_err(|e| format!("Invalid credentials file: {e}"))?;
     let access_token = value
         .get("access_token")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .ok_or_else(|| {
-            "Kimi Code credentials are missing an access token. Run `kimi login`."
-                .to_string()
+            "Kimi Code credentials are missing an access token. Run `kimi login`.".to_string()
         })?
         .to_string();
     let refresh_token = value
@@ -213,8 +214,7 @@ fn load_token_bundle(path: &Path) -> Result<TokenBundle, String> {
 
 fn save_token_bundle(path: &Path, token: &TokenBundle) -> Result<(), String> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create credentials dir: {e}"))?;
+        fs::create_dir_all(parent).map_err(|e| format!("Failed to create credentials dir: {e}"))?;
     }
     // Preserve any extra fields the CLI wrote (e.g. obtained_at) so we don't
     // thin the credential file down to a subset ACP/CLI might still expect.
@@ -244,11 +244,7 @@ fn save_token_bundle(path: &Path, token: &TokenBundle) -> Result<(), String> {
             .map_err(|e| format!("Failed to serialize credentials: {e}"))?
     );
 
-    let tmp = path.with_extension(format!(
-        "json.tmp.{}.{}",
-        std::process::id(),
-        now_unix()
-    ));
+    let tmp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), now_unix()));
     {
         let mut file = fs::File::create(&tmp)
             .map_err(|e| format!("Failed to write credentials temp file: {e}"))?;
@@ -460,7 +456,10 @@ mod tests {
             "token_type": "Bearer",
             "expires_in": 900,
         });
-        let body = format!("\u{feff}{}\n", serde_json::to_string_pretty(&payload).unwrap());
+        let body = format!(
+            "\u{feff}{}\n",
+            serde_json::to_string_pretty(&payload).unwrap()
+        );
         fs::write(&path, body).unwrap();
         assert_eq!(ensure_fresh_access_token(false).unwrap(), "tok-bom");
     }
