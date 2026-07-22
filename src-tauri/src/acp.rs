@@ -393,6 +393,7 @@ impl PermissionMode {
 
 pub(crate) struct AcpWorker {
     session_id: String,
+    connection_id: Mutex<Option<String>>,
     workspace_cwd: Mutex<Option<PathBuf>>,
     status: Mutex<RuntimeStatus>,
     // Keep only a short-lived lock around the session handle itself. The
@@ -456,10 +457,33 @@ impl AcpProcessManager {
     }
 
     pub async fn connect(&self, app: &AppHandle, session_id: String) -> Result<(), String> {
+        self.connect_with_lease(app, session_id, None).await
+    }
+
+    pub async fn connect_leased(
+        &self,
+        app: &AppHandle,
+        session_id: String,
+        connection_id: String,
+    ) -> Result<(), String> {
+        if connection_id.trim().is_empty() {
+            return Err("Missing connection id".to_string());
+        }
+        self.connect_with_lease(app, session_id, Some(connection_id))
+            .await
+    }
+
+    async fn connect_with_lease(
+        &self,
+        app: &AppHandle,
+        session_id: String,
+        connection_id: Option<String>,
+    ) -> Result<(), String> {
         let stale_worker = {
             let mut workers = self.inner.workers.lock().unwrap();
             if let Some(existing) = workers.get(&session_id) {
                 if is_worker_session_usable(existing) {
+                    *existing.connection_id.lock().unwrap() = connection_id;
                     return Ok(());
                 }
                 workers.remove(&session_id)
@@ -479,6 +503,7 @@ impl AcpProcessManager {
 
         let worker = Arc::new(AcpWorker {
             session_id: session_id.clone(),
+            connection_id: Mutex::new(connection_id),
             workspace_cwd: Mutex::new(Some(cwd.clone())),
             status: Mutex::new(RuntimeStatus {
                 session_id: session_id.clone(),
@@ -507,7 +532,7 @@ impl AcpProcessManager {
             return Err(err);
         }
 
-        let resume = rpc
+        let resume = match rpc
             .request(
                 "session/resume",
                 json!({
@@ -516,7 +541,14 @@ impl AcpProcessManager {
                     "mcpServers": crate::mcp_config::mcp_servers_for_acp(),
                 }),
             )
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                let _ = rpc.shutdown();
+                return Err(err);
+            }
+        };
 
         if resume.error.is_some() {
             let _ = rpc.shutdown();
@@ -543,6 +575,33 @@ impl AcpProcessManager {
         let worker = {
             let mut workers = self.inner.workers.lock().unwrap();
             workers.remove(&session_id)
+        };
+        if let Some(worker) = worker {
+            stop_worker_async(&worker, "disconnected").await;
+        }
+        Ok(())
+    }
+
+    pub async fn disconnect_leased(
+        &self,
+        _app: &AppHandle,
+        session_id: String,
+        connection_id: String,
+    ) -> Result<(), String> {
+        let worker = {
+            let mut workers = self.inner.workers.lock().unwrap();
+            let matches_current_lease = workers
+                .get(&session_id)
+                .map(|worker| {
+                    worker.connection_id.lock().unwrap().as_deref()
+                        == Some(connection_id.as_str())
+                })
+                .unwrap_or(false);
+            if matches_current_lease {
+                workers.remove(&session_id)
+            } else {
+                None
+            }
         };
         if let Some(worker) = worker {
             stop_worker_async(&worker, "disconnected").await;
@@ -633,6 +692,7 @@ impl AcpProcessManager {
                 );
                 set_worker_status(app, &worker, "idle", Some("initialized"), None);
                 emit_mode_status_wire(app, &worker);
+                emit_usage_status_wire(app, &worker, None);
                 Ok(())
             }
             Some("replay") => handle_replay(app, &worker, id).await,
@@ -762,6 +822,7 @@ pub(crate) fn spawn_acp_probe_worker(
 fn new_probe_worker() -> AcpWorker {
     AcpWorker {
         session_id: "__desktop_probe__".to_string(),
+        connection_id: Mutex::new(None),
         workspace_cwd: Mutex::new(None),
         status: Mutex::new(RuntimeStatus {
             session_id: "__desktop_probe__".to_string(),
@@ -852,7 +913,7 @@ pub(crate) async fn ensure_acp_authenticated(rpc: &mut AcpRpcSession) -> Result<
 
     if is_auth_required_response(&authenticate) || !is_authenticated_response(&authenticate) {
         return Err(
-            "ACP authentication required. Run `kimi login` (terminal device-code flow), then retry."
+            "ACP authentication required. Sign in from Settings (device code) or run `kimi login`, then retry."
                 .to_string(),
         );
     }
@@ -1061,6 +1122,125 @@ fn emit_mode_status_wire(app: &AppHandle, worker: &AcpWorker) {
         &worker.session_id,
         wire_event_message("StatusUpdate", mode_status_payload(worker)),
     );
+}
+
+/// Best-effort context/token usage for the status ring.
+///
+/// Kimi ACP currently omits `usage_update` (see MoonshotAI/kimi-code#1855), so we
+/// fall back to the latest `usage.record` in wire.jsonl and the model's
+/// `max_context_size` from config.toml. When a future CLI fills
+/// `PromptResponse.usage`, that is preferred for the token breakdown.
+fn emit_usage_status_wire(app: &AppHandle, worker: &AcpWorker, prompt_result: Option<&Value>) {
+    let from_prompt = prompt_result
+        .and_then(|result| result.get("usage"))
+        .and_then(usage_snapshot_from_acp_usage);
+    let from_wire = match session_store::latest_turn_usage(&worker.session_id) {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            eprintln!(
+                "[acp] failed to read usage.record for {}: {err}",
+                worker.session_id
+            );
+            None
+        }
+    };
+
+    // Prefer wire for context fill (last-turn prompt size). Prefer ACP usage for
+    // the tooltip breakdown when present; otherwise reuse the wire snapshot.
+    let context_source = from_wire.clone().or_else(|| from_prompt.clone());
+    let token_source = from_prompt.or(from_wire);
+    let Some(context_source) = context_source else {
+        return;
+    };
+
+    let used = context_source.context_tokens();
+    let model = context_source
+        .model
+        .as_deref()
+        .or(token_source.as_ref().and_then(|u| u.model.as_deref()))
+        .unwrap_or("");
+    let size = global_config::max_context_size_for_model(model);
+    let context_usage = size
+        .filter(|s| *s > 0)
+        .map(|s| ((used as f64) / (s as f64)).clamp(0.0, 1.0));
+
+    let token_usage = token_source
+        .as_ref()
+        .map(session_store::SessionUsageSnapshot::to_token_usage_json)
+        .unwrap_or(Value::Null);
+
+    emit_wire_message(
+        app,
+        &worker.session_id,
+        wire_event_message(
+            "StatusUpdate",
+            json!({
+                "context_usage": context_usage,
+                "token_usage": token_usage,
+                "context_tokens": used,
+                "max_context_tokens": size,
+            }),
+        ),
+    );
+}
+
+fn usage_snapshot_from_acp_usage(usage: &Value) -> Option<session_store::SessionUsageSnapshot> {
+    if !usage.is_object() {
+        return None;
+    }
+    let snapshot = session_store::SessionUsageSnapshot {
+        model: None,
+        input_other: acp_usage_u64(usage, &["inputTokens", "input_tokens", "inputOther"]),
+        output: acp_usage_u64(usage, &["outputTokens", "output_tokens", "output"]),
+        input_cache_read: acp_usage_u64(
+            usage,
+            &[
+                "cachedReadTokens",
+                "cacheReadTokens",
+                "inputCacheRead",
+                "cache_read_input_tokens",
+            ],
+        ),
+        input_cache_creation: acp_usage_u64(
+            usage,
+            &[
+                "cachedWriteTokens",
+                "cacheWriteTokens",
+                "inputCacheCreation",
+                "cache_creation_input_tokens",
+            ],
+        ),
+    };
+    if snapshot.context_tokens() == 0 && snapshot.output == 0 {
+        return None;
+    }
+    Some(snapshot)
+}
+
+fn acp_usage_u64(usage: &Value, keys: &[&str]) -> u64 {
+    for key in keys {
+        if let Some(value) = usage.get(*key) {
+            match value {
+                Value::Number(n) => {
+                    return n
+                        .as_u64()
+                        .or_else(|| n.as_i64().map(|v| v.max(0) as u64))
+                        .or_else(|| {
+                            n.as_f64()
+                                .map(|v| if v.is_finite() && v > 0.0 { v as u64 } else { 0 })
+                        })
+                        .unwrap_or(0);
+                }
+                Value::String(s) => {
+                    if let Ok(parsed) = s.parse::<u64>() {
+                        return parsed;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    0
 }
 
 fn emit_mode_response(app: &AppHandle, worker: &AcpWorker, id: Option<Value>) {
@@ -1302,6 +1482,7 @@ async fn handle_replay(
         .to_string(),
     );
     set_worker_status(app, worker, "idle", Some("replay_complete"), None);
+    emit_usage_status_wire(app, worker, None);
     Ok(())
 }
 
@@ -1462,6 +1643,7 @@ async fn handle_prompt(
         .to_string(),
     );
     set_worker_status(app, worker, "idle", Some(status), None);
+    emit_usage_status_wire(app, worker, response.result.as_ref());
     Ok(())
 }
 
@@ -1564,19 +1746,21 @@ fn is_worker_session_usable(worker: &AcpWorker) -> bool {
 }
 
 async fn stop_worker_async(worker: &AcpWorker, reason: &str) {
+    // Mark stopped before killing so the stdout reader does not treat an
+    // intentional shutdown (e.g. config_update restart) as an unexpected exit.
+    mark_worker_stopped(worker, reason);
     if let Some(rpc) = worker.rpc.lock().unwrap().take() {
         let _ = rpc.shutdown();
     }
-    mark_worker_stopped(worker, reason);
 }
 
 fn stop_worker_best_effort(worker: &AcpWorker, reason: &str) {
+    mark_worker_stopped(worker, reason);
     if let Ok(mut guard) = worker.rpc.try_lock() {
         if let Some(rpc) = guard.take() {
             let _ = rpc.shutdown();
         }
     }
-    mark_worker_stopped(worker, reason);
 }
 
 fn mark_worker_stopped(worker: &AcpWorker, reason: &str) {
@@ -2185,6 +2369,24 @@ mod tests {
         assert_eq!(status.reason.as_deref(), Some("acp_process_exited"));
         assert!(status.detail.as_deref().unwrap().contains("unexpectedly"));
         assert!(worker.in_flight_prompt_ids.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn intentional_stop_suppresses_unexpected_exit_error() {
+        let worker = new_probe_worker();
+        {
+            let mut status = worker.status.lock().unwrap();
+            status.state = "idle".to_string();
+        }
+        mark_worker_stopped(&worker, "config_update");
+
+        assert!(
+            record_worker_rpc_dead(&worker).is_none(),
+            "stdout EOF after intentional stop must not become an error"
+        );
+        let status = worker.status.lock().unwrap().clone();
+        assert_eq!(status.state, "stopped");
+        assert_eq!(status.reason.as_deref(), Some("config_update"));
     }
 
     #[test]

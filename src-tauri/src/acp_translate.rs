@@ -203,12 +203,20 @@ pub fn translate_session_update(session_id: &str, update: &Value) -> Vec<String>
             )]
         }
         "usage_update" => {
-            let used = update.get("used").and_then(Value::as_u64);
+            // ACP reports absolute token counts; the desktop wire expects a 0–1 ratio.
+            let used = update.get("used").and_then(Value::as_f64);
+            let size = update.get("size").and_then(Value::as_f64);
+            let context_usage = match (used, size) {
+                (Some(u), Some(s)) if s > 0.0 => Some((u / s).clamp(0.0, 1.0)),
+                _ => None,
+            };
             vec![wire_event_message(
                 "StatusUpdate",
                 json!({
-                    "context_usage": used,
+                    "context_usage": context_usage,
                     "token_usage": null,
+                    "context_tokens": used.map(|u| u.round() as u64),
+                    "max_context_tokens": size.map(|s| s.round() as u64),
                 }),
             )]
         }
@@ -1194,5 +1202,36 @@ mod tests {
         assert_eq!(commands[0]["input_hint"], "optional instruction");
         assert_eq!(commands[1]["name"], "help");
         assert!(commands[1]["input_hint"].is_null());
+    }
+
+    #[test]
+    fn maps_usage_update_to_context_ratio() {
+        let update = json!({
+            "sessionUpdate": "usage_update",
+            "used": 53000,
+            "size": 200000,
+        });
+        let messages = translate_session_update("sess-1", &update);
+        assert_eq!(messages.len(), 1);
+        let parsed = parse_wire_message(&messages[0]);
+        assert_eq!(parsed["params"]["type"], "StatusUpdate");
+        let payload = &parsed["params"]["payload"];
+        assert!((payload["context_usage"].as_f64().unwrap() - 0.265).abs() < 1e-9);
+        assert_eq!(payload["context_tokens"], 53000);
+        assert_eq!(payload["max_context_tokens"], 200000);
+        assert!(payload["token_usage"].is_null());
+    }
+
+    #[test]
+    fn usage_update_without_size_omits_ratio() {
+        let update = json!({
+            "sessionUpdate": "usage_update",
+            "used": 1000,
+        });
+        let messages = translate_session_update("sess-1", &update);
+        let payload = &parse_wire_message(&messages[0])["params"]["payload"];
+        assert!(payload["context_usage"].is_null());
+        assert_eq!(payload["context_tokens"], 1000);
+        assert!(payload["max_context_tokens"].is_null());
     }
 }

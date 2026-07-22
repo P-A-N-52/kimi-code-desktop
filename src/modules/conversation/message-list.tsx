@@ -1,5 +1,5 @@
 import { GitFork } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { LiveMessage } from "@/hooks/types";
 import type { ApprovalResponseDecision } from "@/hooks/wireTypes";
 import { AiMessage } from "./ai-message";
@@ -17,11 +17,13 @@ function MessageView({
   onRespondApproval,
   onRespondQuestion,
   onForkSession,
+  showApprovalShortcuts,
 }: {
   message: LiveMessage;
   onRespondApproval: (requestId: string, decision: ApprovalResponseDecision) => void;
   onRespondQuestion: (requestId: string, answers: Record<string, string>) => void;
   onForkSession?: (turnIndex: number) => void;
+  showApprovalShortcuts: boolean;
 }) {
   if (message.role === "user") {
     const forkTurn =
@@ -63,7 +65,12 @@ function MessageView({
       if (!tc) return null;
       if (tc.state === "approval-requested" && tc.approval) {
         return (
-          <ApprovalCard approval={tc.approval} display={tc.display} onRespond={onRespondApproval} />
+          <ApprovalCard
+            approval={tc.approval}
+            display={tc.display}
+            onRespond={onRespondApproval}
+            showShortcuts={showApprovalShortcuts}
+          />
         );
       }
       if (tc.state === "question-requested" && tc.question) {
@@ -109,6 +116,46 @@ export function MessageList({
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
+  const pendingApprovals = useMemo(
+    () =>
+      messages.flatMap((message) => {
+        const approval = message.toolCall?.approval;
+        return message.toolCall?.state === "approval-requested" &&
+          approval &&
+          !approval.submitted &&
+          !approval.resolved
+          ? [approval]
+          : [];
+      }),
+    [messages],
+  );
+
+  useEffect(() => {
+    if (pendingApprovals.length !== 1) return;
+    const approval = pendingApprovals[0];
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (
+        event.defaultPrevented ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey ||
+        target?.isContentEditable ||
+        target?.matches("input, textarea, select, button, a, [role='button']")
+      ) {
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        onRespondApproval(approval.id, "approve");
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        onRespondApproval(approval.id, "reject");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onRespondApproval, pendingApprovals]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -134,6 +181,7 @@ export function MessageList({
             onRespondApproval={onRespondApproval}
             onRespondQuestion={onRespondQuestion}
             onForkSession={onForkSession}
+            showApprovalShortcuts={pendingApprovals.length === 1}
           />
         ))}
         {errorMessage ? (

@@ -1,6 +1,5 @@
 import {
   ArrowUp,
-  ChevronDown,
   FileText,
   LoaderCircle,
   Paperclip,
@@ -12,16 +11,19 @@ import {
 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import type { UploadSessionFileResponse } from "@/lib/api/models";
+import type { ConfigModel, UploadSessionFileResponse } from "@/lib/api/models";
 import {
   type SlashCommandDef,
   shouldExecuteSlashCommandImmediately,
 } from "@/lib/slash-command-catalog";
 import { cn } from "@/lib/utils";
+import { ModelPicker } from "./model-picker";
 
 export type QueuedPrompt = { id: string; text: string };
+const uploadedFilesBySession = new Map<string, UploadSessionFileResponse[]>();
 
 type ComposerProps = {
+  sessionId: string;
   draft: string;
   onDraftChange: (value: string) => void;
   onSend: (text?: string) => void;
@@ -35,11 +37,18 @@ type ComposerProps = {
   onClearQueue: () => void;
   onUploadFile: (file: File) => Promise<UploadSessionFileResponse>;
   onOpenContext: () => void;
-  modelLabel: string;
-  onOpenModelSettings: () => void;
+  models: ConfigModel[];
+  selectedModel: string;
+  thinkingEnabled: boolean;
+  modelControlsDisabled?: boolean;
+  modelUpdating?: boolean;
+  onSelectModel: (name: string) => void;
+  onToggleThinking: (enabled: boolean) => void;
+  onManageConfig?: () => void;
 };
 
 export function Composer({
+  sessionId,
   draft,
   onDraftChange,
   onSend,
@@ -53,15 +62,36 @@ export function Composer({
   onClearQueue,
   onUploadFile,
   onOpenContext,
-  modelLabel,
-  onOpenModelSettings,
+  models,
+  selectedModel,
+  thinkingEnabled,
+  modelControlsDisabled = false,
+  modelUpdating = false,
+  onSelectModel,
+  onToggleThinking,
+  onManageConfig,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const [activeCommand, setActiveCommand] = useState(0);
   const [uploading, setUploading] = useState(false);
-  const [uploadedFiles, setUploadedFiles] = useState<UploadSessionFileResponse[]>([]);
+  const [uploadedFiles, setUploadedFilesState] = useState<UploadSessionFileResponse[]>(
+    () => uploadedFilesBySession.get(sessionId) ?? [],
+  );
+
+  const setUploadedFiles = (
+    update:
+      | UploadSessionFileResponse[]
+      | ((current: UploadSessionFileResponse[]) => UploadSessionFileResponse[]),
+  ) => {
+    setUploadedFilesState((current) => {
+      const next = typeof update === "function" ? update(current) : update;
+      if (next.length === 0) uploadedFilesBySession.delete(sessionId);
+      else uploadedFilesBySession.set(sessionId, next);
+      return next;
+    });
+  };
 
   const commandQuery = draft.startsWith("/") ? draft.slice(1).split(/\s/, 1)[0].toLowerCase() : "";
   const visibleCommands = useMemo(
@@ -98,15 +128,28 @@ export function Composer({
   const uploadFiles = async (files: FileList | null) => {
     if (!files?.length) return;
     setUploading(true);
+    const failures: string[] = [];
+    let uploadedCount = 0;
     try {
-      const uploaded: UploadSessionFileResponse[] = [];
-      for (const file of Array.from(files)) uploaded.push(await onUploadFile(file));
-      setUploadedFiles((current) => [...current, ...uploaded]);
-      toast.success(uploaded.length === 1 ? "文件已上传" : `${uploaded.length} 个文件已上传`);
-    } catch (error) {
-      toast.error("文件上传失败", {
-        description: error instanceof Error ? error.message : String(error),
-      });
+      for (const file of Array.from(files)) {
+        try {
+          const uploaded = await onUploadFile(file);
+          uploadedCount += 1;
+          setUploadedFiles((current) => [...current, uploaded]);
+        } catch (error) {
+          failures.push(
+            `${file.name}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      if (uploadedCount > 0) {
+        toast.success(uploadedCount === 1 ? "文件已上传" : `${uploadedCount} 个文件已上传`);
+      }
+      if (failures.length > 0) {
+        toast.error(`${failures.length} 个文件上传失败`, {
+          description: failures.join("\n"),
+        });
+      }
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
@@ -280,14 +323,16 @@ export function Composer({
             PLAN
           </span>
         )}
-        <button
-          type="button"
-          onClick={onOpenModelSettings}
-          className="ml-auto flex h-7 max-w-40 items-center gap-1.5 rounded-full border border-line px-2.5 font-mono text-[11px] font-medium text-muted transition-colors hover:bg-hover hover:text-foreground"
-        >
-          <span className="truncate">{modelLabel}</span>
-          <ChevronDown size={10} strokeWidth={1.5} />
-        </button>
+        <ModelPicker
+          models={models}
+          selectedModel={selectedModel}
+          thinkingEnabled={thinkingEnabled}
+          disabled={modelControlsDisabled}
+          updating={modelUpdating}
+          onSelectModel={onSelectModel}
+          onToggleThinking={onToggleThinking}
+          onManageConfig={onManageConfig}
+        />
         {canCancel && (
           <button
             type="button"

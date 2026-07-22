@@ -14,6 +14,10 @@ const mocks = vi.hoisted(() => ({
 	wireDisconnect: vi.fn(),
 	wireSend: vi.fn(),
 	wireStatus: vi.fn(),
+	fetchManagedUsage: vi.fn(),
+	getGlobalConfig: vi.fn(),
+	getKimiCliVersion: vi.fn(),
+	getSession: vi.fn(),
 }));
 
 vi.mock("@/lib/tauri-api", () => ({
@@ -26,6 +30,10 @@ vi.mock("@/lib/tauri-api", () => ({
 	wireDisconnect: mocks.wireDisconnect,
 	wireSend: mocks.wireSend,
 	wireStatus: mocks.wireStatus,
+	fetchManagedUsage: mocks.fetchManagedUsage,
+	getGlobalConfig: mocks.getGlobalConfig,
+	getKimiCliVersion: mocks.getKimiCliVersion,
+	getSession: mocks.getSession,
 }));
 
 vi.mock("@/lib/version", () => ({
@@ -106,6 +114,13 @@ describe("useSessionStream Tauri watchdog", () => {
 			detail: null,
 			updatedAt: new Date("2026-01-01T00:00:00Z"),
 		});
+		mocks.fetchManagedUsage.mockResolvedValue({
+			kind: "error",
+			message: "Not signed in",
+		});
+		mocks.getGlobalConfig.mockResolvedValue({ defaultModel: "kimi" });
+		mocks.getKimiCliVersion.mockResolvedValue("1.2.3");
+		mocks.getSession.mockResolvedValue({ workDir: "/tmp/demo" });
 	});
 
 	afterEach(() => {
@@ -472,6 +487,58 @@ describe("useSessionStream Tauri watchdog", () => {
 		expect(result.current.swarmMode).toBe(true);
 	});
 
+	it("returns /usage and /status as info-panel results without chat messages", async () => {
+		const { result } = renderHook(() =>
+			useSessionStream({
+				sessionId: "session-1",
+				baseUrl: "http://localhost:5173",
+				autoConnect: true,
+			}),
+		);
+
+		await flushPromises();
+		completeReplay();
+		await flushPromises();
+		mocks.wireSend.mockClear();
+		const messageCountBefore = result.current.messages.length;
+
+		let usageOutcome: Awaited<ReturnType<typeof result.current.sendMessage>> | undefined;
+		await act(async () => {
+			usageOutcome = await result.current.sendMessage("/usage");
+		});
+		await flushPromises();
+
+		expect(usageOutcome).toEqual(
+			expect.objectContaining({
+				kind: "info-panel",
+				command: "usage",
+			}),
+		);
+		expect(usageOutcome && "content" in usageOutcome ? usageOutcome.content : "").toContain(
+			"Usage",
+		);
+		expect(result.current.messages).toHaveLength(messageCountBefore);
+
+		let statusOutcome: Awaited<ReturnType<typeof result.current.sendMessage>> | undefined;
+		await act(async () => {
+			statusOutcome = await result.current.sendMessage("/status");
+		});
+		await flushPromises();
+
+		expect(statusOutcome).toEqual(
+			expect.objectContaining({
+				kind: "info-panel",
+				command: "status",
+			}),
+		);
+		expect(result.current.messages).toHaveLength(messageCountBefore);
+		expect(
+			mocks.wireSend.mock.calls.some(([, message]) =>
+				JSON.parse(message).method === "prompt",
+			),
+		).toBe(false);
+	});
+
 	it("shows a sent user message before ACP echoes the turn", async () => {
 		const { result } = renderHook(() =>
 			useSessionStream({
@@ -676,7 +743,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		await flushPromises();
 
 		expect(mocks.replaySessionHistory).toHaveBeenCalledWith("session-1");
-		expect(mocks.wireConnect).toHaveBeenCalledWith("session-1");
+		expect(mocks.wireConnect).toHaveBeenCalledWith("session-1", expect.any(String));
 		expect(result.current.status).toBe("ready");
 		expect(result.current.isConnected).toBe(true);
 		expect(
@@ -1119,7 +1186,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		await flushPromises();
 		completeReplay();
 
-		let sendPromise: Promise<void> | undefined;
+		let sendPromise: ReturnType<typeof result.current.sendMessage> | undefined;
 		act(() => {
 			sendPromise = result.current.sendMessage("Complete this prompt");
 		});

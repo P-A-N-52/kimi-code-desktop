@@ -81,8 +81,9 @@ pub async fn wire_connect(
     app: tauri::AppHandle,
     acp: tauri::State<'_, AcpProcessManager>,
     session_id: String,
+    connection_id: String,
 ) -> Result<(), String> {
-    acp.connect(&app, session_id).await
+    acp.connect_leased(&app, session_id, connection_id).await
 }
 
 #[tauri::command]
@@ -90,8 +91,9 @@ pub async fn wire_disconnect(
     app: tauri::AppHandle,
     acp: tauri::State<'_, AcpProcessManager>,
     session_id: String,
+    connection_id: String,
 ) -> Result<(), String> {
-    acp.disconnect(&app, session_id).await
+    acp.disconnect_leased(&app, session_id, connection_id).await
 }
 
 #[tauri::command]
@@ -550,6 +552,13 @@ pub async fn fetch_managed_usage() -> Result<Value, String> {
 }
 
 #[tauri::command]
+pub async fn fetch_usage_stats(range: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::usage_stats::fetch_usage_stats(&range))
+        .await
+        .map_err(|e| format!("Failed to join usage stats fetch: {e}"))?
+}
+
+#[tauri::command]
 pub async fn check_runtime_readiness(
     app: tauri::AppHandle,
 ) -> Result<runtime_check::RuntimeReadiness, String> {
@@ -568,6 +577,41 @@ pub async fn open_kimi_login() -> Result<Value, String> {
     })
     .await
     .map_err(|e| format!("Failed to join login launcher: {}", e))?
+}
+
+#[tauri::command]
+pub async fn start_kimi_login() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(crate::oauth_login::start_kimi_login)
+        .await
+        .map_err(|e| format!("Failed to join start_kimi_login: {e}"))?
+}
+
+#[tauri::command]
+pub async fn poll_kimi_login(login_id: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::oauth_login::poll_kimi_login(&login_id))
+        .await
+        .map_err(|e| format!("Failed to join poll_kimi_login: {e}"))?
+}
+
+#[tauri::command]
+pub async fn cancel_kimi_login(login_id: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::oauth_login::cancel_kimi_login(&login_id))
+        .await
+        .map_err(|e| format!("Failed to join cancel_kimi_login: {e}"))?
+}
+
+#[tauri::command]
+pub async fn kimi_credentials_status() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(crate::managed_usage::kimi_credentials_status)
+        .await
+        .map_err(|e| format!("Failed to join kimi_credentials_status: {e}"))
+}
+
+#[tauri::command]
+pub async fn logout_kimi() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(crate::managed_usage::logout_kimi)
+        .await
+        .map_err(|e| format!("Failed to join logout_kimi: {e}"))
 }
 
 #[tauri::command]

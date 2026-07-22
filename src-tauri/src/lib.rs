@@ -6,6 +6,7 @@ pub mod git_diff;
 pub mod global_config;
 pub mod managed_usage;
 pub mod mcp_config;
+pub mod oauth_login;
 pub mod notify;
 pub mod runtime_backend;
 pub mod runtime_check;
@@ -15,12 +16,22 @@ pub mod session_store;
 #[cfg(test)]
 pub mod test_env;
 pub mod tray;
+pub mod usage_stats;
 pub mod wire_events;
 
 use tauri::Manager;
 
 pub fn run() {
     let app = tauri::Builder::default()
+        // Register this first so a second launch is intercepted before any
+        // other plugin or application state is initialized.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_notification::init())
         .manage(acp::AcpProcessManager::new())
         .manage(acp_desktop::AcpDesktopClient::new())
@@ -58,10 +69,16 @@ pub fn run() {
             commands::get_kimi_cli_version,
             commands::check_runtime_readiness,
             commands::open_kimi_login,
+            commands::start_kimi_login,
+            commands::poll_kimi_login,
+            commands::cancel_kimi_login,
+            commands::kimi_credentials_status,
+            commands::logout_kimi,
             commands::open_external,
             commands::open_in_explorer,
             commands::open_in_editor,
             commands::fetch_managed_usage,
+            commands::fetch_usage_stats,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

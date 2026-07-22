@@ -203,14 +203,23 @@ fn check_kimi_code_runtime_readiness() -> RuntimeReadiness {
         _ => {}
     }
 
-    checks.push(RuntimeReadinessCheck {
-        id: "credentials",
-        label: "Kimi Code login",
-        status: CheckStatus::Ok,
-        detail:
-            "ACP login uses terminal device-code flow. Run `kimi login` before connecting sessions."
-                .to_string(),
-    });
+    if crate::managed_usage::credentials_present() {
+        checks.push(RuntimeReadinessCheck {
+            id: "credentials",
+            label: "Kimi Code login",
+            status: CheckStatus::Ok,
+            detail: "Kimi Code credentials found under ~/.kimi-code/credentials/.".to_string(),
+        });
+    } else {
+        let detail = "No Kimi Code credentials found. Sign in from Settings or this screen (device code), or run `kimi login`.".to_string();
+        warnings.push(detail.clone());
+        checks.push(RuntimeReadinessCheck {
+            id: "credentials",
+            label: "Kimi Code login",
+            status: CheckStatus::Warning,
+            detail,
+        });
+    }
 
     if let Some(hint) = legacy_migration_hint() {
         warnings.push(hint.clone());

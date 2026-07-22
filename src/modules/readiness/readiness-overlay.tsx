@@ -1,6 +1,7 @@
 import { Check, Download, RefreshCw, TriangleAlert } from "lucide-react";
 import type { RuntimeReadiness } from "@/lib/tauri-api";
 import { cn } from "@/lib/utils";
+import { KimiLoginPanel } from "@/modules/settings/kimi-login-panel";
 import { Button } from "@/ui/button";
 
 export function ReadinessOverlay({
@@ -18,6 +19,15 @@ export function ReadinessOverlay({
 	onContinue: () => void;
 	onOpenDownload: () => void;
 }) {
+	const needsLogin =
+		Boolean(readiness) &&
+		(readiness?.checks.some(
+			(check) =>
+				check.id === "credentials" &&
+				(check.status === "warning" || check.status === "error"),
+		) ??
+			false);
+
 	return (
 		<div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
 			<div className="flex w-full max-w-md flex-col items-center gap-4 px-6">
@@ -77,6 +87,11 @@ export function ReadinessOverlay({
 							<p className="text-center text-[12px] text-danger">
 								{readiness.issues[0]}
 							</p>
+						)}
+						{needsLogin && (
+							<div className="w-full">
+								<KimiLoginPanel compact onSuccess={onRetry} />
+							</div>
 						)}
 						<div className="flex gap-2">
 							{!readiness.externalCli.available && (

@@ -1,9 +1,37 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { ModelCapability, type ConfigModel } from "@/lib/api/models";
 import { Composer, type QueuedPrompt } from "./composer";
+
+const sampleModels: ConfigModel[] = [
+  {
+    name: "kimi-k2.5",
+    provider: "kimi",
+    model: "kimi-k2.5",
+    maxContextSize: 128000,
+    providerType: "kimi",
+    capabilities: new Set([ModelCapability.Thinking]),
+  },
+  {
+    name: "plain",
+    provider: "openai",
+    model: "gpt",
+    maxContextSize: 64000,
+    providerType: "openai_legacy",
+  },
+  {
+    name: "reasoner",
+    provider: "kimi",
+    model: "reasoner",
+    maxContextSize: 128000,
+    providerType: "kimi",
+    capabilities: new Set([ModelCapability.AlwaysThinking]),
+  },
+];
 
 const renderComposer = (overrides: Partial<Parameters<typeof Composer>[0]> = {}) => {
   const props: Parameters<typeof Composer>[0] = {
+    sessionId: "session-1",
     draft: "",
     onDraftChange: vi.fn(),
     onSend: vi.fn(),
@@ -21,8 +49,11 @@ const renderComposer = (overrides: Partial<Parameters<typeof Composer>[0]> = {})
       .fn()
       .mockResolvedValue({ path: "uploads/notes.txt", filename: "notes.txt", size: 4 }),
     onOpenContext: vi.fn(),
-    modelLabel: "kimi-k2.5",
-    onOpenModelSettings: vi.fn(),
+    models: sampleModels,
+    selectedModel: "kimi-k2.5",
+    thinkingEnabled: false,
+    onSelectModel: vi.fn(),
+    onToggleThinking: vi.fn(),
     ...overrides,
   };
   return { ...render(<Composer {...props} />), props };
@@ -58,7 +89,7 @@ describe("Composer integrations", () => {
     expect(screen.queryByRole("button", { name: "停止生成" })).toBeNull();
   });
 
-  it("uploads files through the session API and exposes context/model controls", async () => {
+  it("uploads files and switches models from the inline picker", async () => {
     const { container, props } = renderComposer();
     const input = container.querySelector<HTMLInputElement>('input[type="file"]');
     if (!input) throw new Error("Expected the composer file input");
@@ -68,8 +99,64 @@ describe("Composer integrations", () => {
     await waitFor(() => expect(props.onUploadFile).toHaveBeenCalledOnce());
     expect(await screen.findByText("notes.txt")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /上下文/ }));
-    fireEvent.click(screen.getByRole("button", { name: /kimi-k2.5/ }));
+    fireEvent.click(screen.getByRole("button", { name: /当前模型 kimi-k2.5/ }));
+    expect(screen.getByRole("listbox", { name: "模型列表" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("option", { name: /plain/ }));
     expect(props.onOpenContext).toHaveBeenCalledOnce();
-    expect(props.onOpenModelSettings).toHaveBeenCalledOnce();
+    expect(props.onSelectModel).toHaveBeenCalledWith("plain");
+  });
+
+  it("keeps successful uploads visible when another selected file fails", async () => {
+    const onUploadFile = vi
+      .fn()
+      .mockResolvedValueOnce({ path: "uploads/good.txt", filename: "good.txt", size: 4 })
+      .mockRejectedValueOnce(new Error("too large"));
+    const { container } = renderComposer({ sessionId: "partial-upload", onUploadFile });
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("Expected the composer file input");
+
+    fireEvent.change(input, {
+      target: {
+        files: [
+          new File(["good"], "good.txt", { type: "text/plain" }),
+          new File(["bad"], "bad.txt", { type: "text/plain" }),
+        ],
+      },
+    });
+
+    expect(await screen.findByText("good.txt")).toBeTruthy();
+    await waitFor(() => expect(onUploadFile).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("bad.txt")).toBeNull();
+  });
+
+  it("shows a thinking toggle only for models that support it", () => {
+    const first = renderComposer();
+    fireEvent.click(first.getByRole("button", { name: /当前模型 kimi-k2.5/ }));
+    expect(first.getByLabelText("切换思考模式")).toBeTruthy();
+    fireEvent.click(first.getByLabelText("切换思考模式"));
+    expect(first.props.onToggleThinking).toHaveBeenCalledWith(true);
+    first.unmount();
+
+    const plain = renderComposer({ selectedModel: "plain", thinkingEnabled: false });
+    fireEvent.click(plain.getByRole("button", { name: /当前模型 plain/ }));
+    expect(plain.queryByLabelText("切换思考模式")).toBeNull();
+    expect(plain.queryByLabelText("思考模式由模型强制启用")).toBeNull();
+    plain.unmount();
+
+    const forced = renderComposer({ selectedModel: "reasoner", thinkingEnabled: false });
+    fireEvent.click(forced.getByRole("button", { name: /当前模型 reasoner/ }));
+    const forcedSwitch = forced.getByLabelText("思考模式由模型强制启用");
+    expect((forcedSwitch as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(forcedSwitch);
+    expect(forced.props.onToggleThinking).not.toHaveBeenCalled();
+  });
+
+  it("offers a secondary manage-config link from the model picker", () => {
+    const onManageConfig = vi.fn();
+    renderComposer({ onManageConfig });
+    fireEvent.click(screen.getByRole("button", { name: /当前模型 kimi-k2.5/ }));
+    fireEvent.click(screen.getByRole("button", { name: "在设置中管理配置…" }));
+    expect(onManageConfig).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("listbox", { name: "模型列表" })).toBeNull();
   });
 });

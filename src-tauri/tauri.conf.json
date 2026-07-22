@@ -1,63 +1,70 @@
 {
-	"$schema": "https://schema.tauri.app/config/2",
-	"productName": "Kimi Code",
-	"version": "0.1.5",
-	"identifier": "com.kimi.code.desktop",
-	"build": {
-		"frontendDist": "../dist",
-		"devUrl": "http://127.0.0.1:1420",
-		"beforeDevCommand": "npm run dev",
-		"beforeBuildCommand": "npm run build"
-	},
-	"app": {
-		"windows": [
-			{
-				"label": "main",
-				"title": "Kimi Code",
-				"url": "index.html",
-				"width": 1040,
-				"height": 680,
-				"minWidth": 720,
-				"minHeight": 520,
-				"decorations": true,
-				"center": true,
-				"visible": false
-			}
-		],
-		"security": {
-			"csp": "default-src 'self' asset: http://asset.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
-			"devCsp": "default-src 'self' asset: http://asset.localhost http://127.0.0.1:1420; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:1420; style-src 'self' 'unsafe-inline' http://127.0.0.1:1420; img-src 'self' asset: http://asset.localhost http://127.0.0.1:1420 data: blob:; media-src 'self' asset: http://asset.localhost http://127.0.0.1:1420 data: blob:; font-src 'self' http://127.0.0.1:1420 data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
-			"capabilities": [
-				{
-					"identifier": "default",
-					"description": "主窗口默认能力 / Default capabilities for the main window",
-					"windows": ["main"],
-					"permissions": [
-						"core:path:default",
-						"core:event:default",
-						"core:window:default",
-						"core:webview:default",
-						"core:app:default",
-						"core:image:default",
-						"core:resources:default",
-						"core:menu:default",
-						"core:tray:default",
-						"notification:default",
-						"global-shortcut:allow-register"
-					]
-				}
-			]
-		}
-	},
-	"bundle": {
-		"active": true,
-		"targets": ["msi"],
-		"windows": {
-			"wix": {
-				"upgradeCode": "f7e39e8b-d9f0-5008-a66a-af1370d48371"
-			}
-		},
-		"icon": ["icons/icon.png", "icons/icon.ico"]
-	},
-	"plugins": {}
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Kimi Code",
+  "version": "0.1.6",
+  "identifier": "com.kimi.code.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Kimi Code",
+        "url": "index.html",
+        "width": 1040,
+        "height": 680,
+        "minWidth": 720,
+        "minHeight": 520,
+        "decorations": true,
+        "center": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' asset: http://asset.localhost; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: http://asset.localhost data: blob:; media-src 'self' asset: http://asset.localhost data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self' asset: http://asset.localhost http://127.0.0.1:1420; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:1420; style-src 'self' 'unsafe-inline' http://127.0.0.1:1420; img-src 'self' asset: http://asset.localhost http://127.0.0.1:1420 data: blob:; media-src 'self' asset: http://asset.localhost http://127.0.0.1:1420 data: blob:; font-src 'self' http://127.0.0.1:1420 data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:1420 ws://127.0.0.1:1420; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+      "capabilities": [
+        {
+          "identifier": "default",
+          "description": "主窗口默认能力 / Default capabilities for the main window",
+          "windows": [
+            "main"
+          ],
+          "permissions": [
+            "core:path:default",
+            "core:event:default",
+            "core:window:default",
+            "core:webview:default",
+            "core:app:default",
+            "core:image:default",
+            "core:resources:default",
+            "core:menu:default",
+            "core:tray:default",
+            "notification:default",
+            "global-shortcut:allow-register"
+          ]
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "msi"
+    ],
+    "windows": {
+      "wix": {
+        "upgradeCode": "f7e39e8b-d9f0-5008-a66a-af1370d48371"
+      }
+    },
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {}
 }

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { LiveMessage } from "@/hooks/types";
 import { MessageList } from "./message-list";
@@ -160,5 +160,32 @@ describe("MessageList semantic rendering", () => {
   it("does not expose session fork while ACP lacks fork support", () => {
     renderMessages([{ id: "turn-2", role: "user", content: "Try another approach", turnIndex: 2 }]);
     expect(screen.queryByRole("button", { name: "从此轮分叉会话" })).toBeNull();
+  });
+
+  it("handles Enter and Escape only when exactly one approval is pending", () => {
+    const onRespondApproval = vi.fn();
+    const approvalMessage = {
+      id: "approval",
+      role: "assistant",
+      variant: "tool",
+      toolCall: {
+        title: "Bash",
+        type: "tool-Bash" as never,
+        state: "approval-requested",
+        approval: { id: "r1", action: "Bash", description: "npm test", sender: "kimi" },
+      },
+    } as LiveMessage;
+    render(
+      <MessageList
+        messages={[approvalMessage]}
+        onRespondApproval={onRespondApproval}
+        onRespondQuestion={vi.fn()}
+      />,
+    );
+
+    fireEvent.keyDown(window, { key: "Enter" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onRespondApproval).toHaveBeenNthCalledWith(1, "r1", "approve");
+    expect(onRespondApproval).toHaveBeenNthCalledWith(2, "r1", "reject");
   });
 });

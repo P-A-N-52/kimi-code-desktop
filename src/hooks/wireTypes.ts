@@ -143,6 +143,10 @@ export type StatusUpdateEvent = {
   payload: {
     context_usage: number | null;
     token_usage?: TokenUsage | null;
+    /** Absolute tokens currently in context (from ACP usage_update.used) */
+    context_tokens?: number | null;
+    /** Context window size in tokens (from ACP usage_update.size) */
+    max_context_tokens?: number | null;
     message_id?: string;
     plan_mode?: boolean | null;
     permission_mode?: PermissionMode | "ask" | null;

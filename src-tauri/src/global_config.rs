@@ -35,6 +35,31 @@ pub fn get_global_config() -> Result<Value, String> {
     Ok(build_global_config_json(&parsed))
 }
 
+/// Look up `max_context_size` for a model alias (e.g. `kimi-code/kimi-for-coding`).
+/// Falls back to `default_model` when `model_name` is empty or unknown.
+pub fn max_context_size_for_model(model_name: &str) -> Option<u64> {
+    let parsed = load_config_toml().ok()?;
+    let models = parsed.get("models")?.as_table()?;
+
+    let resolve = |name: &str| -> Option<u64> {
+        models
+            .get(name)?
+            .get("max_context_size")?
+            .as_integer()
+            .map(|n| n.max(0) as u64)
+            .filter(|n| *n > 0)
+    };
+
+    if !model_name.is_empty() {
+        if let Some(size) = resolve(model_name) {
+            return Some(size);
+        }
+    }
+
+    let default_model = parsed.get("default_model").and_then(toml::Value::as_str)?;
+    resolve(default_model)
+}
+
 pub(crate) fn runtime_mode_defaults() -> Result<RuntimeModeDefaults, String> {
     let parsed = load_config_toml()?;
     Ok(RuntimeModeDefaults {

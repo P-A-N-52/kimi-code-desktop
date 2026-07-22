@@ -130,6 +130,15 @@ export async function fetchManagedUsage(): Promise<ManagedUsageInvokeResult> {
 	};
 }
 
+export async function fetchUsageStats(
+	range: "today" | "7d" | "30d",
+): Promise<unknown> {
+	if (!isTauri()) {
+		throw new Error("Usage stats are only available in the desktop app.");
+	}
+	return invoke<unknown>("fetch_usage_stats", { range });
+}
+
 export async function checkRuntimeReadiness(): Promise<RuntimeReadiness> {
 	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("check_runtime_readiness");
@@ -145,6 +154,109 @@ export async function openKimiLogin(): Promise<{
 	return {
 		success: Boolean(raw.success),
 		program: String(raw.program ?? ""),
+	};
+}
+
+export type KimiLoginStart = {
+	loginId: string;
+	userCode: string;
+	verificationUri: string;
+	verificationUriComplete: string;
+	expiresIn: number | null;
+	interval: number;
+};
+
+export type KimiLoginPollResult =
+	| { kind: "pending"; errorCode?: string; interval?: number }
+	| { kind: "success" }
+	| { kind: "expired" }
+	| { kind: "denied"; message?: string }
+	| { kind: "cancelled" }
+	| { kind: "error"; message: string };
+
+export async function startKimiLogin(): Promise<KimiLoginStart> {
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+	const raw = await invoke<Record<string, unknown>>("start_kimi_login");
+	return {
+		loginId: String(raw.loginId ?? ""),
+		userCode: String(raw.userCode ?? ""),
+		verificationUri: String(raw.verificationUri ?? ""),
+		verificationUriComplete: String(raw.verificationUriComplete ?? ""),
+		expiresIn:
+			typeof raw.expiresIn === "number"
+				? raw.expiresIn
+				: raw.expiresIn == null
+					? null
+					: Number(raw.expiresIn) || null,
+		interval: Math.max(1, Number(raw.interval) || 5),
+	};
+}
+
+export async function pollKimiLogin(
+	loginId: string,
+): Promise<KimiLoginPollResult> {
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+	const raw = await invoke<Record<string, unknown>>("poll_kimi_login", {
+		loginId,
+	});
+	const kind = String(raw.kind ?? "error");
+	switch (kind) {
+		case "pending":
+			return {
+				kind: "pending",
+				errorCode:
+					typeof raw.errorCode === "string" ? raw.errorCode : undefined,
+				interval:
+					typeof raw.interval === "number" ? raw.interval : undefined,
+			};
+		case "success":
+			return { kind: "success" };
+		case "expired":
+			return { kind: "expired" };
+		case "denied":
+			return {
+				kind: "denied",
+				message: typeof raw.message === "string" ? raw.message : undefined,
+			};
+		case "cancelled":
+			return { kind: "cancelled" };
+		default:
+			return {
+				kind: "error",
+				message:
+					typeof raw.message === "string" && raw.message.length > 0
+						? raw.message
+						: "Login failed",
+			};
+	}
+}
+
+export async function cancelKimiLogin(loginId: string): Promise<void> {
+	if (!isTauri()) return;
+	await invoke("cancel_kimi_login", { loginId });
+}
+
+export async function kimiCredentialsStatus(): Promise<{ present: boolean }> {
+	if (!isTauri()) return { present: false };
+	const raw = await invoke<Record<string, unknown>>("kimi_credentials_status");
+	return { present: Boolean(raw.present) };
+}
+
+export async function logoutKimi(): Promise<{ success: boolean; present: boolean }> {
+	if (!isTauri()) {
+		return Promise.reject(new Error("Not in Tauri"));
+	}
+	const raw = await invoke<Record<string, unknown>>("logout_kimi");
+	if (raw.success === false) {
+		throw new Error(
+			typeof raw.message === "string" && raw.message.length > 0
+				? raw.message
+				: "Logout failed",
+		);
+	}
+	return {
+		success: Boolean(raw.success),
+		present: Boolean(raw.present),
 	};
 }
 
@@ -166,14 +278,14 @@ export async function openInEditor(
 	return invoke<void>("open_in_editor", { path, editor: editor ?? "vscode" });
 }
 
-export async function wireConnect(sessionId: string): Promise<void> {
+export async function wireConnect(sessionId: string, connectionId: string): Promise<void> {
 	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
-	return invoke<void>("wire_connect", { sessionId });
+	return invoke<void>("wire_connect", { sessionId, connectionId });
 }
 
-export async function wireDisconnect(sessionId: string): Promise<void> {
+export async function wireDisconnect(sessionId: string, connectionId: string): Promise<void> {
 	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
-	return invoke<void>("wire_disconnect", { sessionId });
+	return invoke<void>("wire_disconnect", { sessionId, connectionId });
 }
 
 export async function wireSend(

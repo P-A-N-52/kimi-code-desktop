@@ -474,6 +474,13 @@ type UseSessionStreamOptions = {
   autoConnect?: boolean;
 };
 
+/** UI effect for local info slash commands that stay out of chat history. */
+export type LocalInfoPanelResult = {
+  kind: "info-panel";
+  command: "usage" | "status";
+  content: string;
+};
+
 export type UseSessionStreamReturn = {
   /** Current messages */
   messages: LiveMessage[];
@@ -489,6 +496,10 @@ export type UseSessionStreamReturn = {
   canCancel: boolean;
   /** Current context usage (0-1) */
   contextUsage: number;
+  /** Absolute tokens currently in context, if available */
+  contextTokens: number | null;
+  /** Context window size in tokens, if available */
+  maxContextTokens: number | null;
   /** Current token usage for the active step, if available */
   tokenUsage: TokenUsage | null;
   /** Current step number */
@@ -496,7 +507,9 @@ export type UseSessionStreamReturn = {
   /** Whether connected to the session stream */
   isConnected: boolean;
   /** Send a message to the session (will auto-connect if not connected) */
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (text: string) => Promise<LocalInfoPanelResult | void>;
+  /** Resolve /usage or /status text without writing chat messages */
+  runLocalInfoCommand: (command: "usage" | "status") => Promise<string>;
   /** Respond to an approval request */
   respondToApproval: (
     requestId: string,
@@ -545,6 +558,7 @@ type StreamConnection = {
 };
 
 type TauriWireConnection = StreamConnection & {
+  connectionId: string;
   replaceUnlisten: (unlisten: () => void) => void;
   markOpen: () => void;
   markClosed: () => void;
@@ -553,6 +567,7 @@ type TauriWireConnection = StreamConnection & {
 const STREAM_CONNECTING = 0;
 const STREAM_OPEN = 1;
 const STREAM_CLOSED = 3;
+let nextTauriConnectionId = 0;
 
 function sessionStatusToPayload(status: SessionStatus): SessionStatusPayload {
   return {
@@ -617,6 +632,8 @@ export function useSessionStream(
     null,
   );
   const [contextUsage, setContextUsage] = useState(0);
+  const [contextTokens, setContextTokens] = useState<number | null>(null);
+  const [maxContextTokens, setMaxContextTokens] = useState<number | null>(null);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const [planMode, setPlanMode] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("manual");
@@ -629,6 +646,8 @@ export function useSessionStream(
   const [slashCommands, setSlashCommands] = useState<SlashCommandDef[]>([]);
   const slashCommandsRef = useRef<SlashCommandDef[]>([]);
   const contextUsageRef = useRef(0);
+  const contextTokensRef = useRef<number | null>(null);
+  const maxContextTokensRef = useRef<number | null>(null);
   const tokenUsageRef = useRef<TokenUsage | null>(null);
 
   // Refs
@@ -1679,6 +1698,8 @@ export function useSessionStream(
     pendingClearRef.current = false;
     setCurrentStep(0);
     setContextUsage(0);
+    setContextTokens(null);
+    setMaxContextTokens(null);
     setTokenUsage(null);
     setPlanMode(false);
     planModeRef.current = false;
@@ -2778,6 +2799,16 @@ export function useSessionStream(
             setContextUsage(nextContextUsage);
           }
 
+          const nextContextTokens = event.payload.context_tokens;
+          if (typeof nextContextTokens === "number") {
+            setContextTokens(nextContextTokens);
+          }
+
+          const nextMaxContextTokens = event.payload.max_context_tokens;
+          if (typeof nextMaxContextTokens === "number") {
+            setMaxContextTokens(nextMaxContextTokens);
+          }
+
           const nextTokenUsage = event.payload.token_usage;
           if (nextTokenUsage) {
             setTokenUsage(nextTokenUsage);
@@ -3064,6 +3095,7 @@ export function useSessionStream(
 
   const createTauriWireConnection = useCallback(
     (sid: string): TauriWireConnection => {
+      const connectionId = `${Date.now()}-${++nextTauriConnectionId}`;
       let state = STREAM_CONNECTING;
       let unlisten: (() => void) | undefined;
       let disconnecting = false;
@@ -3077,6 +3109,7 @@ export function useSessionStream(
       };
 
       return {
+        connectionId,
         get readyState() {
           return state;
         },
@@ -3114,7 +3147,7 @@ export function useSessionStream(
           if (!disconnecting) {
             disconnecting = true;
             void drainPendingSends().finally(() => {
-              void wireDisconnect(sid).catch((err) => {
+              void wireDisconnect(sid, connectionId).catch((err) => {
                 console.warn("[SessionStream] Failed to disconnect Tauri wire:", err);
               });
             });
@@ -3979,11 +4012,11 @@ export function useSessionStream(
         });
         connection.replaceUnlisten(unlisten);
 
-        void wireConnect(sessionId)
+        void wireConnect(sessionId, connection.connectionId)
           .then(async () => {
             if (wsRef.current !== connection) {
               connection.markClosed();
-              void wireDisconnect(sessionId).catch(() => undefined);
+              void wireDisconnect(sessionId, connection.connectionId).catch(() => undefined);
               return;
             }
 
@@ -4428,6 +4461,8 @@ export function useSessionStream(
   statusRef.current = status;
   slashCommandsRef.current = slashCommands;
   contextUsageRef.current = contextUsage;
+  contextTokensRef.current = contextTokens;
+  maxContextTokensRef.current = maxContextTokens;
   tokenUsageRef.current = tokenUsage;
 
   const sendModeUpdate = useCallback(
@@ -4543,9 +4578,71 @@ export function useSessionStream(
     [sendModeUpdate],
   );
 
+  const runLocalInfoCommand = useCallback(
+    async (command: "usage" | "status") => {
+      const managedRaw = isTauri()
+        ? await fetchManagedUsage()
+        : {
+            kind: "error" as const,
+            message: "Managed usage is only available in the desktop app.",
+          };
+      const managed = parseManagedUsageFetchResult(managedRaw);
+      const sessionUsage: SessionUsageContext = {
+        contextUsage: contextUsageRef.current,
+        contextTokens: contextTokensRef.current,
+        maxContextTokens: maxContextTokensRef.current,
+        tokenInput: tokenUsageRef.current?.input_other ?? null,
+        tokenOutput: tokenUsageRef.current?.output ?? null,
+        tokenCacheRead: tokenUsageRef.current?.input_cache_read ?? null,
+        tokenCacheCreation: tokenUsageRef.current?.input_cache_creation ?? null,
+      };
+      if (command === "usage") {
+        return formatUsageReport({ managed, session: sessionUsage });
+      }
+      let version: string | null = null;
+      let model: string | null = null;
+      let workDir: string | null = null;
+      if (isTauri()) {
+        try {
+          version = await getKimiCliVersion();
+        } catch {
+          version = null;
+        }
+        try {
+          const config = await getGlobalConfig();
+          model = config.defaultModel || null;
+        } catch {
+          model = null;
+        }
+        if (sessionId) {
+          try {
+            const session = await getSession(sessionId);
+            workDir = session?.workDir ?? null;
+          } catch {
+            workDir = null;
+          }
+        }
+      }
+      return formatStatusReport({
+        managed,
+        status: {
+          version,
+          model,
+          workDir,
+          sessionId,
+          permissionMode: permissionModeRef.current,
+          planMode: planModeRef.current,
+          swarmMode: swarmModeRef.current,
+        },
+        session: sessionUsage,
+      });
+    },
+    [sessionId],
+  );
+
   // Send message to session (auto-connects if not connected)
   const sendMessage = useCallback(
-    async (text: string) => {
+    async (text: string): Promise<LocalInfoPanelResult | void> => {
       if (!text.trim()) return;
 
       const trimmedText = text.trim();
@@ -4581,70 +4678,31 @@ export function useSessionStream(
       }
 
       if (slashDecision.kind === "local") {
+        if (slashDecision.name === "usage" || slashDecision.name === "status") {
+          try {
+            const content = await runLocalInfoCommand(slashDecision.name);
+            return {
+              kind: "info-panel",
+              command: slashDecision.name,
+              content,
+            };
+          } catch (err) {
+            return {
+              kind: "info-panel",
+              command: slashDecision.name,
+              content:
+                err instanceof Error
+                  ? err.message
+                  : `Failed to run /${slashDecision.name}`,
+            };
+          }
+        }
+
         addOptimisticUserMessage(trimmedText);
         const statusMessageId = getNextMessageId("assistant");
         let content = "";
         try {
-          if (slashDecision.name === "help") {
-            content = formatDesktopHelpReport(slashCommandsRef.current ?? []);
-          } else {
-            const managedRaw = isTauri()
-              ? await fetchManagedUsage()
-              : {
-                  kind: "error" as const,
-                  message: "Managed usage is only available in the desktop app.",
-                };
-            const managed = parseManagedUsageFetchResult(managedRaw);
-            const sessionUsage: SessionUsageContext = {
-              contextUsage: contextUsageRef.current,
-              tokenInput: tokenUsageRef.current?.input_other ?? null,
-              tokenOutput: tokenUsageRef.current?.output ?? null,
-              tokenCacheRead: tokenUsageRef.current?.input_cache_read ?? null,
-              tokenCacheCreation:
-                tokenUsageRef.current?.input_cache_creation ?? null,
-            };
-            if (slashDecision.name === "usage") {
-              content = formatUsageReport({ managed, session: sessionUsage });
-            } else {
-              let version: string | null = null;
-              let model: string | null = null;
-              let workDir: string | null = null;
-              if (isTauri()) {
-                try {
-                  version = await getKimiCliVersion();
-                } catch {
-                  version = null;
-                }
-                try {
-                  const config = await getGlobalConfig();
-                  model = config.defaultModel || null;
-                } catch {
-                  model = null;
-                }
-                if (sessionId) {
-                  try {
-                    const session = await getSession(sessionId);
-                    workDir = session?.workDir ?? null;
-                  } catch {
-                    workDir = null;
-                  }
-                }
-              }
-              content = formatStatusReport({
-                managed,
-                status: {
-                  version,
-                  model,
-                  workDir,
-                  sessionId,
-                  permissionMode: permissionModeRef.current,
-                  planMode: planModeRef.current,
-                  swarmMode: swarmModeRef.current,
-                },
-                session: sessionUsage,
-              });
-            }
-          }
+          content = formatDesktopHelpReport(slashCommandsRef.current ?? []);
         } catch (err) {
           content =
             err instanceof Error
@@ -4742,6 +4800,7 @@ export function useSessionStream(
       connect,
       onError,
       sendSetSwarmMode,
+      runLocalInfoCommand,
       setAwaitingFirstResponse,
       addOptimisticUserMessage,
       clearStepRetryStatus,
@@ -4792,6 +4851,7 @@ export function useSessionStream(
     setSwarmMode(false);
     swarmModeRef.current = false;
     setMessages([]);
+    useToolEventsStore.getState().clearNewFiles();
     useToolEventsStore.getState().clearTodoItems();
     useToolEventsStore.getState().clearCurrentGoal();
 
@@ -4906,11 +4966,14 @@ export function useSessionStream(
       !isReplayingHistory &&
       (isAwaitingFirstResponse || status === "streaming"),
     contextUsage,
+    contextTokens,
+    maxContextTokens,
     tokenUsage,
     currentStep,
     isConnected,
     isReplayingHistory,
     sendMessage,
+    runLocalInfoCommand,
     respondToApproval,
     respondToQuestion,
     cancel,

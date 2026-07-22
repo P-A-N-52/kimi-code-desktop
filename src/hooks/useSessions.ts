@@ -13,7 +13,6 @@ import {
 	createSession as tauriCreateSession,
 	deleteSession as tauriDeleteSession,
 	forkSession as tauriForkSession,
-	generateTitle as tauriGenerateTitle,
 	getSession as tauriGetSession,
 	getSessionFile as tauriGetSessionFile,
 	getStartupDir as tauriGetStartupDir,
@@ -23,6 +22,10 @@ import {
 	updateSession as tauriUpdateSession,
 	uploadSessionFile as tauriUploadSessionFile,
 } from "../lib/tauri-api";
+import {
+	selectSessionsOlderThan,
+	STALE_ARCHIVE_DAYS,
+} from "../modules/sessions/stale-sessions";
 import { formatRelativeTime, getApiBaseUrl } from "./utils";
 
 // Regex patterns for path normalization
@@ -103,8 +106,6 @@ type UseSessionsReturn = {
 	fetchStartupDir: () => Promise<string>;
 	/** Rename a session */
 	renameSession: (sessionId: string, title: string) => Promise<boolean>;
-	/** Generate title using AI (backend reads messages from wire.jsonl) */
-	generateTitle: (sessionId: string) => Promise<string | null>;
 	/** Archive a session */
 	archiveSession: (sessionId: string) => Promise<boolean>;
 	/** Unarchive a session */
@@ -115,6 +116,11 @@ type UseSessionsReturn = {
 	bulkUnarchiveSessions: (sessionIds: string[]) => Promise<number>;
 	/** Bulk delete sessions */
 	bulkDeleteSessions: (sessionIds: string[]) => Promise<number>;
+	/**
+	 * Archive all non-running active sessions whose last activity is older than
+	 * `days` (default 30). Pages through the full active list.
+	 */
+	archiveSessionsOlderThan: (days?: number) => Promise<number>;
 	/** Fork a session at a specific turn index */
 	forkSession: (sessionId: string, turnIndex: number) => Promise<Session>;
 };
@@ -139,6 +145,8 @@ const normalizeSessionPath = (value?: string): string => {
 };
 
 const PAGE_SIZE = 100;
+/** Max page size allowed by list_sessions (Tauri clamp / API docs). */
+const LIST_FETCH_PAGE_SIZE = 500;
 const AUTO_REFRESH_MS = 30_000;
 const TAURI_AUTO_REFRESH_MS = 120_000;
 
@@ -183,7 +191,7 @@ export function useSessions(
 	const [hasMoreArchivedSessions, setHasMoreArchivedSessions] = useState(true);
 	const [searchQuery, setSearchQuery] = useState("");
 	const lastRefreshRef = useRef(0);
-	const refreshInFlightRef = useRef(false);
+	const refreshRequestIdRef = useRef(0);
 	const archivedRefreshInFlightRef = useRef(false);
 	const archivedPreloadRequestedRef = useRef(false);
 
@@ -194,10 +202,7 @@ export function useSessions(
 		if (!enabled) {
 			return;
 		}
-		if (refreshInFlightRef.current) {
-			return;
-		}
-		refreshInFlightRef.current = true;
+		const requestId = ++refreshRequestIdRef.current;
 		setIsLoading(true);
 		setError(null);
 
@@ -214,6 +219,7 @@ export function useSessions(
 						q: searchQuery.trim() || undefined,
 					});
 
+			if (requestId !== refreshRequestIdRef.current) return;
 			// Update sessions list
 			setSessions(sessionsList);
 			setHasMoreSessions(sessionsList.length === PAGE_SIZE);
@@ -222,13 +228,13 @@ export function useSessions(
 
 			// Don't auto-select first session - user can click on one or create a new one
 		} catch (err) {
+			if (requestId !== refreshRequestIdRef.current) return;
 			const message =
 				err instanceof Error ? err.message : "Failed to load sessions";
 			setError(message);
 			console.error("Failed to refresh sessions:", err);
 		} finally {
-			refreshInFlightRef.current = false;
-			setIsLoading(false);
+			if (requestId === refreshRequestIdRef.current) setIsLoading(false);
 		}
 	}, [enabled, searchQuery]);
 
@@ -914,57 +920,6 @@ export function useSessions(
 	);
 
 	/**
-	 * Generate title using AI
-	 * Backend reads messages from wire.jsonl automatically
-	 */
-	const generateTitle = useCallback(
-		async (sessionId: string): Promise<string | null> => {
-			try {
-				let result: { title: string };
-				if (isTauri()) {
-					result = await tauriGenerateTitle(sessionId);
-				} else {
-					const basePath = getApiBaseUrl();
-					const response = await fetch(
-						`${basePath}/api/sessions/${encodeURIComponent(sessionId)}/generate-title`,
-						{
-							method: "POST",
-							headers: {
-								"Content-Type": "application/json",
-								...getAuthHeader(),
-							},
-							body: JSON.stringify({}),
-						},
-					);
-
-					if (!response.ok) {
-						const data = await response.json();
-						throw new Error(data.detail || "Failed to generate title");
-					}
-
-					result = await response.json();
-				}
-
-				await refreshSession(sessionId);
-				return result.title;
-			} catch (err) {
-				const message =
-					err instanceof Error ? err.message : "Failed to generate title";
-				console.warn("Failed to generate title:", err);
-				const isExpectedTitleFallbackFailure =
-					message.includes("No user message found") ||
-					message.includes("No conversation history") ||
-					message.includes("not available via ACP");
-				if (!isExpectedTitleFallbackFailure) {
-					toast.error(message);
-				}
-				return null;
-			}
-		},
-		[refreshSession],
-	);
-
-	/**
 	 * Archive a session
 	 */
 	const archiveSession = useCallback(
@@ -1140,6 +1095,60 @@ export function useSessions(
 			return successCount;
 		},
 		[refreshArchivedSessions, selectedSessionId],
+	);
+
+	const listAllActiveSessions = useCallback(async (): Promise<Session[]> => {
+		const all: Session[] = [];
+		let offset = 0;
+		for (;;) {
+			const page = isTauri()
+				? await tauriListSessions({
+						limit: LIST_FETCH_PAGE_SIZE,
+						offset,
+						archived: false,
+					})
+				: await apiClient.sessions.listSessionsApiSessionsGet({
+						limit: LIST_FETCH_PAGE_SIZE,
+						offset,
+						archived: false,
+					});
+			all.push(...page);
+			if (page.length < LIST_FETCH_PAGE_SIZE) break;
+			offset += page.length;
+		}
+		return all;
+	}, []);
+
+	/**
+	 * Archive active sessions whose last activity is older than `days`.
+	 */
+	const archiveSessionsOlderThan = useCallback(
+		async (days: number = STALE_ARCHIVE_DAYS): Promise<number> => {
+			try {
+				const active = await listAllActiveSessions();
+				const stale = selectSessionsOlderThan(active, days);
+				if (stale.length === 0) {
+					toast.message(`没有超过 ${days} 天未活跃的会话`);
+					return 0;
+				}
+				const count = await bulkArchiveSessions(
+					stale.map((session) => session.sessionId),
+				);
+				if (count > 0) {
+					toast.success(`已归档 ${count} 个超过 ${days} 天未活跃的会话`);
+				}
+				return count;
+			} catch (err) {
+				const message =
+					err instanceof Error
+						? err.message
+						: "Failed to archive stale sessions";
+				console.error("Failed to archive stale sessions:", err);
+				toast.error(message);
+				return 0;
+			}
+		},
+		[bulkArchiveSessions, listAllActiveSessions],
 	);
 
 	/**
@@ -1374,12 +1383,12 @@ export function useSessions(
 		fetchWorkDirs,
 		fetchStartupDir,
 		renameSession,
-		generateTitle,
 		archiveSession,
 		unarchiveSession,
 		bulkArchiveSessions,
 		bulkUnarchiveSessions,
 		bulkDeleteSessions,
+		archiveSessionsOlderThan,
 		forkSession,
 	};
 }

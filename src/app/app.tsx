@@ -20,7 +20,7 @@ import { ConversationView } from "@/modules/conversation/conversation-view";
 import { ReadinessOverlay } from "@/modules/readiness/readiness-overlay";
 import { AppSidebar } from "@/modules/sessions/app-sidebar";
 import { CreateSessionDialog } from "@/modules/sessions/create-session-dialog";
-import { SettingsDialog } from "@/modules/settings/settings-dialog";
+import { SettingsDialog, type SettingsTab } from "@/modules/settings/settings-dialog";
 import { Topbar } from "@/modules/topbar/topbar";
 import { ChangesPanel, type WorkspaceTab } from "@/modules/workspace/changes-panel";
 import {
@@ -45,6 +45,7 @@ export default function App() {
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("changes");
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | undefined>();
   const [runtimeReadiness, setRuntimeReadiness] = useState<RuntimeReadiness | null>(null);
   const [runtimeCheckError, setRuntimeCheckError] = useState<string | null>(null);
   const [isCheckingRuntime, setIsCheckingRuntime] = useState(() => isTauri());
@@ -93,12 +94,12 @@ export default function App() {
     deleteSession,
     selectSession,
     renameSession,
-    generateTitle,
     archiveSession,
     unarchiveSession,
     bulkArchiveSessions,
     bulkUnarchiveSessions,
     bulkDeleteSessions,
+    archiveSessionsOlderThan,
     refreshArchivedSessions,
     hasLoadedArchivedSessions,
     loadMoreSessions,
@@ -142,11 +143,14 @@ export default function App() {
         classified.wouldNotifySuccess
       ) {
         const body = classified.isCancelled ? "任务已取消" : "任务已完成";
-        void sendNotification(currentSession?.title || "Kimi Code", body).catch(() => {});
+        const completedSession = sessions.find(
+          (session) => session.sessionId === status.sessionId,
+        );
+        void sendNotification(completedSession?.title || "Kimi Code", body).catch(() => {});
       }
       refreshSession(status.sessionId);
     },
-    [applySessionStatus, currentSession?.title, refreshSession],
+    [applySessionStatus, refreshSession, sessions],
   );
 
   const handleStreamError = useCallback((error: Error) => {
@@ -185,11 +189,12 @@ export default function App() {
   useEffect(() => {
     if (!isTauri() || document.hasFocus()) return;
     for (const approval of pendingApprovals) {
-      if (notifiedApprovalsRef.current.has(approval.id)) continue;
-      notifiedApprovalsRef.current.add(approval.id);
+      const notificationKey = `${selectedSessionId}:${approval.id}`;
+      if (notifiedApprovalsRef.current.has(notificationKey)) continue;
+      notifiedApprovalsRef.current.add(notificationKey);
       void sendNotification("Kimi Code 需要批准", approval.description).catch(() => {});
     }
-  }, [pendingApprovals]);
+  }, [pendingApprovals, selectedSessionId]);
 
   useEffect(() => {
     if (changes.length > 0 && !userClosedPanelRef.current) {
@@ -219,6 +224,16 @@ export default function App() {
     userClosedPanelRef.current = false;
     setWorkspaceTab(tab);
     setPanelOpen(true);
+  }, []);
+
+  const openSettings = useCallback((tab?: SettingsTab) => {
+    setSettingsInitialTab(tab);
+    setShowSettings(true);
+  }, []);
+
+  const handleSettingsOpenChange = useCallback((next: boolean) => {
+    setShowSettings(next);
+    if (!next) setSettingsInitialTab(undefined);
   }, []);
 
   const focusSessionSearch = useCallback(() => {
@@ -279,7 +294,7 @@ export default function App() {
             running={anyRunning}
             onToggleCollapsed={() => setSidebarOpen((v) => !v)}
             onNewSession={() => setShowCreateDialog(true)}
-            onOpenSettings={() => setShowSettings(true)}
+            onOpenSettings={() => openSettings()}
             sessions={sessions}
             archivedSessions={archivedSessions}
             selectedId={selectedSessionId}
@@ -288,9 +303,6 @@ export default function App() {
             onSelect={selectSession}
             onDelete={(id) => void deleteSession(id)}
             onRename={(id, title) => void renameSession(id, title)}
-            onGenerateTitle={async (id) => {
-              await generateTitle(id);
-            }}
             onArchive={(id) => void archiveSession(id)}
             onUnarchive={(id) => void unarchiveSession(id)}
             onBulkArchive={async (ids) => {
@@ -301,6 +313,9 @@ export default function App() {
             }}
             onBulkDelete={async (ids) => {
               await bulkDeleteSessions(ids);
+            }}
+            onArchiveOlderThan={async (days) => {
+              await archiveSessionsOlderThan(days);
             }}
             onLoadArchived={refreshArchivedSessions}
             onLoadMore={(mode) =>
@@ -322,7 +337,7 @@ export default function App() {
             workDir={currentSession?.workDir}
             panelOpen={panelOpen}
             onTogglePanel={() => setPanelOpen((v) => !v)}
-            onOpenSettings={() => setShowSettings(true)}
+            onOpenSettings={() => openSettings()}
           />
         }
         panel={
@@ -346,11 +361,12 @@ export default function App() {
       >
         {selectedSessionId ? (
           <ConversationView
+            key={selectedSessionId}
             sessionId={selectedSessionId}
             stream={stream}
             onOpenWorkspace={handleOpenWorkspace}
             onUploadFile={uploadSessionFile}
-            onOpenSettings={() => setShowSettings(true)}
+            onManageConfig={() => openSettings("config")}
           />
         ) : (
           <EmptyState onNewSession={() => setShowCreateDialog(true)} />
@@ -363,7 +379,11 @@ export default function App() {
         fetchWorkDirs={fetchWorkDirs}
         fetchStartupDir={fetchStartupDir}
       />
-      <SettingsDialog open={showSettings} onOpenChange={setShowSettings} />
+      <SettingsDialog
+        open={showSettings}
+        onOpenChange={handleSettingsOpenChange}
+        initialTab={settingsInitialTab}
+      />
       <Toaster position="top-right" />
     </>
   );

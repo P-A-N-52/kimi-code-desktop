@@ -21,7 +21,7 @@ export function AppShell({
 	children: ReactNode;
 }) {
 	return (
-		<div className="flex h-dvh overflow-hidden bg-background text-foreground">
+		<div className="relative flex h-dvh overflow-hidden bg-background text-foreground">
 			<div
 				data-slot="sessions-sidebar"
 				className="shrink-0 overflow-hidden border-r border-line transition-[width] duration-[250ms] ease-out motion-reduce:transition-none"
@@ -38,7 +38,7 @@ export function AppShell({
 			<div
 				data-slot="workspace-panel"
 				className={cn(
-					"shrink-0 overflow-hidden border-l transition-[width,border-color] duration-200",
+					"shrink-0 overflow-hidden border-l transition-[width,border-color] duration-200 max-[900px]:absolute max-[900px]:inset-y-0 max-[900px]:right-0 max-[900px]:z-30 max-[900px]:shadow-pop",
 					panelOpen ? "border-line" : "border-transparent",
 				)}
 				style={{ width: panelOpen ? PANEL_WIDTH : 0 }}

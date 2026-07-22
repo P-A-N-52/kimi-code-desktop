@@ -5,8 +5,21 @@ use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static SESSION_STATE_WRITE_LOCK: Mutex<()> = Mutex::new(());
+static NEXT_ATOMIC_WRITE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn validate_session_id(session_id: &str) -> Result<(), String> {
+    let mut components = Path::new(session_id).components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(component)), None) if !component.is_empty() => Ok(()),
+        _ => Err("Invalid session id".to_string()),
+    }
+}
 
 pub fn sessions_root() -> Result<PathBuf, String> {
     Ok(kimi_code_home_dir()?.join("sessions"))
@@ -14,6 +27,7 @@ pub fn sessions_root() -> Result<PathBuf, String> {
 
 /// Locate `~/.kimi-code/sessions/<workDirKey>/<session_id>/`.
 pub fn find_session_dir_by_id(session_id: &str) -> Result<Option<PathBuf>, String> {
+    validate_session_id(session_id)?;
     let root = sessions_root()?;
     if !root.is_dir() {
         return Ok(None);
@@ -28,6 +42,15 @@ pub fn find_session_dir_by_id(session_id: &str) -> Result<Option<PathBuf>, Strin
         }
         let candidate = work_dir_path.join(session_id);
         if candidate.is_dir() {
+            let canonical_work_dir = work_dir_path.canonicalize().map_err(|e| {
+                format!("Failed to resolve session work directory {}: {e}", work_dir_path.display())
+            })?;
+            let canonical_candidate = candidate.canonicalize().map_err(|e| {
+                format!("Failed to resolve session directory {}: {e}", candidate.display())
+            })?;
+            if canonical_candidate.parent() != Some(canonical_work_dir.as_path()) {
+                return Err("Session directory resolves outside its work directory".to_string());
+            }
             return Ok(Some(candidate));
         }
     }
@@ -118,6 +141,79 @@ fn state_json_path(session_dir: &Path) -> PathBuf {
     session_dir.join("state.json")
 }
 
+fn write_file_atomically(path: &Path, body: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("Path has no parent: {}", path.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|e| format!("Failed to create {}: {e}", parent.display()))?;
+    let unique = NEXT_ATOMIC_WRITE_ID.fetch_add(1, Ordering::Relaxed);
+    let tmp = parent.join(format!(
+        ".{}.tmp.{}.{}",
+        path.file_name().and_then(|name| name.to_str()).unwrap_or("state"),
+        std::process::id(),
+        unique
+    ));
+    let result = (|| {
+        use std::io::Write;
+        let mut file = fs::File::create(&tmp)
+            .map_err(|e| format!("Failed to write {}: {e}", tmp.display()))?;
+        file.write_all(body)
+            .map_err(|e| format!("Failed to write {}: {e}", tmp.display()))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to sync {}: {e}", tmp.display()))?;
+        fs::rename(&tmp, path)
+            .map_err(|e| format!("Failed to replace {}: {e}", path.display()))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+fn mutate_session_state(
+    session_dir: &Path,
+    mut update: impl FnMut(&mut Value) -> Result<(), String>,
+) -> Result<(), String> {
+    let _guard = SESSION_STATE_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let state_path = state_json_path(session_dir);
+    for _ in 0..3 {
+        let before = if state_path.is_file() {
+            Some(
+                fs::read_to_string(&state_path)
+                    .map_err(|e| format!("Failed to read {}: {e}", state_path.display()))?,
+            )
+        } else {
+            None
+        };
+        let mut state: Value = match before.as_deref() {
+            Some(content) => serde_json::from_str(content)
+                .map_err(|e| format!("Failed to parse {}: {e}", state_path.display()))?,
+            None => json!({ "version": 1 }),
+        };
+        update(&mut state)?;
+
+        let current = if state_path.is_file() {
+            Some(
+                fs::read_to_string(&state_path)
+                    .map_err(|e| format!("Failed to re-read {}: {e}", state_path.display()))?,
+            )
+        } else {
+            None
+        };
+        if current != before {
+            continue;
+        }
+        let serialized = serde_json::to_string_pretty(&state)
+            .map_err(|e| format!("Failed to serialize session state: {e}"))?;
+        return write_file_atomically(&state_path, format!("{serialized}\n").as_bytes());
+    }
+    Err("Session state changed concurrently; please retry".to_string())
+}
+
 fn local_session_from_dir(session_id: &str, session_dir: &Path) -> Result<Value, String> {
     let state_path = state_json_path(session_dir);
     let content = fs::read_to_string(&state_path)
@@ -201,6 +297,123 @@ fn wire_jsonl_path(session_dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Latest LLM turn usage from the session wire log.
+///
+/// Kimi Code writes `usage.record` to wire.jsonl but (as of 0.27) does not emit
+/// ACP `usage_update`, so the desktop reads this as a fallback for the context ring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionUsageSnapshot {
+    pub model: Option<String>,
+    pub input_other: u64,
+    pub output: u64,
+    pub input_cache_read: u64,
+    pub input_cache_creation: u64,
+}
+
+impl SessionUsageSnapshot {
+    pub fn context_tokens(&self) -> u64 {
+        self.input_other
+            .saturating_add(self.input_cache_read)
+            .saturating_add(self.input_cache_creation)
+    }
+
+    pub fn to_token_usage_json(&self) -> Value {
+        json!({
+            "input_other": self.input_other,
+            "output": self.output,
+            "input_cache_read": self.input_cache_read,
+            "input_cache_creation": self.input_cache_creation,
+        })
+    }
+}
+
+fn usage_field_u64(usage: &Value, keys: &[&str]) -> u64 {
+    for key in keys {
+        if let Some(value) = usage.get(*key) {
+            match value {
+                Value::Number(n) => {
+                    return n
+                        .as_u64()
+                        .or_else(|| n.as_i64().map(|v| v.max(0) as u64))
+                        .or_else(|| {
+                            n.as_f64()
+                                .map(|v| if v.is_finite() && v > 0.0 { v as u64 } else { 0 })
+                        })
+                        .unwrap_or(0);
+                }
+                Value::String(s) => {
+                    if let Ok(parsed) = s.parse::<u64>() {
+                        return parsed;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    0
+}
+
+pub(crate) fn parse_usage_record(record: &Value) -> Option<SessionUsageSnapshot> {
+    if record.get("type").and_then(Value::as_str) != Some("usage.record") {
+        return None;
+    }
+    let usage = record.get("usage")?;
+    if !usage.is_object() {
+        return None;
+    }
+    Some(SessionUsageSnapshot {
+        model: record
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        input_other: usage_field_u64(usage, &["inputOther", "input_other", "inputTokens"]),
+        output: usage_field_u64(usage, &["output", "outputTokens"]),
+        input_cache_read: usage_field_u64(
+            usage,
+            &["inputCacheRead", "input_cache_read", "cachedReadTokens"],
+        ),
+        input_cache_creation: usage_field_u64(
+            usage,
+            &[
+                "inputCacheCreation",
+                "input_cache_creation",
+                "cachedWriteTokens",
+            ],
+        ),
+    })
+}
+
+/// Read the most recent turn-scoped `usage.record` from the session wire log.
+pub fn latest_turn_usage(session_id: &str) -> Result<Option<SessionUsageSnapshot>, String> {
+    let Some(session_dir) = find_session_dir_by_id(session_id)? else {
+        return Ok(None);
+    };
+    let Some(wire_file) = wire_jsonl_path(&session_dir) else {
+        return Ok(None);
+    };
+    let content = fs::read_to_string(&wire_file)
+        .map_err(|e| format!("Failed to read {}: {e}", wire_file.display()))?;
+
+    let mut latest: Option<SessionUsageSnapshot> = None;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if let Some(snapshot) = parse_usage_record(&record) {
+            // Prefer turn-scoped rows; accept whatever is last if scope is absent.
+            let scope = record.get("usageScope").and_then(Value::as_str);
+            if scope.is_none() || scope == Some("turn") {
+                latest = Some(snapshot);
+            }
+        }
+    }
+    Ok(latest)
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PersistedRuntimeModes {
     pub plan_mode: Option<bool>,
@@ -268,35 +481,23 @@ pub fn session_swarm_mode(session_id: &str) -> Result<bool, String> {
 
 pub fn update_session_swarm_mode(session_id: &str, enabled: bool) -> Result<PathBuf, String> {
     let session_dir = find_session_dir_by_id_or_err(session_id)?;
-    let state_path = state_json_path(&session_dir);
-    let mut state = if state_path.is_file() {
-        let content = fs::read_to_string(&state_path)
-            .map_err(|e| format!("Failed to read {}: {e}", state_path.display()))?;
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse {}: {e}", state_path.display()))?
-    } else {
-        json!({ "version": 1 })
-    };
-
-    let root = state
-        .as_object_mut()
-        .ok_or_else(|| "Session state is not a JSON object".to_string())?;
-    let custom = root.entry("custom").or_insert_with(|| json!({}));
-    let custom = custom
-        .as_object_mut()
-        .ok_or_else(|| "Session state custom field is not a JSON object".to_string())?;
-    let desktop = custom
-        .entry("kimi_code_desktop")
-        .or_insert_with(|| json!({}));
-    let desktop = desktop
-        .as_object_mut()
-        .ok_or_else(|| "Session desktop state is not a JSON object".to_string())?;
-    desktop.insert("swarm_mode".to_string(), json!(enabled));
-
-    let serialized = serde_json::to_string_pretty(&state)
-        .map_err(|e| format!("Failed to serialize session state: {e}"))?;
-    fs::write(&state_path, format!("{serialized}\n"))
-        .map_err(|e| format!("Failed to write {}: {e}", state_path.display()))?;
+    mutate_session_state(&session_dir, |state| {
+        let root = state
+            .as_object_mut()
+            .ok_or_else(|| "Session state is not a JSON object".to_string())?;
+        let custom = root.entry("custom").or_insert_with(|| json!({}));
+        let custom = custom
+            .as_object_mut()
+            .ok_or_else(|| "Session state custom field is not a JSON object".to_string())?;
+        let desktop = custom
+            .entry("kimi_code_desktop")
+            .or_insert_with(|| json!({}));
+        let desktop = desktop
+            .as_object_mut()
+            .ok_or_else(|| "Session desktop state is not a JSON object".to_string())?;
+        desktop.insert("swarm_mode".to_string(), json!(enabled));
+        Ok(())
+    })?;
 
     Ok(session_dir)
 }
@@ -307,45 +508,32 @@ pub fn update_session_state(
     archived: Option<bool>,
 ) -> Result<PathBuf, String> {
     let session_dir = find_session_dir_by_id_or_err(session_id)?;
-    let state_path = state_json_path(&session_dir);
+    mutate_session_state(&session_dir, |state| {
+        let obj = state
+            .as_object_mut()
+            .ok_or_else(|| "Session state is not a JSON object".to_string())?;
 
-    let mut state = if state_path.is_file() {
-        let content = fs::read_to_string(&state_path)
-            .map_err(|e| format!("Failed to read {}: {e}", state_path.display()))?;
-        serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse {}: {e}", state_path.display()))?
-    } else {
-        json!({ "version": 1 })
-    };
-
-    let obj = state
-        .as_object_mut()
-        .ok_or_else(|| "Session state is not a JSON object".to_string())?;
-
-    if let Some(title) = title {
-        obj.insert("custom_title".to_string(), json!(title));
-        obj.insert("title_generated".to_string(), json!(true));
-    }
-
-    if let Some(archived) = archived {
-        obj.insert("archived".to_string(), json!(archived));
-        if archived {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs_f64())
-                .unwrap_or(0.0);
-            obj.insert("archived_at".to_string(), json!(now));
-            obj.insert("auto_archive_exempt".to_string(), json!(false));
-        } else {
-            obj.insert("archived_at".to_string(), Value::Null);
-            obj.insert("auto_archive_exempt".to_string(), json!(true));
+        if let Some(title) = title {
+            obj.insert("custom_title".to_string(), json!(title));
+            obj.insert("title_generated".to_string(), json!(true));
         }
-    }
 
-    let serialized = serde_json::to_string_pretty(&state)
-        .map_err(|e| format!("Failed to serialize session state: {e}"))?;
-    fs::write(&state_path, format!("{serialized}\n"))
-        .map_err(|e| format!("Failed to write {}: {e}", state_path.display()))?;
+        if let Some(archived) = archived {
+            obj.insert("archived".to_string(), json!(archived));
+            if archived {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
+                obj.insert("archived_at".to_string(), json!(now));
+                obj.insert("auto_archive_exempt".to_string(), json!(false));
+            } else {
+                obj.insert("archived_at".to_string(), Value::Null);
+                obj.insert("auto_archive_exempt".to_string(), json!(true));
+            }
+        }
+        Ok(())
+    })?;
 
     Ok(session_dir)
 }
@@ -929,6 +1117,54 @@ mod tests {
     }
 
     #[test]
+    fn parse_usage_record_maps_wire_fields() {
+        let record = json!({
+            "type": "usage.record",
+            "model": "kimi-code/kimi-for-coding",
+            "usage": {
+                "inputOther": 492,
+                "output": 38,
+                "inputCacheRead": 22528,
+                "inputCacheCreation": 0
+            },
+            "usageScope": "turn",
+            "time": 1
+        });
+        let snapshot = parse_usage_record(&record).expect("usage record");
+        assert_eq!(snapshot.model.as_deref(), Some("kimi-code/kimi-for-coding"));
+        assert_eq!(snapshot.input_other, 492);
+        assert_eq!(snapshot.output, 38);
+        assert_eq!(snapshot.input_cache_read, 22528);
+        assert_eq!(snapshot.context_tokens(), 23020);
+    }
+
+    #[test]
+    fn latest_turn_usage_reads_last_turn_record() {
+        let (_dir, home) = temp_home("usage-wire");
+        let _guard = set_kimi_code_home(&home);
+        let session_id = "session_usage_1";
+        let session_dir = write_session_layout(&home, "wd_test", session_id);
+        let wire_dir = session_dir.join("agents").join("main");
+        fs::create_dir_all(&wire_dir).expect("wire dir");
+        fs::write(
+            wire_dir.join("wire.jsonl"),
+            r#"{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":10,"output":1,"inputCacheRead":100,"inputCacheCreation":0},"usageScope":"turn","time":1}
+{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":50,"output":2,"inputCacheRead":200,"inputCacheCreation":3},"usageScope":"session","time":2}
+{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":20,"output":5,"inputCacheRead":300,"inputCacheCreation":0},"usageScope":"turn","time":3}
+"#,
+        )
+        .expect("write wire");
+
+        let snapshot = latest_turn_usage(session_id)
+            .expect("read")
+            .expect("snapshot");
+        assert_eq!(snapshot.input_other, 20);
+        assert_eq!(snapshot.input_cache_read, 300);
+        assert_eq!(snapshot.output, 5);
+        assert_eq!(snapshot.context_tokens(), 320);
+    }
+
+    #[test]
     fn extracts_llm_failure_before_acp_summary_is_flushed() {
         let log = r#"2026-07-19T16:11:34.288Z WARN  llm request failed errorMessage="404 status code (no body)" statusCode=404"#;
 
@@ -976,6 +1212,20 @@ mod tests {
             .expect("lookup")
             .expect("found");
         assert_eq!(found, session_dir);
+    }
+
+    #[test]
+    fn rejects_session_ids_that_are_not_single_path_components() {
+        let (_guard, home) = temp_home("session-id-validation");
+        write_session_layout(&home, "deadbeef", "safe-session");
+        let _lock = set_kimi_code_home(&home);
+
+        for invalid in ["../credentials", r"..\credentials", "a/b", r"a\b", ""] {
+            assert!(find_session_dir_by_id(invalid).is_err(), "accepted {invalid:?}");
+        }
+        assert!(find_session_dir_by_id("safe-session")
+            .expect("valid id")
+            .is_some());
     }
 
     #[test]

@@ -37,6 +37,8 @@ export function StatusStrip({
 	modeControlsDisabled,
 	contextUsage,
 	tokenUsage,
+	contextTokens = null,
+	maxContextTokens = null,
 }: {
 	permissionMode: PermissionMode;
 	onPermissionModeChange: (mode: PermissionMode) => void;
@@ -47,6 +49,8 @@ export function StatusStrip({
 	modeControlsDisabled: boolean;
 	contextUsage: number;
 	tokenUsage: TokenUsage | null;
+	contextTokens?: number | null;
+	maxContextTokens?: number | null;
 }) {
 	const [menuOpen, setMenuOpen] = useState(false);
 	const menuRef = useRef<HTMLDivElement>(null);
@@ -129,7 +133,12 @@ export function StatusStrip({
 				plan
 			</StatusPill>
 			<div className="flex-1" />
-			<ContextRing usage={contextUsage} tokenUsage={tokenUsage} />
+			<ContextRing
+				usage={contextUsage}
+				tokenUsage={tokenUsage}
+				contextTokens={contextTokens}
+				maxContextTokens={maxContextTokens}
+			/>
 			<span className="hidden font-mono text-[10.5px] text-faint sm:inline">
 				Enter 发送 · ⇧⏎ 换行
 			</span>

@@ -13,10 +13,12 @@ export function ApprovalCard({
 	approval,
 	display,
 	onRespond,
+	showShortcuts = true,
 }: {
 	approval: Approval;
 	display?: ToolCall["display"];
 	onRespond: (requestId: string, decision: ApprovalResponseDecision) => void;
+	showShortcuts?: boolean;
 }) {
 	const resolved = approval.resolved || approval.submitted;
 	const diff = findDiffDisplay(display);
@@ -60,13 +62,13 @@ export function ApprovalCard({
 							variant="primary"
 							onClick={() => onRespond(approval.id, "approve")}
 						>
-							允许<Kbd>⏎</Kbd>
+							允许{showShortcuts && <Kbd>⏎</Kbd>}
 						</Button>
 						<Button
 							variant="ghost"
 							onClick={() => onRespond(approval.id, "reject")}
 						>
-							拒绝<Kbd>Esc</Kbd>
+							拒绝{showShortcuts && <Kbd>Esc</Kbd>}
 						</Button>
 						<Button
 							variant="ghost"

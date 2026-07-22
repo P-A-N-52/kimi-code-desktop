@@ -13,7 +13,6 @@ vi.mock("../lib/tauri-api", () => ({
 	createSession: vi.fn(),
 	deleteSession: vi.fn(),
 	forkSession: vi.fn(),
-	generateTitle: vi.fn(),
 	getSession: vi.fn(),
 	getSessionFile: vi.fn(),
 	getStartupDir: vi.fn(),
@@ -142,5 +141,37 @@ describe("useSessions archived preload", () => {
 
 		expect(result.current.hasLoadedArchivedSessions).toBe(true);
 		expect(result.current.archivedSessions).toHaveLength(1);
+	});
+
+	it("keeps the newest search result when older requests finish later", async () => {
+		let resolveFirst: ((value: Session[]) => void) | undefined;
+		let resolveSecond: ((value: Session[]) => void) | undefined;
+		mocks.listSessions.mockImplementation((args?: { q?: string }) => {
+			if (args?.q === "first") {
+				return new Promise<Session[]>((resolve) => {
+					resolveFirst = resolve;
+				});
+			}
+			if (args?.q === "second") {
+				return new Promise<Session[]>((resolve) => {
+					resolveSecond = resolve;
+				});
+			}
+			return Promise.resolve([session("initial")]);
+		});
+
+		const { result } = renderHook(() => useSessions());
+		await waitFor(() => expect(result.current.sessions[0]?.sessionId).toBe("initial"));
+
+		act(() => result.current.setSearchQuery("first"));
+		await waitFor(() => expect(resolveFirst).toBeTypeOf("function"));
+		act(() => result.current.setSearchQuery("second"));
+		await waitFor(() => expect(resolveSecond).toBeTypeOf("function"));
+
+		await act(async () => resolveSecond?.([session("second-result")]));
+		await waitFor(() => expect(result.current.sessions[0]?.sessionId).toBe("second-result"));
+		await act(async () => resolveFirst?.([session("stale-first-result")]));
+
+		expect(result.current.sessions[0]?.sessionId).toBe("second-result");
 	});
 });

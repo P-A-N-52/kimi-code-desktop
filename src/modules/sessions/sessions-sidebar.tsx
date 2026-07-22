@@ -3,20 +3,22 @@ import {
   ArchiveRestore,
   Check,
   CheckSquare2,
-  LoaderCircle,
   Pencil,
   Search,
-  Sparkles,
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { formatRelativeTime } from "@/hooks/utils";
 import type { Session } from "@/lib/api/models";
 import { cn } from "@/lib/utils";
 import { Button } from "@/ui/button";
 import { Kbd } from "@/ui/kbd";
 import { groupSessionsByDay } from "./session-groups";
+import {
+  STALE_ARCHIVE_DAY_OPTIONS,
+  type StaleArchiveDays,
+} from "./stale-sessions";
 
 function workDirName(workDir?: string | null): string {
   if (!workDir) return "默认目录";
@@ -37,7 +39,6 @@ function SessionItem({
   onDelete,
   onRename,
   onArchive,
-  onGenerateTitle,
 }: {
   session: Session;
   selected: boolean;
@@ -49,11 +50,19 @@ function SessionItem({
   onDelete: () => void;
   onRename: (title: string) => void;
   onArchive: () => void;
-  onGenerateTitle: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.title ?? "");
-  const [generatingTitle, setGeneratingTitle] = useState(false);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!editing) return;
+    const frame = requestAnimationFrame(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [editing]);
 
   const commitRename = () => {
     const next = draft.trim();
@@ -74,6 +83,8 @@ function SessionItem({
       {editing ? (
         <div className="flex items-center gap-1">
           <input
+            ref={renameInputRef}
+            aria-label="会话标题"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -134,25 +145,9 @@ function SessionItem({
         </div>
       )}
       {!editing && !multiSelect && (
-        <div className="absolute right-1.5 top-1.5 hidden gap-0.5 rounded-r1 bg-elevated/95 pl-1 group-hover:flex">
+        <div className="absolute right-1.5 top-1.5 hidden gap-0.5 rounded-r1 bg-elevated/95 pl-1 group-focus-within:flex group-hover:flex">
           {mode === "active" && (
             <>
-              <button
-                type="button"
-                aria-label="智能生成标题"
-                disabled={generatingTitle}
-                onClick={() => {
-                  setGeneratingTitle(true);
-                  void onGenerateTitle().finally(() => setGeneratingTitle(false));
-                }}
-                className="flex size-[22px] items-center justify-center rounded-r1 text-muted hover:bg-active hover:text-foreground"
-              >
-                {generatingTitle ? (
-                  <LoaderCircle size={11} className="animate-spin" />
-                ) : (
-                  <Sparkles size={11} />
-                )}
-              </button>
               <button
                 type="button"
                 aria-label="重命名"
@@ -207,12 +202,12 @@ export type SessionsSidebarProps = {
   onSelect: (sessionId: string) => void;
   onDelete: (sessionId: string) => void;
   onRename: (sessionId: string, title: string) => void;
-  onGenerateTitle: (sessionId: string) => Promise<void>;
   onArchive: (sessionId: string) => void;
   onUnarchive: (sessionId: string) => void;
   onBulkArchive: (sessionIds: string[]) => Promise<void>;
   onBulkUnarchive: (sessionIds: string[]) => Promise<void>;
   onBulkDelete: (sessionIds: string[]) => Promise<void>;
+  onArchiveOlderThan: (days: number) => Promise<void>;
   onLoadArchived: () => Promise<void>;
   onLoadMore: (mode: SidebarMode) => Promise<void>;
   hasLoadedArchived: boolean;
@@ -227,6 +222,8 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
   const [multiSelect, setMultiSelect] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [staleMenuOpen, setStaleMenuOpen] = useState(false);
+  const staleMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (mode === "archived" && !props.hasLoadedArchived) void props.onLoadArchived();
@@ -236,7 +233,26 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
     void mode;
     setSelectedIds(new Set());
     setMultiSelect(false);
+    setStaleMenuOpen(false);
   }, [mode]);
+
+  useEffect(() => {
+    if (!staleMenuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!staleMenuRef.current?.contains(event.target as Node)) {
+        setStaleMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setStaleMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [staleMenuOpen]);
 
   const visibleSessions = useMemo(() => {
     const source = mode === "active" ? props.sessions : props.archivedSessions;
@@ -269,6 +285,23 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
     }
   };
 
+  const runArchiveOlderThan = async (days: StaleArchiveDays) => {
+    setStaleMenuOpen(false);
+    if (
+      !window.confirm(
+        `确定归档所有超过 ${days} 天未活跃的会话吗？可在「已归档」中恢复。`,
+      )
+    ) {
+      return;
+    }
+    setBulkBusy(true);
+    try {
+      await props.onArchiveOlderThan(days);
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col px-2 pb-2 pt-3">
       <div className="mx-1 mb-2 flex items-center gap-2 rounded-r2 border border-line px-2.5 py-1.5 text-faint transition-colors focus-within:border-line-strong">
@@ -296,17 +329,57 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
             {item === "active" ? "进行中" : "已归档"}
           </button>
         ))}
-        <button
-          type="button"
-          aria-label="批量管理"
-          onClick={() => setMultiSelect((value) => !value)}
-          className={cn(
-            "ml-auto rounded-r1 p-1.5 text-muted hover:bg-hover",
-            multiSelect && "bg-active text-bright",
+        <div className="ml-auto flex items-center gap-0.5">
+          {mode === "active" && (
+            <div className="relative" ref={staleMenuRef}>
+              <button
+                type="button"
+                aria-label="一键归档"
+                aria-expanded={staleMenuOpen}
+                aria-haspopup="menu"
+                title="一键归档"
+                disabled={bulkBusy}
+                onClick={() => setStaleMenuOpen((open) => !open)}
+                className={cn(
+                  "rounded-r1 px-2 py-1 text-[11px] text-muted hover:bg-hover hover:text-foreground disabled:opacity-50",
+                  staleMenuOpen && "bg-active text-bright",
+                )}
+              >
+                一键归档
+              </button>
+              {staleMenuOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 top-full z-20 mt-1 min-w-[108px] rounded-r2 border border-line bg-elevated py-1 shadow-sm"
+                >
+                  {STALE_ARCHIVE_DAY_OPTIONS.map((days) => (
+                    <button
+                      key={days}
+                      type="button"
+                      role="menuitem"
+                      disabled={bulkBusy}
+                      onClick={() => void runArchiveOlderThan(days)}
+                      className="flex w-full px-3 py-1.5 text-left text-[11px] text-muted hover:bg-hover hover:text-foreground disabled:opacity-50"
+                    >
+                      {days}d 以前
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
-        >
-          <CheckSquare2 size={13} />
-        </button>
+          <button
+            type="button"
+            aria-label="批量管理"
+            onClick={() => setMultiSelect((value) => !value)}
+            className={cn(
+              "rounded-r1 p-1.5 text-muted hover:bg-hover",
+              multiSelect && "bg-active text-bright",
+            )}
+          >
+            <CheckSquare2 size={13} />
+          </button>
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {groups.length === 0 && (
@@ -350,7 +423,6 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
                     ? props.onArchive(session.sessionId)
                     : props.onUnarchive(session.sessionId)
                 }
-                onGenerateTitle={() => props.onGenerateTitle(session.sessionId)}
               />
             ))}
           </div>

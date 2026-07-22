@@ -5,7 +5,7 @@ export type Theme = "light" | "dark";
 
 const THEME_STORAGE_KEY = "kimi-theme";
 const THEME_SWITCHING_ATTR = "data-theme-switching";
-const THEME_SWITCH_DURATION_MS = 260;
+const THEME_SWITCH_DURATION_MS = 450;
 
 type ThemeState = {
   theme: Theme;
@@ -22,6 +22,10 @@ type ThemeTransitionPoint = {
 type UseThemeResult = {
   theme: Theme;
   setTheme: (next: Theme) => void;
+  setThemeWithTransition: (
+    next: Theme,
+    event?: ThemeTransitionEvent,
+  ) => Promise<void>;
   toggleTheme: () => void;
   toggleThemeWithTransition: (event?: ThemeTransitionEvent) => Promise<void>;
 };
@@ -140,6 +144,63 @@ function stopThemeSwitchingNextFrame(root: HTMLElement): void {
   });
 }
 
+function canUseViewTransition(): boolean {
+  return (
+    typeof document !== "undefined" &&
+    typeof window !== "undefined" &&
+    typeof document.startViewTransition === "function" &&
+    !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
+async function runThemeTransition(
+  apply: () => void,
+  event?: ThemeTransitionEvent,
+): Promise<void> {
+  if (!canUseViewTransition()) {
+    if (typeof document !== "undefined") {
+      const root = document.documentElement;
+      startThemeSwitching(root);
+      flushSync(apply);
+      stopThemeSwitchingNextFrame(root);
+    } else {
+      apply();
+    }
+    return;
+  }
+
+  const root = document.documentElement;
+  startThemeSwitching(root);
+
+  const point = getTransitionPoint(event);
+  const radius = getMaxRadius(point);
+  const start = `circle(0px at ${point.x}px ${point.y}px)`;
+  const end = `circle(${radius}px at ${point.x}px ${point.y}px)`;
+
+  const transition = document.startViewTransition(() => {
+    flushSync(apply);
+  });
+
+  try {
+    await transition.ready;
+
+    // Telegram-style: new theme expands outward from the click point.
+    root.animate(
+      { clipPath: [start, end] },
+      {
+        duration: THEME_SWITCH_DURATION_MS,
+        easing: "cubic-bezier(0.22, 1, 0.36, 1)",
+        fill: "both",
+        pseudoElement: "::view-transition-new(root)",
+      },
+    );
+
+    await transition.finished;
+  } finally {
+    stopThemeSwitching(root);
+  }
+}
+
 export function useTheme(): UseThemeResult {
   const { theme, hasUserPreference } = useSyncExternalStore(
     subscribeTheme,
@@ -189,6 +250,20 @@ export function useTheme(): UseThemeResult {
     setThemeState({ theme: next, hasUserPreference: true });
   }, []);
 
+  const setThemeWithTransition = useCallback(
+    async (next: Theme, event?: ThemeTransitionEvent) => {
+      if (getThemeState().theme === next) {
+        setThemeState({ theme: next, hasUserPreference: true });
+        return;
+      }
+
+      await runThemeTransition(() => {
+        setThemeState({ theme: next, hasUserPreference: true });
+      }, event);
+    },
+    [],
+  );
+
   const toggleTheme = useCallback(() => {
     const previous = getThemeState();
     setThemeState({
@@ -199,66 +274,22 @@ export function useTheme(): UseThemeResult {
 
   const toggleThemeWithTransition = useCallback(
     async (event?: ThemeTransitionEvent) => {
-      const canUseViewTransition =
-        typeof document !== "undefined" &&
-        typeof window !== "undefined" &&
-        typeof document.startViewTransition === "function" &&
-        !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-      if (!canUseViewTransition) {
-        if (typeof document !== "undefined") {
-          const root = document.documentElement;
-          startThemeSwitching(root);
-          flushSync(() => {
-            toggleTheme();
-          });
-          stopThemeSwitchingNextFrame(root);
-        } else {
-          toggleTheme();
-        }
-        return;
-      }
-
-      const root = document.documentElement;
-      startThemeSwitching(root);
-
-      const point = getTransitionPoint(
-        event ? { clientX: event.clientX, clientY: event.clientY } : undefined,
-      );
-      const isDark = root.classList.contains("dark");
-      const radius = getMaxRadius(point);
-      const start = `circle(0px at ${point.x}px ${point.y}px)`;
-      const end = `circle(${radius}px at ${point.x}px ${point.y}px)`;
-
-      const transition = document.startViewTransition(() => {
-        flushSync(() => {
-          toggleTheme();
+      await runThemeTransition(() => {
+        const previous = getThemeState();
+        setThemeState({
+          theme: previous.theme === "dark" ? "light" : "dark",
+          hasUserPreference: true,
         });
-      });
-
-      await transition.ready;
-
-      const pseudoElement = isDark
-        ? "::view-transition-new(root)"
-        : "::view-transition-old(root)";
-
-      const keyframes = isDark
-        ? { clipPath: [start, end] }
-        : { clipPath: [end, start] };
-
-      root.animate(keyframes, {
-        duration: THEME_SWITCH_DURATION_MS,
-        easing: "cubic-bezier(0.22, 1, 0.36, 1)",
-        fill: "both",
-        pseudoElement,
-      });
-
-      transition.finished.finally(() => {
-        stopThemeSwitching(root);
-      });
+      }, event);
     },
-    [toggleTheme],
+    [],
   );
 
-  return { theme, setTheme, toggleTheme, toggleThemeWithTransition };
+  return {
+    theme,
+    setTheme,
+    setThemeWithTransition,
+    toggleTheme,
+    toggleThemeWithTransition,
+  };
 }

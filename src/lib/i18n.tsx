@@ -187,6 +187,25 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Kimi login is only available in the desktop app":
     "Kimi 登录只能在桌面应用中使用",
   "Kimi login terminal opened": "Kimi 登录终端已打开",
+  "Sign in with a device code in this app. Credentials are saved like `kimi login`.":
+    "在本应用内用设备码登录。凭据写入方式与 `kimi login` 相同。",
+  "Signed in. Credentials are saved like `kimi login`.":
+    "已登录。凭据写入方式与 `kimi login` 相同。",
+  "Signed in": "已登录",
+  "Sign in again": "重新登录",
+  "Starting login…": "正在开始登录…",
+  "Open the link, sign in, and confirm this code:":
+    "打开链接并登录，然后确认以下验证码：",
+  "Open browser": "打开浏览器",
+  "Copy code": "复制验证码",
+  Copied: "已复制",
+  "Waiting for authorization…": "等待授权中…",
+  "Login successful. Credentials saved for Kimi Code.":
+    "登录成功。已写入 Kimi Code 凭据。",
+  "Logged out. Credentials cleared.": "已退出登录。凭据已清除。",
+  "Logging out…": "正在退出…",
+  "Device code expired. Start login again.": "设备码已过期，请重新登录。",
+  "Open terminal login instead": "改为在终端登录",
   "Last used": "上次使用",
   "Leave this empty when Kimi Code is authenticated by environment variables or an existing CLI login.":
     "使用环境变量或已有 CLI 登录态时，这里保持为空。",
@@ -195,6 +214,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Load more": "加载更多",
   Loader: "加载器",
   Login: "登录",
+  Logout: "退出登录",
   "Loading diff...": "正在加载 diff...",
   "Loading files...": "正在加载文件...",
   "Loading settings...": "正在加载设置...",

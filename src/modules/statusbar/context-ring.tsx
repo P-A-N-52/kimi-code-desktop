@@ -6,8 +6,10 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "@/ui/tooltip";
+import { contextPercent, formatContextStatus } from "./context-format";
 
 const compact = new Intl.NumberFormat("en-US", { notation: "compact" });
+const exact = new Intl.NumberFormat("en-US");
 
 function UsageRow({ label, value }: { label: string; value: number }) {
 	return (
@@ -21,13 +23,24 @@ function UsageRow({ label, value }: { label: string; value: number }) {
 export function ContextRing({
 	usage,
 	tokenUsage,
+	contextTokens = null,
+	maxContextTokens = null,
 }: {
 	usage: number;
 	tokenUsage: TokenUsage | null;
+	contextTokens?: number | null;
+	maxContextTokens?: number | null;
 }) {
-	const pct = Math.min(100, Math.max(0, usage * 100));
+	const pct = contextPercent(usage, contextTokens, maxContextTokens);
+	const statusLabel = formatContextStatus(usage, contextTokens, maxContextTokens);
 	const r = 7;
 	const circumference = 2 * Math.PI * r;
+	const windowLabel =
+		typeof contextTokens === "number" &&
+		typeof maxContextTokens === "number" &&
+		maxContextTokens > 0
+			? `${exact.format(contextTokens)} / ${exact.format(maxContextTokens)}`
+			: null;
 	return (
 		<TooltipProvider>
 			<Tooltip>
@@ -50,16 +63,26 @@ export function ContextRing({
 								strokeDashoffset={circumference * (1 - pct / 100)}
 							/>
 						</svg>
-						<span className="tabular-nums">{pct.toFixed(1)}%</span>
+						<span className="tabular-nums">{statusLabel}</span>
 					</button>
 				</TooltipTrigger>
 				<TooltipContent side="top" className="p-2.5">
-					{tokenUsage ? (
+					{tokenUsage || windowLabel ? (
 						<div className="flex flex-col gap-1">
-							<UsageRow label="Input" value={tokenUsage.input_other} />
-							<UsageRow label="Cache read" value={tokenUsage.input_cache_read} />
-							<UsageRow label="Cache write" value={tokenUsage.input_cache_creation} />
-							<UsageRow label="Output" value={tokenUsage.output} />
+							{windowLabel && (
+								<div className="flex items-center justify-between gap-6 text-[11px]">
+									<span className="text-muted">Context</span>
+									<span className="font-mono tabular-nums">{windowLabel}</span>
+								</div>
+							)}
+							{tokenUsage && (
+								<>
+									<UsageRow label="Input" value={tokenUsage.input_other} />
+									<UsageRow label="Cache read" value={tokenUsage.input_cache_read} />
+									<UsageRow label="Cache write" value={tokenUsage.input_cache_creation} />
+									<UsageRow label="Output" value={tokenUsage.output} />
+								</>
+							)}
 						</div>
 					) : (
 						<span className="text-[11px] text-muted">暂无 token 用量数据</span>

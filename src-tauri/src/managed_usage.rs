@@ -9,23 +9,35 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_USAGE_URL: &str = "https://api.kimi.com/coding/v1/usages";
-const DEFAULT_OAUTH_HOST: &str = "https://auth.kimi.com";
-const OAUTH_CLIENT_ID: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
+pub(crate) const DEFAULT_OAUTH_HOST: &str = "https://auth.kimi.com";
+pub(crate) const OAUTH_CLIENT_ID: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
 const CREDENTIALS_NAME: &str = "kimi-code";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const MIN_REFRESH_THRESHOLD_SECS: i64 = 300;
+static CREDENTIALS_LOCK: Mutex<()> = Mutex::new(());
+static NEXT_CREDENTIAL_WRITE_ID: AtomicU64 = AtomicU64::new(1);
+static CREDENTIALS_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn with_credentials_lock<R>(f: impl FnOnce() -> R) -> R {
+    let _guard = CREDENTIALS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    f()
+}
 
 #[derive(Clone, Debug)]
-struct TokenBundle {
-    access_token: String,
-    refresh_token: String,
-    expires_at: i64,
-    scope: String,
-    token_type: String,
-    expires_in: i64,
+pub(crate) struct TokenBundle {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: i64,
+    pub scope: String,
+    pub token_type: String,
+    pub expires_in: i64,
 }
 
 pub fn fetch_managed_usage() -> Value {
@@ -72,7 +84,7 @@ fn usage_url() -> String {
         .unwrap_or_else(|| DEFAULT_USAGE_URL.to_string())
 }
 
-fn oauth_host() -> String {
+pub(crate) fn oauth_host() -> String {
     std::env::var("KIMI_CODE_OAUTH_HOST")
         .or_else(|_| std::env::var("KIMI_OAUTH_HOST"))
         .ok()
@@ -81,10 +93,53 @@ fn oauth_host() -> String {
         .unwrap_or_else(|| DEFAULT_OAUTH_HOST.to_string())
 }
 
-fn credentials_path() -> Result<PathBuf, String> {
+pub(crate) fn credentials_path() -> Result<PathBuf, String> {
     Ok(kimi_code_home_dir()?
         .join("credentials")
         .join(format!("{CREDENTIALS_NAME}.json")))
+}
+
+/// True when `~/.kimi-code/credentials/kimi-code.json` has a non-empty access_token.
+pub(crate) fn credentials_present() -> bool {
+    with_credentials_lock(|| {
+        let Ok(path) = credentials_path() else {
+            return false;
+        };
+        load_token_bundle(&path)
+            .map(|token| !token.access_token.is_empty())
+            .unwrap_or(false)
+    })
+}
+
+/// Remove CLI credentials the same way `kimi logout` does (delete `kimi-code.json`).
+/// Idempotent when the file is already missing.
+pub(crate) fn clear_credentials() -> Result<(), String> {
+    with_credentials_lock(|| {
+        CREDENTIALS_GENERATION.fetch_add(1, Ordering::SeqCst);
+        let path = credentials_path()?;
+        if !path.exists() {
+            return Ok(());
+        }
+        fs::remove_file(&path).map_err(|e| format!("Failed to remove credentials: {e}"))
+    })
+}
+
+pub fn kimi_credentials_status() -> Value {
+    json!({ "present": credentials_present() })
+}
+
+pub fn logout_kimi() -> Value {
+    match clear_credentials() {
+        Ok(()) => json!({
+            "success": true,
+            "present": credentials_present(),
+        }),
+        Err(message) => json!({
+            "success": false,
+            "present": credentials_present(),
+            "message": message,
+        }),
+    }
 }
 
 fn now_unix() -> i64 {
@@ -114,6 +169,10 @@ fn should_refresh(token: &TokenBundle, force: bool) -> bool {
 }
 
 fn ensure_fresh_access_token(force: bool) -> Result<String, String> {
+    with_credentials_lock(|| ensure_fresh_access_token_locked(force))
+}
+
+fn ensure_fresh_access_token_locked(force: bool) -> Result<String, String> {
     let path = credentials_path()?;
     let token = load_token_bundle(&path)?;
     if !should_refresh(&token, force) {
@@ -141,14 +200,14 @@ fn ensure_fresh_access_token(force: bool) -> Result<String, String> {
     }
 
     let refreshed = refresh_access_token(&latest.refresh_token)?;
-    save_token_bundle(&path, &refreshed)?;
+    save_token_bundle_locked(&path, &refreshed)?;
     Ok(refreshed.access_token)
 }
 
 fn load_token_bundle(path: &Path) -> Result<TokenBundle, String> {
     if !path.is_file() {
         return Err(
-            "No Kimi Code credentials found. Run `kimi login` in a terminal, then try again."
+            "No Kimi Code credentials found. Sign in from Settings, then try again."
                 .to_string(),
         );
     }
@@ -212,7 +271,30 @@ fn load_token_bundle(path: &Path) -> Result<TokenBundle, String> {
     })
 }
 
-fn save_token_bundle(path: &Path, token: &TokenBundle) -> Result<(), String> {
+#[cfg(test)]
+pub(crate) fn save_token_bundle(path: &Path, token: &TokenBundle) -> Result<(), String> {
+    with_credentials_lock(|| save_token_bundle_locked(path, token))
+}
+
+pub(crate) fn credentials_generation() -> u64 {
+    CREDENTIALS_GENERATION.load(Ordering::SeqCst)
+}
+
+pub(crate) fn save_token_bundle_if_generation(
+    path: &Path,
+    token: &TokenBundle,
+    expected_generation: u64,
+) -> Result<bool, String> {
+    with_credentials_lock(|| {
+        if CREDENTIALS_GENERATION.load(Ordering::SeqCst) != expected_generation {
+            return Ok(false);
+        }
+        save_token_bundle_locked(path, token)?;
+        Ok(true)
+    })
+}
+
+fn save_token_bundle_locked(path: &Path, token: &TokenBundle) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("Failed to create credentials dir: {e}"))?;
     }
@@ -244,7 +326,13 @@ fn save_token_bundle(path: &Path, token: &TokenBundle) -> Result<(), String> {
             .map_err(|e| format!("Failed to serialize credentials: {e}"))?
     );
 
-    let tmp = path.with_extension(format!("json.tmp.{}.{}", std::process::id(), now_unix()));
+    let unique = NEXT_CREDENTIAL_WRITE_ID.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!(
+        "json.tmp.{}.{}.{}",
+        std::process::id(),
+        now_unix(),
+        unique
+    ));
     {
         let mut file = fs::File::create(&tmp)
             .map_err(|e| format!("Failed to write credentials temp file: {e}"))?;
@@ -257,6 +345,15 @@ fn save_token_bundle(path: &Path, token: &TokenBundle) -> Result<(), String> {
         let _ = fs::remove_file(&tmp);
         format!("Failed to replace credentials file: {e}")
     })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        if let Some(parent) = path.parent() {
+            let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+        }
+    }
+    CREDENTIALS_GENERATION.fetch_add(1, Ordering::SeqCst);
     Ok(())
 }
 
@@ -405,6 +502,42 @@ mod tests {
             "message={}",
             result["message"]
         );
+    }
+
+    #[test]
+    fn credentials_status_and_logout_clear_file() {
+        let dir = tempdir().unwrap();
+        let _guard = set_kimi_code_home(dir.path());
+        assert_eq!(kimi_credentials_status()["present"], false);
+
+        let creds_dir = dir.path().join("credentials");
+        fs::create_dir_all(&creds_dir).unwrap();
+        let path = creds_dir.join("kimi-code.json");
+        fs::write(
+            &path,
+            r#"{
+  "access_token": "tok-logout",
+  "refresh_token": "rt-1",
+  "expires_at": 9999999999,
+  "scope": "kimi-code",
+  "token_type": "Bearer",
+  "expires_in": 900
+}"#,
+        )
+        .unwrap();
+        assert!(credentials_present());
+        assert_eq!(kimi_credentials_status()["present"], true);
+
+        let result = logout_kimi();
+        assert_eq!(result["success"], true);
+        assert_eq!(result["present"], false);
+        assert!(!path.exists());
+        assert!(!credentials_present());
+
+        // Idempotent when already logged out.
+        let again = logout_kimi();
+        assert_eq!(again["success"], true);
+        assert_eq!(again["present"], false);
     }
 
     #[test]

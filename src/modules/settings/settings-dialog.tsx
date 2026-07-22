@@ -1,8 +1,14 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useTheme } from "@/hooks/use-theme";
 import { useGlobalConfig } from "@/hooks/useGlobalConfig";
+import { notifyGlobalConfigApplied } from "@/lib/config-update-toast";
 import { openKimiCodeWebsite } from "@/lib/kimi-code-link";
+import {
+  findConfigModel,
+  modelForcesThinking,
+  modelHasThinkingCapability,
+} from "@/lib/model-capabilities";
 import {
   getConfigTomlFile,
   getMcpConfigFile,
@@ -14,13 +20,16 @@ import { desktopVersion, resolveKimiCliVersion } from "@/lib/version";
 import { Button } from "@/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/ui/dialog";
 import { Switch } from "@/ui/switch";
+import { UsagePanel } from "./usage-panel";
+import { KimiLoginPanel } from "./kimi-login-panel";
 
-type SettingsTab = "general" | "config" | "mcp" | "about";
+export type SettingsTab = "general" | "config" | "mcp" | "usage" | "about";
 
 const TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: "general", label: "通用" },
   { id: "config", label: "Config" },
   { id: "mcp", label: "MCP" },
+  { id: "usage", label: "用量" },
   { id: "about", label: "关于" },
 ];
 
@@ -42,6 +51,7 @@ function TextConfigEditor({
   language,
   load,
   save,
+  onDirtyChange,
 }: {
   enabled: boolean;
   label: string;
@@ -49,6 +59,7 @@ function TextConfigEditor({
   language: "toml" | "json";
   load: () => Promise<{ content: string; path: string }>;
   save: (content: string) => Promise<unknown>;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
@@ -56,6 +67,10 @@ function TextConfigEditor({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    onDirtyChange(content !== savedContent);
+  }, [content, onDirtyChange, savedContent]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -140,14 +155,49 @@ function TextConfigEditor({
 export function SettingsDialog({
   open,
   onOpenChange,
+  initialTab,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** When opening (e.g. from model picker), jump to this tab. */
+  initialTab?: SettingsTab;
 }) {
-  const { theme, setTheme } = useTheme();
+  const { theme, setThemeWithTransition } = useTheme();
   const { config, isLoading, isUpdating, error, update } = useGlobalConfig({ enabled: open });
   const [tab, setTab] = useState<SettingsTab>("general");
+  const [dirtyTabs, setDirtyTabs] = useState<Record<"config" | "mcp", boolean>>({
+    config: false,
+    mcp: false,
+  });
   const [cliVersion, setCliVersion] = useState("—");
+  const selectedModel = useMemo(
+    () => findConfigModel(config?.models, config?.defaultModel),
+    [config?.defaultModel, config?.models],
+  );
+  const supportsThinking = modelHasThinkingCapability(selectedModel);
+  const forcesThinking = modelForcesThinking(selectedModel);
+  const currentEditorDirty = (tab === "config" || tab === "mcp") && dirtyTabs[tab];
+
+  const confirmDiscardCurrentEditor = () =>
+    !currentEditorDirty || window.confirm("当前文件有未保存的更改，确定放弃吗？");
+
+  const changeTab = (nextTab: SettingsTab) => {
+    if (nextTab === tab || !confirmDiscardCurrentEditor()) return;
+    if (tab === "config" || tab === "mcp") {
+      setDirtyTabs((current) => ({ ...current, [tab]: false }));
+    }
+    setTab(nextTab);
+  };
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen && !confirmDiscardCurrentEditor()) return;
+    if (!nextOpen) setDirtyTabs({ config: false, mcp: false });
+    onOpenChange(nextOpen);
+  };
+
+  useEffect(() => {
+    if (open && initialTab) setTab(initialTab);
+  }, [open, initialTab]);
 
   useEffect(() => {
     if (open)
@@ -156,12 +206,38 @@ export function SettingsDialog({
         .catch(() => setCliVersion("dev"));
   }, [open]);
 
+  const applyDefaultModel = async (name: string) => {
+    try {
+      const resp = await update({ defaultModel: name });
+      notifyGlobalConfigApplied(resp, `默认模型已设为 ${name}`);
+    } catch (err) {
+      toast.error("更新默认模型失败", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const applyDefaultThinking = async (enabled: boolean) => {
+    if (forcesThinking) return;
+    try {
+      const resp = await update({ defaultThinking: enabled });
+      notifyGlobalConfigApplied(
+        resp,
+        enabled ? "默认 Thinking 已开启" : "默认 Thinking 已关闭",
+      );
+    } catch (err) {
+      toast.error("更新 Thinking 失败", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[min(720px,85vh)] max-w-[760px] flex-col overflow-hidden">
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="flex h-[min(720px,85vh)] max-w-[820px] flex-col overflow-hidden">
         <DialogTitle>设置</DialogTitle>
         <DialogDescription className="sr-only">
-          管理应用外观、Kimi Code 配置、MCP Server 和版本信息。
+          管理应用外观、Kimi Code 配置、MCP Server、用量统计和版本信息。
         </DialogDescription>
         <div className="mt-3 flex min-h-0 flex-1 gap-5">
           <nav className="w-32 shrink-0 space-y-1 border-r border-line pr-3">
@@ -169,7 +245,7 @@ export function SettingsDialog({
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setTab(item.id)}
+                onClick={() => changeTab(item.id)}
                 className={cn(
                   "w-full rounded-r1 px-2.5 py-2 text-left text-[12px] transition-colors",
                   tab === item.id
@@ -190,7 +266,7 @@ export function SettingsDialog({
                       <button
                         key={value}
                         type="button"
-                        onClick={() => setTheme(value)}
+                        onClick={(event) => void setThemeWithTransition(value, event)}
                         className={cn(
                           "rounded-r2 border px-3 py-1.5 text-[12.5px] transition-colors",
                           theme === value
@@ -203,6 +279,16 @@ export function SettingsDialog({
                     ))}
                   </div>
                 </Section>
+                <Section title="Kimi Code 登录">
+                  <KimiLoginPanel
+                    onSuccess={() => {
+                      toast.success("登录成功，凭据已写入");
+                    }}
+                    onLogout={() => {
+                      toast.success("已退出登录，凭据已清除");
+                    }}
+                  />
+                </Section>
                 <Section title="全局配置">
                   {isLoading ? (
                     <p className="font-mono text-[11px] text-faint">加载中…</p>
@@ -212,8 +298,9 @@ export function SettingsDialog({
                         <span className="text-[12.5px] text-muted">默认模型</span>
                         <select
                           value={config.defaultModel}
-                          onChange={(event) => void update({ defaultModel: event.target.value })}
-                          className="h-8 rounded-r1 border border-line bg-background px-2 font-mono text-[12px] text-foreground outline-none focus:border-line-strong"
+                          disabled={isUpdating}
+                          onChange={(event) => void applyDefaultModel(event.target.value)}
+                          className="h-8 rounded-r1 border border-line bg-background px-2 font-mono text-[12px] text-foreground outline-none focus:border-line-strong disabled:opacity-60"
                         >
                           {config.models.map((model) => (
                             <option key={model.name} value={model.name}>
@@ -221,21 +308,40 @@ export function SettingsDialog({
                             </option>
                           ))}
                         </select>
+                        <span className="text-[10.5px] text-faint">
+                          新会话与重启后的全局默认。日常切换请用聊天区模型菜单；在 Config
+                          中添加或编辑模型定义。
+                        </span>
                       </label>
                       <div className="flex items-center justify-between">
                         <span className="text-[12.5px] text-muted">默认开启 Plan 模式</span>
                         <Switch
                           checked={config.defaultPlanMode}
+                          disabled={isUpdating}
                           onCheckedChange={(value) => void update({ defaultPlanMode: value })}
                         />
                       </div>
-                      <div className="flex items-center justify-between">
-                        <span className="text-[12.5px] text-muted">默认开启 Thinking</span>
-                        <Switch
-                          checked={config.defaultThinking}
-                          onCheckedChange={(value) => void update({ defaultThinking: value })}
-                        />
-                      </div>
+                      {supportsThinking && (
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <span className="block text-[12.5px] text-muted">
+                              默认开启 Thinking
+                            </span>
+                            <span className="block text-[10.5px] text-faint">
+                              {forcesThinking
+                                ? "由模型 capabilities（always_thinking）强制启用"
+                                : "仅当前默认模型声明 thinking 能力时可用"}
+                            </span>
+                          </div>
+                          <Switch
+                            checked={forcesThinking || config.defaultThinking}
+                            disabled={forcesThinking || isUpdating}
+                            onCheckedChange={(value) => {
+                              void applyDefaultThinking(value);
+                            }}
+                          />
+                        </div>
+                      )}
                       {isUpdating && <p className="font-mono text-[10.5px] text-faint">保存中…</p>}
                       {error && <p className="font-mono text-[10.5px] text-danger">{error}</p>}
                     </div>
@@ -250,9 +356,14 @@ export function SettingsDialog({
                 enabled={open && tab === "config"}
                 label="config.toml"
                 language="toml"
-                description="直接编辑 Kimi Code CLI 的完整 TOML 配置。保存后后续会话会读取新配置。"
+                description="添加 / 编辑模型、capabilities 与 provider。直接编辑 Kimi Code CLI 的完整 TOML；保存后空闲会话会重启以应用。"
                 load={getConfigTomlFile}
                 save={updateConfigTomlFile}
+                onDirtyChange={(dirty) =>
+                  setDirtyTabs((current) =>
+                    current.config === dirty ? current : { ...current, config: dirty },
+                  )
+                }
               />
             )}
             {tab === "mcp" && (
@@ -263,8 +374,14 @@ export function SettingsDialog({
                 description="管理 MCP Server 配置。保存前会在本地检查 JSON 格式。"
                 load={getMcpConfigFile}
                 save={updateMcpConfigFile}
+                onDirtyChange={(dirty) =>
+                  setDirtyTabs((current) =>
+                    current.mcp === dirty ? current : { ...current, mcp: dirty },
+                  )
+                }
               />
             )}
+            {tab === "usage" && <UsagePanel enabled={open && tab === "usage"} />}
             {tab === "about" && (
               <Section title="版本">
                 <div className="flex flex-col gap-1 font-mono text-[11.5px] text-muted">

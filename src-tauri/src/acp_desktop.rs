@@ -103,13 +103,22 @@ impl AcpDesktopClient {
             .map_or(true, |session| !session.rpc.is_alive())
         {
             let (mut rpc, worker) = spawn_acp_probe_worker(app)?;
-            ensure_acp_authenticated(&mut rpc).await?;
+            if let Err(err) = ensure_acp_authenticated(&mut rpc).await {
+                let _ = rpc.shutdown();
+                return Err(err);
+            }
             *guard = Some(DesktopAcpSession {
                 _worker: worker,
                 rpc,
             });
         }
-        guard.as_mut().unwrap().rpc.request(method, params).await
+        let result = guard.as_mut().unwrap().rpc.request(method, params).await;
+        if result.is_err() {
+            if let Some(session) = guard.take() {
+                let _ = session.rpc.shutdown();
+            }
+        }
+        result
     }
 }
 

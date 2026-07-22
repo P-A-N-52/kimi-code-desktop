@@ -169,10 +169,10 @@ fn validate_mcp_command_path(server_name: &str, command: &str) -> Result<(), Str
 
 fn is_unc_path(path: &Path) -> bool {
     let text = path.to_string_lossy();
-    if text.starts_with(r"\\?\") {
-        return false;
-    }
-    text.starts_with("\\\\")
+    let lower = text.to_ascii_lowercase();
+    lower.starts_with(r"\\?\unc\")
+        || lower.starts_with(r"\\.\")
+        || (lower.starts_with(r"\\") && !lower.starts_with(r"\\?\"))
 }
 
 fn is_in_temp_dir(path: &Path) -> bool {
@@ -265,6 +265,14 @@ mod tests {
     fn rejects_relative_and_parent_paths() {
         assert!(validate_local_absolute_path("relative/path").is_err());
         assert!(validate_local_absolute_path("/tmp/../etc/passwd").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn detects_verbatim_unc_and_device_paths() {
+        assert!(is_unc_path(Path::new(r"\\?\UNC\server\share\kimi.exe")));
+        assert!(is_unc_path(Path::new(r"\\.\pipe\kimi")));
+        assert!(!is_unc_path(Path::new(r"\\?\C:\Program Files\Kimi\kimi.exe")));
     }
 
     #[test]
