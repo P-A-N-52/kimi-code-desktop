@@ -26,6 +26,8 @@ const sampleModels: ConfigModel[] = [
     maxContextSize: 128000,
     providerType: "kimi",
     capabilities: new Set([ModelCapability.AlwaysThinking]),
+    supportEfforts: ["low", "high", "max"],
+    defaultEffort: "high",
   },
 ];
 
@@ -52,8 +54,10 @@ const renderComposer = (overrides: Partial<Parameters<typeof Composer>[0]> = {})
     models: sampleModels,
     selectedModel: "kimi-k2.5",
     thinkingEnabled: false,
+    thinkingEffort: "high",
     onSelectModel: vi.fn(),
     onToggleThinking: vi.fn(),
+    onSelectThinkingEffort: vi.fn(),
     ...overrides,
   };
   return { ...render(<Composer {...props} />), props };
@@ -147,8 +151,28 @@ describe("Composer integrations", () => {
     fireEvent.click(forced.getByRole("button", { name: /当前模型 reasoner/ }));
     const forcedSwitch = forced.getByLabelText("思考模式由模型强制启用");
     expect((forcedSwitch as HTMLButtonElement).disabled).toBe(true);
+    expect(forcedSwitch.className).toContain("disabled:bg-hover");
     fireEvent.click(forcedSwitch);
     expect(forced.props.onToggleThinking).not.toHaveBeenCalled();
+  });
+
+  it("shows and updates only efforts supported by the selected model", () => {
+    const forced = renderComposer({ selectedModel: "reasoner", thinkingEffort: "high" });
+    fireEvent.click(forced.getByRole("button", { name: /当前模型 reasoner/ }));
+    expect(forced.getByRole("group", { name: "思考档位" })).toBeTruthy();
+    expect(forced.getByRole("button", { name: "思考档位 low" })).toBeTruthy();
+    expect(
+      forced.getByRole("button", { name: "思考档位 high" }).getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(forced.getByRole("button", { name: "思考档位 max" })).toBeTruthy();
+    expect(forced.queryByRole("button", { name: "思考档位 medium" })).toBeNull();
+    fireEvent.click(forced.getByRole("button", { name: "思考档位 max" }));
+    expect(forced.props.onSelectThinkingEffort).toHaveBeenCalledWith("max");
+    forced.unmount();
+
+    const plain = renderComposer({ selectedModel: "plain" });
+    fireEvent.click(plain.getByRole("button", { name: /当前模型 plain/ }));
+    expect(plain.queryByRole("group", { name: "思考档位" })).toBeNull();
   });
 
   it("offers a secondary manage-config link from the model picker", () => {

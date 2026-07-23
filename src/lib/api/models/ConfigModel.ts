@@ -58,6 +58,10 @@ export interface ConfigModel {
      * @memberof ConfigModel
      */
     capabilities?: Set<ModelCapability> | null;
+    /** Effort values accepted by this model, in display order. */
+    supportEfforts?: Array<string> | null;
+    /** Model-preferred effort when the current value is incompatible. */
+    defaultEffort?: string | null;
     /**
      * Model key in kimi-cli config (Config.models)
      * @type {string}
@@ -100,6 +104,8 @@ export function ConfigModelFromJSONTyped(json: any, ignoreDiscriminator: boolean
         'model': json['model'],
         'maxContextSize': json['max_context_size'],
         'capabilities': json['capabilities'] == null ? undefined : (new Set((json['capabilities'] as Array<any>).map(ModelCapabilityFromJSON))),
+        'supportEfforts': json['support_efforts'] == null ? undefined : json['support_efforts'],
+        'defaultEffort': json['default_effort'] == null ? undefined : json['default_effort'],
         'name': json['name'],
         'providerType': ProviderTypeFromJSON(json['provider_type']),
     };
@@ -120,6 +126,8 @@ export function ConfigModelToJSONTyped(value?: ConfigModel | null, ignoreDiscrim
         'model': value['model'],
         'max_context_size': value['maxContextSize'],
         'capabilities': value['capabilities'] == null ? undefined : (Array.from(value['capabilities'] as Set<any>).map(ModelCapabilityToJSON)),
+        'support_efforts': value['supportEfforts'],
+        'default_effort': value['defaultEffort'],
         'name': value['name'],
         'provider_type': ProviderTypeToJSON(value['providerType']),
     };

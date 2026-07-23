@@ -526,6 +526,7 @@ export async function updateMcpConfig(
 export async function updateGlobalConfig(args: {
 	defaultModel?: string;
 	defaultThinking?: boolean;
+	thinkingEffort?: string;
 	defaultPlanMode?: boolean;
 	restartRunningSessions?: boolean;
 	forceRestartBusySessions?: boolean;
@@ -534,6 +535,7 @@ export async function updateGlobalConfig(args: {
 	const raw = await invoke<Record<string, unknown>>("update_global_config", {
 		defaultModel: args.defaultModel,
 		defaultThinking: args.defaultThinking,
+		thinkingEffort: args.thinkingEffort,
 		defaultPlanMode: args.defaultPlanMode,
 		restartRunningSessions: args.restartRunningSessions,
 		forceRestartBusySessions: args.forceRestartBusySessions,
@@ -737,6 +739,7 @@ function normalizeGlobalConfig(raw: Record<string, unknown>): GlobalConfig {
 	return {
 		defaultModel: String(raw.default_model ?? raw.defaultModel ?? ""),
 		defaultThinking: Boolean(raw.default_thinking ?? raw.defaultThinking),
+		thinkingEffort: String(raw.thinking_effort ?? raw.thinkingEffort ?? ""),
 		defaultPlanMode: Boolean(raw.default_plan_mode ?? raw.defaultPlanMode),
 		defaultPermissionMode: String(
 			raw.default_permission_mode ?? raw.defaultPermissionMode ?? "manual",
@@ -748,6 +751,13 @@ function normalizeGlobalConfig(raw: Record<string, unknown>): GlobalConfig {
 				model.max_context_size ?? model.maxContextSize ?? 0,
 			),
 			capabilities: normalizeCapabilities(model.capabilities),
+			supportEfforts: Array.isArray(model.support_efforts ?? model.supportEfforts)
+				? (model.support_efforts ?? model.supportEfforts) as string[]
+				: undefined,
+			defaultEffort:
+				typeof (model.default_effort ?? model.defaultEffort) === "string"
+					? String(model.default_effort ?? model.defaultEffort)
+					: undefined,
 			name: String(model.name ?? ""),
 			providerType: normalizeProviderType(
 				model.provider_type ?? model.providerType,

@@ -14,6 +14,7 @@ import {
 type UpdateGlobalConfigArgs = {
   defaultModel?: string;
   defaultThinking?: boolean;
+  thinkingEffort?: string;
   defaultPlanMode?: boolean;
   restartRunningSessions?: boolean;
   forceRestartBusySessions?: boolean;
@@ -102,6 +103,7 @@ export function useGlobalConfig(
           resp = await tauriUpdateGlobalConfig({
             defaultModel: args.defaultModel,
             defaultThinking: args.defaultThinking,
+            thinkingEffort: args.thinkingEffort,
             defaultPlanMode: args.defaultPlanMode,
             restartRunningSessions: args.restartRunningSessions,
             forceRestartBusySessions: args.forceRestartBusySessions,
@@ -110,6 +112,7 @@ export function useGlobalConfig(
           const body: UpdateGlobalConfigRequest = {
             defaultModel: args.defaultModel ?? undefined,
             defaultThinking: args.defaultThinking ?? undefined,
+            thinkingEffort: args.thinkingEffort ?? undefined,
             defaultPlanMode: args.defaultPlanMode ?? undefined,
             restartRunningSessions: args.restartRunningSessions ?? undefined,
             forceRestartBusySessions: args.forceRestartBusySessions ?? undefined,

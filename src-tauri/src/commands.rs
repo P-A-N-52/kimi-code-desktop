@@ -479,6 +479,7 @@ pub async fn update_global_config(
     acp_wire: tauri::State<'_, AcpProcessManager>,
     default_model: Option<String>,
     default_thinking: Option<bool>,
+    thinking_effort: Option<String>,
     default_plan_mode: Option<bool>,
     restart_running_sessions: Option<bool>,
     force_restart_busy_sessions: Option<bool>,
@@ -488,6 +489,7 @@ pub async fn update_global_config(
     let config = global_config::update_global_config_fields(
         default_model.as_deref(),
         default_thinking,
+        thinking_effort.as_deref(),
         default_plan_mode,
     )?;
 

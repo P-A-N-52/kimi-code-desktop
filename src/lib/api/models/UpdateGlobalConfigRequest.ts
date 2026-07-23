@@ -31,6 +31,8 @@ export interface UpdateGlobalConfigRequest {
      * @memberof UpdateGlobalConfigRequest
      */
     defaultThinking?: boolean | null;
+    /** Active value written to [thinking].effort. */
+    thinkingEffort?: string | null;
     /**
      *
      * @type {boolean}
@@ -70,6 +72,7 @@ export function UpdateGlobalConfigRequestFromJSONTyped(json: any, ignoreDiscrimi
         
         'defaultModel': json['default_model'] == null ? undefined : json['default_model'],
         'defaultThinking': json['default_thinking'] == null ? undefined : json['default_thinking'],
+        'thinkingEffort': json['thinking_effort'] == null ? undefined : json['thinking_effort'],
         'defaultPlanMode': json['default_plan_mode'] == null ? undefined : json['default_plan_mode'],
         'restartRunningSessions': json['restart_running_sessions'] == null ? undefined : json['restart_running_sessions'],
         'forceRestartBusySessions': json['force_restart_busy_sessions'] == null ? undefined : json['force_restart_busy_sessions'],
@@ -89,6 +92,7 @@ export function UpdateGlobalConfigRequestToJSONTyped(value?: UpdateGlobalConfigR
         
         'default_model': value['defaultModel'],
         'default_thinking': value['defaultThinking'],
+        'thinking_effort': value['thinkingEffort'],
         'default_plan_mode': value['defaultPlanMode'],
         'restart_running_sessions': value['restartRunningSessions'],
         'force_restart_busy_sessions': value['forceRestartBusySessions'],

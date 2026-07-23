@@ -26,3 +26,10 @@ export function modelForcesThinking(
 ): boolean {
 	return model?.capabilities?.has(ModelCapability.AlwaysThinking) ?? false;
 }
+
+/** Ordered effort values accepted by this model. */
+export function modelThinkingEfforts(
+	model: ConfigModel | null | undefined,
+): string[] {
+	return model?.supportEfforts?.filter((effort) => effort.trim().length > 0) ?? [];
+}

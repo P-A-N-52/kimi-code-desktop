@@ -5,6 +5,7 @@ import {
 	findConfigModel,
 	modelForcesThinking,
 	modelHasThinkingCapability,
+	modelThinkingEfforts,
 } from "@/lib/model-capabilities";
 import { cn } from "@/lib/utils";
 import { Switch } from "@/ui/switch";
@@ -13,19 +14,23 @@ export function ModelPicker({
 	models,
 	selectedModel,
 	thinkingEnabled,
+	thinkingEffort,
 	disabled = false,
 	updating = false,
 	onSelectModel,
 	onToggleThinking,
+	onSelectThinkingEffort,
 	onManageConfig,
 }: {
 	models: ConfigModel[];
 	selectedModel: string;
 	thinkingEnabled: boolean;
+	thinkingEffort: string;
 	disabled?: boolean;
 	updating?: boolean;
 	onSelectModel: (name: string) => void;
 	onToggleThinking: (enabled: boolean) => void;
+	onSelectThinkingEffort: (effort: string) => void;
 	/** Secondary path: open Settings → Config to edit models / capabilities. */
 	onManageConfig?: () => void;
 }) {
@@ -37,6 +42,12 @@ export function ModelPicker({
 	);
 	const supportsThinking = modelHasThinkingCapability(selected);
 	const forcesThinking = modelForcesThinking(selected);
+	const supportedEfforts = modelThinkingEfforts(selected);
+	const activeEffort = supportedEfforts.includes(thinkingEffort)
+		? thinkingEffort
+		: selected?.defaultEffort && supportedEfforts.includes(selected.defaultEffort)
+			? selected.defaultEffort
+			: supportedEfforts[0];
 	const label = selectedModel || "选择模型";
 
 	useEffect(() => {
@@ -151,6 +162,39 @@ export function ModelPicker({
 									}}
 								/>
 							</div>
+						</div>
+					)}
+					{supportedEfforts.length > 0 && (
+						<div className="border-t border-line px-2.5 py-2.5">
+							<p className="mb-2 text-[12.5px] font-medium text-foreground">
+								思考档位
+							</p>
+							<fieldset className="flex flex-wrap gap-1">
+								<legend className="sr-only">思考档位</legend>
+								{supportedEfforts.map((effort) => {
+									const active = effort === activeEffort;
+									return (
+										<button
+											key={effort}
+											type="button"
+											aria-label={`思考档位 ${effort}`}
+											aria-pressed={active}
+											disabled={updating || disabled}
+											onClick={() => {
+												if (!active) onSelectThinkingEffort(effort);
+											}}
+											className={cn(
+												"rounded-r1 border px-2 py-1 font-mono text-[10.5px] uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+												active
+													? "border-line-strong bg-active text-foreground"
+													: "border-line text-muted hover:bg-hover hover:text-foreground",
+											)}
+										>
+											{effort}
+										</button>
+									);
+								})}
+							</fieldset>
 						</div>
 					)}
 					{onManageConfig && (

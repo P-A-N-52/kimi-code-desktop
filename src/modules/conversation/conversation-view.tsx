@@ -128,6 +128,21 @@ export function ConversationView({
     [selectedConfigModel, update],
   );
 
+  const handleSelectThinkingEffort = useCallback(
+    async (effort: string) => {
+      if (!selectedConfigModel?.supportEfforts?.includes(effort)) return;
+      try {
+        const resp = await update({ thinkingEffort: effort });
+        notifyGlobalConfigApplied(resp, `思考档位已切换为 ${effort}`);
+      } catch (error) {
+        toast.error("更新思考档位失败", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    [selectedConfigModel, update],
+  );
+
   const showInfoPanel = useCallback(
     async (command: "usage" | "status") => {
       setCommandResult({ command, content: "", loading: true });
@@ -232,10 +247,12 @@ export function ConversationView({
             models={models}
             selectedModel={selectedModel || "默认模型"}
             thinkingEnabled={Boolean(config?.defaultThinking)}
+            thinkingEffort={config?.thinkingEffort ?? ""}
             modelControlsDisabled={!config}
             modelUpdating={isUpdating}
             onSelectModel={(name) => void handleSelectModel(name)}
             onToggleThinking={(enabled) => void handleToggleThinking(enabled)}
+            onSelectThinkingEffort={(effort) => void handleSelectThinkingEffort(effort)}
             onManageConfig={onManageConfig}
           />
           <StatusStrip

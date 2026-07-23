@@ -4,6 +4,7 @@ import {
 	findConfigModel,
 	modelForcesThinking,
 	modelHasThinkingCapability,
+	modelThinkingEfforts,
 } from "./model-capabilities";
 
 function model(
@@ -49,5 +50,12 @@ describe("model-capabilities", () => {
 		expect(modelHasThinkingCapability(model("plain"))).toBe(false);
 		expect(modelHasThinkingCapability(model("plain", null))).toBe(false);
 		expect(modelHasThinkingCapability(undefined)).toBe(false);
+	});
+
+	it("returns only declared non-empty thinking efforts", () => {
+		const configurable = model("configurable");
+		configurable.supportEfforts = ["low", "", "high", "max"];
+		expect(modelThinkingEfforts(configurable)).toEqual(["low", "high", "max"]);
+		expect(modelThinkingEfforts(model("plain"))).toEqual([]);
 	});
 });

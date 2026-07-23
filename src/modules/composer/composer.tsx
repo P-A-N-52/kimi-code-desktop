@@ -40,10 +40,12 @@ type ComposerProps = {
   models: ConfigModel[];
   selectedModel: string;
   thinkingEnabled: boolean;
+  thinkingEffort: string;
   modelControlsDisabled?: boolean;
   modelUpdating?: boolean;
   onSelectModel: (name: string) => void;
   onToggleThinking: (enabled: boolean) => void;
+  onSelectThinkingEffort: (effort: string) => void;
   onManageConfig?: () => void;
 };
 
@@ -65,10 +67,12 @@ export function Composer({
   models,
   selectedModel,
   thinkingEnabled,
+  thinkingEffort,
   modelControlsDisabled = false,
   modelUpdating = false,
   onSelectModel,
   onToggleThinking,
+  onSelectThinkingEffort,
   onManageConfig,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -327,10 +331,12 @@ export function Composer({
           models={models}
           selectedModel={selectedModel}
           thinkingEnabled={thinkingEnabled}
+          thinkingEffort={thinkingEffort}
           disabled={modelControlsDisabled}
           updating={modelUpdating}
           onSelectModel={onSelectModel}
           onToggleThinking={onToggleThinking}
+          onSelectThinkingEffort={onSelectThinkingEffort}
           onManageConfig={onManageConfig}
         />
         {canCancel && (

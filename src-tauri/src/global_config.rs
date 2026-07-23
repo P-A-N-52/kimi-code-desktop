@@ -85,28 +85,54 @@ fn normalized_permission_mode(parsed: &toml::Value) -> String {
 pub fn update_global_config_fields(
     default_model: Option<&str>,
     default_thinking: Option<bool>,
+    thinking_effort: Option<&str>,
     default_plan_mode: Option<bool>,
 ) -> Result<Value, String> {
     let path = config_path()?;
     let mut parsed = load_config_toml()?;
 
-    if let Some(model) = default_model {
-        if !model_exists(&parsed, model) {
-            return Err(format!("Model '{model}' not found in config"));
-        }
-        set_top_level_string(&mut parsed, "default_model", model);
-    }
-
-    if let Some(thinking) = default_thinking {
-        set_top_level_bool(&mut parsed, "default_thinking", thinking);
-    }
-
-    if let Some(plan_mode) = default_plan_mode {
-        set_top_level_bool(&mut parsed, "default_plan_mode", plan_mode);
-    }
+    update_global_config_value(
+        &mut parsed,
+        default_model,
+        default_thinking,
+        thinking_effort,
+        default_plan_mode,
+    )?;
 
     write_config_toml(&path, &parsed)?;
     Ok(build_global_config_json(&parsed))
+}
+
+fn update_global_config_value(
+    parsed: &mut toml::Value,
+    default_model: Option<&str>,
+    default_thinking: Option<bool>,
+    thinking_effort: Option<&str>,
+    default_plan_mode: Option<bool>,
+) -> Result<(), String> {
+    if let Some(model) = default_model {
+        if !model_exists(parsed, model) {
+            return Err(format!("Model '{model}' not found in config"));
+        }
+        set_top_level_string(parsed, "default_model", model);
+    }
+
+    if let Some(thinking) = default_thinking {
+        set_top_level_bool(parsed, "default_thinking", thinking);
+    }
+
+    if let Some(effort) = thinking_effort {
+        validate_thinking_effort(parsed, effort)?;
+        set_thinking_effort(parsed, effort);
+    } else if default_model.is_some() {
+        reconcile_thinking_effort(parsed);
+    }
+
+    if let Some(plan_mode) = default_plan_mode {
+        set_top_level_bool(parsed, "default_plan_mode", plan_mode);
+    }
+
+    Ok(())
 }
 
 /// Repair an unambiguous protocol/base-URL mismatch for the active model.
@@ -311,12 +337,14 @@ pub(crate) fn build_global_config_json(parsed: &toml::Value) -> Value {
         .and_then(toml::Value::as_bool)
         .unwrap_or(false);
     let default_permission_mode = normalized_permission_mode(parsed);
+    let thinking_effort = configured_thinking_effort(parsed).unwrap_or_default();
 
     json!({
         "default_model": default_model,
         "default_thinking": default_thinking,
         "default_plan_mode": default_plan_mode,
         "default_permission_mode": default_permission_mode,
+        "thinking_effort": thinking_effort,
         "models": build_models_array(parsed),
     })
 }
@@ -357,6 +385,21 @@ fn build_models_array(parsed: &toml::Value) -> Vec<Value> {
                         .collect::<Vec<_>>()
                 })
                 .filter(|items| !items.is_empty());
+            let support_efforts = model_table
+                .get("support_efforts")
+                .and_then(toml::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(toml::Value::as_str)
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .filter(|items| !items.is_empty());
+            let default_effort = model_table
+                .get("default_effort")
+                .and_then(toml::Value::as_str)
+                .map(str::to_string);
             let provider_type = providers
                 .and_then(|table| table.get(&provider))
                 .and_then(|provider_table| provider_table.get("type"))
@@ -376,6 +419,18 @@ fn build_models_array(parsed: &toml::Value) -> Vec<Value> {
                     .as_object_mut()
                     .expect("model entry object")
                     .insert("capabilities".to_string(), json!(caps));
+            }
+            if let Some(efforts) = support_efforts {
+                entry
+                    .as_object_mut()
+                    .expect("model entry object")
+                    .insert("support_efforts".to_string(), json!(efforts));
+            }
+            if let Some(effort) = default_effort {
+                entry
+                    .as_object_mut()
+                    .expect("model entry object")
+                    .insert("default_effort".to_string(), json!(effort));
             }
             (name.clone(), entry)
         })
@@ -403,6 +458,90 @@ fn set_top_level_bool(parsed: &mut toml::Value, key: &str, value: bool) {
     table.insert(key.to_string(), toml::Value::Boolean(value));
 }
 
+fn selected_model_name(parsed: &toml::Value) -> Option<&str> {
+    parsed.get("default_model").and_then(toml::Value::as_str)
+}
+
+fn model_efforts<'a>(parsed: &'a toml::Value, model_name: &str) -> Vec<&'a str> {
+    parsed
+        .get("models")
+        .and_then(toml::Value::as_table)
+        .and_then(|models| models.get(model_name))
+        .and_then(|model| model.get("support_efforts"))
+        .and_then(toml::Value::as_array)
+        .map(|items| items.iter().filter_map(toml::Value::as_str).collect())
+        .unwrap_or_default()
+}
+
+fn model_default_effort<'a>(parsed: &'a toml::Value, model_name: &str) -> Option<&'a str> {
+    parsed
+        .get("models")
+        .and_then(toml::Value::as_table)
+        .and_then(|models| models.get(model_name))
+        .and_then(|model| model.get("default_effort"))
+        .and_then(toml::Value::as_str)
+}
+
+fn configured_thinking_effort(parsed: &toml::Value) -> Option<&str> {
+    parsed
+        .get("thinking")
+        .and_then(|thinking| thinking.get("effort"))
+        .and_then(toml::Value::as_str)
+}
+
+fn validate_thinking_effort(parsed: &toml::Value, effort: &str) -> Result<(), String> {
+    let model_name = selected_model_name(parsed)
+        .ok_or_else(|| "Cannot set thinking effort without a selected default model".to_string())?;
+    let supported = model_efforts(parsed, model_name);
+    if supported.contains(&effort) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Thinking effort '{effort}' is not supported by model '{model_name}'"
+        ))
+    }
+}
+
+fn set_thinking_effort(parsed: &mut toml::Value, effort: &str) {
+    let root = parsed.as_table_mut().expect("config root must be a table");
+    let thinking = root
+        .entry("thinking".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    if !thinking.is_table() {
+        *thinking = toml::Value::Table(toml::map::Map::new());
+    }
+    thinking
+        .as_table_mut()
+        .expect("thinking must be a table")
+        .insert(
+            "effort".to_string(),
+            toml::Value::String(effort.to_string()),
+        );
+}
+
+fn reconcile_thinking_effort(parsed: &mut toml::Value) {
+    let Some(model_name) = selected_model_name(parsed).map(str::to_string) else {
+        return;
+    };
+    let supported: Vec<String> = model_efforts(parsed, &model_name)
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    if supported.is_empty() {
+        return;
+    }
+    if configured_thinking_effort(parsed)
+        .is_some_and(|current| supported.iter().any(|effort| effort == current))
+    {
+        return;
+    }
+    let fallback = model_default_effort(parsed, &model_name)
+        .filter(|default| supported.iter().any(|effort| effort == default))
+        .map(str::to_string)
+        .unwrap_or_else(|| supported[0].clone());
+    set_thinking_effort(parsed, &fallback);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,6 +559,11 @@ provider = "kimi"
 model = "kimi-k2"
 max_context_size = 128000
 capabilities = ["thinking"]
+default_effort = "high"
+support_efforts = ["low", "high", "max"]
+
+[thinking]
+effort = "max"
 "#;
 
     #[test]
@@ -431,6 +575,7 @@ capabilities = ["thinking"]
         assert_eq!(config["default_thinking"], true);
         assert_eq!(config["default_plan_mode"], false);
         assert_eq!(config["default_permission_mode"], "auto");
+        assert_eq!(config["thinking_effort"], "max");
 
         let models = config["models"].as_array().expect("models array");
         assert_eq!(models.len(), 1);
@@ -440,6 +585,8 @@ capabilities = ["thinking"]
         assert_eq!(models[0]["max_context_size"], 128000);
         assert_eq!(models[0]["provider_type"], "kimi");
         assert_eq!(models[0]["capabilities"], json!(["thinking"]));
+        assert_eq!(models[0]["default_effort"], "high");
+        assert_eq!(models[0]["support_efforts"], json!(["low", "high", "max"]));
     }
 
     #[test]
@@ -469,18 +616,45 @@ default_permission_mode = "unexpected"
     #[test]
     fn update_global_config_fields_rejects_unknown_model() {
         let parsed: toml::Value = SAMPLE_CONFIG.parse().expect("sample config parses");
-        let err = update_fields_on_value(&parsed, Some("missing"), None, None).unwrap_err();
+        let err = update_fields_on_value(&parsed, Some("missing"), None, None, None).unwrap_err();
         assert!(err.contains("not found in config"));
     }
 
     #[test]
     fn update_global_config_fields_updates_defaults() {
         let parsed: toml::Value = SAMPLE_CONFIG.parse().expect("sample config parses");
-        let updated = update_fields_on_value(&parsed, None, Some(false), Some(true))
+        let updated = update_fields_on_value(&parsed, None, Some(false), None, Some(true))
             .expect("update succeeds");
 
         assert_eq!(updated["default_thinking"], false);
         assert_eq!(updated["default_plan_mode"], true);
+    }
+
+    #[test]
+    fn update_global_config_fields_validates_thinking_effort() {
+        let parsed: toml::Value = SAMPLE_CONFIG.parse().expect("sample config parses");
+        let updated = update_fields_on_value(&parsed, None, None, Some("low"), None)
+            .expect("supported effort succeeds");
+        assert_eq!(updated["thinking_effort"], "low");
+
+        let err = update_fields_on_value(&parsed, None, None, Some("medium"), None)
+            .expect_err("unsupported effort is rejected");
+        assert!(err.contains("not supported by model 'kimi'"));
+    }
+
+    #[test]
+    fn switching_models_reconciles_incompatible_thinking_effort() {
+        let parsed: toml::Value = format!(
+            "{}\n[models.fast]\nprovider = \"kimi\"\nmodel = \"fast\"\nsupport_efforts = [\"low\"]\ndefault_effort = \"low\"\n",
+            SAMPLE_CONFIG
+        )
+        .parse()
+        .expect("sample config parses");
+
+        let updated = update_fields_on_value(&parsed, Some("fast"), None, None, None)
+            .expect("model switch succeeds");
+        assert_eq!(updated["default_model"], "fast");
+        assert_eq!(updated["thinking_effort"], "low");
     }
 
     #[test]
@@ -628,23 +802,17 @@ max_context_size = 128000
         parsed: &toml::Value,
         default_model: Option<&str>,
         default_thinking: Option<bool>,
+        thinking_effort: Option<&str>,
         default_plan_mode: Option<bool>,
     ) -> Result<Value, String> {
         let mut next = parsed.clone();
-
-        if let Some(model) = default_model {
-            if !model_exists(&next, model) {
-                return Err(format!("Model '{model}' not found in config"));
-            }
-            set_top_level_string(&mut next, "default_model", model);
-        }
-        if let Some(thinking) = default_thinking {
-            set_top_level_bool(&mut next, "default_thinking", thinking);
-        }
-        if let Some(plan_mode) = default_plan_mode {
-            set_top_level_bool(&mut next, "default_plan_mode", plan_mode);
-        }
-
+        update_global_config_value(
+            &mut next,
+            default_model,
+            default_thinking,
+            thinking_effort,
+            default_plan_mode,
+        )?;
         Ok(build_global_config_json(&next))
     }
 }

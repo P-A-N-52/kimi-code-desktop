@@ -10,6 +10,7 @@ describe("global config API models", () => {
 		const config = GlobalConfigFromJSON({
 			default_model: "kimi",
 			default_thinking: true,
+			thinking_effort: "high",
 			default_plan_mode: true,
 			default_permission_mode: "auto",
 			models: [],
@@ -17,9 +18,11 @@ describe("global config API models", () => {
 
 		expect(config.defaultPlanMode).toBe(true);
 		expect(config.defaultPermissionMode).toBe("auto");
+		expect(config.thinkingEffort).toBe("high");
 		expect(GlobalConfigToJSON(config)).toMatchObject({
 			default_plan_mode: true,
 			default_permission_mode: "auto",
+			thinking_effort: "high",
 		});
 	});
 
@@ -30,6 +33,12 @@ describe("global config API models", () => {
 			}),
 		).toMatchObject({
 			default_plan_mode: false,
+		});
+	});
+
+	it("serializes thinking effort in update requests", () => {
+		expect(UpdateGlobalConfigRequestToJSON({ thinkingEffort: "max" })).toMatchObject({
+			thinking_effort: "max",
 		});
 	});
 });

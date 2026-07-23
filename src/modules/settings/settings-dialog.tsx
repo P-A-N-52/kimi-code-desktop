@@ -8,6 +8,7 @@ import {
   findConfigModel,
   modelForcesThinking,
   modelHasThinkingCapability,
+  modelThinkingEfforts,
 } from "@/lib/model-capabilities";
 import {
   getConfigTomlFile,
@@ -176,6 +177,7 @@ export function SettingsDialog({
   );
   const supportsThinking = modelHasThinkingCapability(selectedModel);
   const forcesThinking = modelForcesThinking(selectedModel);
+  const supportedEfforts = modelThinkingEfforts(selectedModel);
   const currentEditorDirty = (tab === "config" || tab === "mcp") && dirtyTabs[tab];
 
   const confirmDiscardCurrentEditor = () =>
@@ -227,6 +229,18 @@ export function SettingsDialog({
       );
     } catch (err) {
       toast.error("更新 Thinking 失败", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const applyThinkingEffort = async (effort: string) => {
+    if (!supportedEfforts.includes(effort)) return;
+    try {
+      const resp = await update({ thinkingEffort: effort });
+      notifyGlobalConfigApplied(resp, `思考档位已切换为 ${effort}`);
+    } catch (err) {
+      toast.error("更新思考档位失败", {
         description: err instanceof Error ? err.message : String(err),
       });
     }
@@ -341,6 +355,28 @@ export function SettingsDialog({
                             }}
                           />
                         </div>
+                      )}
+                      {supportedEfforts.length > 0 && (
+                        <label className="flex items-center justify-between gap-3">
+                          <span className="text-[12.5px] text-muted">思考档位</span>
+                          <select
+                            aria-label="思考档位"
+                            value={
+                              supportedEfforts.includes(config.thinkingEffort)
+                                ? config.thinkingEffort
+                                : selectedModel?.defaultEffort ?? supportedEfforts[0]
+                            }
+                            disabled={isUpdating}
+                            onChange={(event) => void applyThinkingEffort(event.target.value)}
+                            className="h-8 rounded-r1 border border-line bg-background px-2 font-mono text-[12px] uppercase text-foreground outline-none focus:border-line-strong disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {supportedEfforts.map((effort) => (
+                              <option key={effort} value={effort}>
+                                {effort}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
                       )}
                       {isUpdating && <p className="font-mono text-[10.5px] text-faint">保存中…</p>}
                       {error && <p className="font-mono text-[10.5px] text-danger">{error}</p>}
