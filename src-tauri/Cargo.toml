@@ -1,6 +1,6 @@
 [package]
 name = "kimi-code-desktop"
-version = "0.1.7"
+version = "0.1.8"
 description = "Kimi Code 桌面应用 / Kimi Code Desktop App"
 authors = [ "Kimi Team" ]
 license = "Apache-2.0"
