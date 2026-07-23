@@ -207,8 +207,7 @@ fn ensure_fresh_access_token_locked(force: bool) -> Result<String, String> {
 fn load_token_bundle(path: &Path) -> Result<TokenBundle, String> {
     if !path.is_file() {
         return Err(
-            "No Kimi Code credentials found. Sign in from Settings, then try again."
-                .to_string(),
+            "No Kimi Code credentials found. Sign in from Settings, then try again.".to_string(),
         );
     }
     let content =

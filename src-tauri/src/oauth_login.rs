@@ -33,7 +33,9 @@ struct LoginSession {
 }
 
 fn with_sessions<R>(f: impl FnOnce(&mut HashMap<String, LoginSession>) -> R) -> R {
-    let mut guard = SESSIONS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = SESSIONS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let map = guard.get_or_insert_with(HashMap::new);
     f(map)
 }
@@ -195,7 +197,9 @@ fn request_device_authorization() -> Result<DeviceAuthorization, String> {
     let (status, value) = post_form(&url, &form)?;
     if status != 200 {
         let detail = oauth_error_detail(&value);
-        return Err(format!("Device authorization failed (HTTP {status}): {detail}"));
+        return Err(format!(
+            "Device authorization failed (HTTP {status}): {detail}"
+        ));
     }
 
     let user_code = required_string(&value, "user_code")?;
@@ -231,10 +235,7 @@ fn poll_device_token(device_code: &str) -> Result<DevicePollResult, String> {
     let form = [
         ("client_id", OAUTH_CLIENT_ID),
         ("device_code", device_code),
-        (
-            "grant_type",
-            "urn:ietf:params:oauth:grant-type:device_code",
-        ),
+        ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
     ];
     let (status, value) = post_form(&url, &form)?;
 
@@ -363,7 +364,10 @@ fn device_headers() -> Vec<(String, String)> {
     let model = device_model_ascii();
     let os_version = std::env::consts::OS.to_string();
     vec![
-        ("X-Msh-Platform".to_string(), "kimi_code_desktop".to_string()),
+        (
+            "X-Msh-Platform".to_string(),
+            "kimi_code_desktop".to_string(),
+        ),
         ("X-Msh-Version".to_string(), version.to_string()),
         ("X-Msh-Device-Name".to_string(), hostname),
         ("X-Msh-Device-Model".to_string(), model),

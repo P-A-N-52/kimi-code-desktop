@@ -272,7 +272,9 @@ mod tests {
     fn detects_verbatim_unc_and_device_paths() {
         assert!(is_unc_path(Path::new(r"\\?\UNC\server\share\kimi.exe")));
         assert!(is_unc_path(Path::new(r"\\.\pipe\kimi")));
-        assert!(!is_unc_path(Path::new(r"\\?\C:\Program Files\Kimi\kimi.exe")));
+        assert!(!is_unc_path(Path::new(
+            r"\\?\C:\Program Files\Kimi\kimi.exe"
+        )));
     }
 
     #[test]

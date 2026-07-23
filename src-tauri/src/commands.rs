@@ -474,6 +474,7 @@ pub fn update_mcp_config(content: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri exposes these as stable named IPC fields.
 pub async fn update_global_config(
     app: tauri::AppHandle,
     acp_wire: tauri::State<'_, AcpProcessManager>,

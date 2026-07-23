@@ -593,8 +593,7 @@ impl AcpProcessManager {
             let matches_current_lease = workers
                 .get(&session_id)
                 .map(|worker| {
-                    worker.connection_id.lock().unwrap().as_deref()
-                        == Some(connection_id.as_str())
+                    worker.connection_id.lock().unwrap().as_deref() == Some(connection_id.as_str())
                 })
                 .unwrap_or(false);
             if matches_current_lease {
@@ -1226,8 +1225,13 @@ fn acp_usage_u64(usage: &Value, keys: &[&str]) -> u64 {
                         .as_u64()
                         .or_else(|| n.as_i64().map(|v| v.max(0) as u64))
                         .or_else(|| {
-                            n.as_f64()
-                                .map(|v| if v.is_finite() && v > 0.0 { v as u64 } else { 0 })
+                            n.as_f64().map(|v| {
+                                if v.is_finite() && v > 0.0 {
+                                    v as u64
+                                } else {
+                                    0
+                                }
+                            })
                         })
                         .unwrap_or(0);
                 }

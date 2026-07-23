@@ -43,10 +43,16 @@ pub fn find_session_dir_by_id(session_id: &str) -> Result<Option<PathBuf>, Strin
         let candidate = work_dir_path.join(session_id);
         if candidate.is_dir() {
             let canonical_work_dir = work_dir_path.canonicalize().map_err(|e| {
-                format!("Failed to resolve session work directory {}: {e}", work_dir_path.display())
+                format!(
+                    "Failed to resolve session work directory {}: {e}",
+                    work_dir_path.display()
+                )
             })?;
             let canonical_candidate = candidate.canonicalize().map_err(|e| {
-                format!("Failed to resolve session directory {}: {e}", candidate.display())
+                format!(
+                    "Failed to resolve session directory {}: {e}",
+                    candidate.display()
+                )
             })?;
             if canonical_candidate.parent() != Some(canonical_work_dir.as_path()) {
                 return Err("Session directory resolves outside its work directory".to_string());
@@ -150,7 +156,9 @@ fn write_file_atomically(path: &Path, body: &[u8]) -> Result<(), String> {
     let unique = NEXT_ATOMIC_WRITE_ID.fetch_add(1, Ordering::Relaxed);
     let tmp = parent.join(format!(
         ".{}.tmp.{}.{}",
-        path.file_name().and_then(|name| name.to_str()).unwrap_or("state"),
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("state"),
         std::process::id(),
         unique
     ));
@@ -162,8 +170,7 @@ fn write_file_atomically(path: &Path, body: &[u8]) -> Result<(), String> {
             .map_err(|e| format!("Failed to write {}: {e}", tmp.display()))?;
         file.sync_all()
             .map_err(|e| format!("Failed to sync {}: {e}", tmp.display()))?;
-        fs::rename(&tmp, path)
-            .map_err(|e| format!("Failed to replace {}: {e}", path.display()))?;
+        fs::rename(&tmp, path).map_err(|e| format!("Failed to replace {}: {e}", path.display()))?;
         Ok(())
     })();
     if result.is_err() {
@@ -336,8 +343,13 @@ fn usage_field_u64(usage: &Value, keys: &[&str]) -> u64 {
                         .as_u64()
                         .or_else(|| n.as_i64().map(|v| v.max(0) as u64))
                         .or_else(|| {
-                            n.as_f64()
-                                .map(|v| if v.is_finite() && v > 0.0 { v as u64 } else { 0 })
+                            n.as_f64().map(|v| {
+                                if v.is_finite() && v > 0.0 {
+                                    v as u64
+                                } else {
+                                    0
+                                }
+                            })
                         })
                         .unwrap_or(0);
                 }
@@ -1221,7 +1233,10 @@ mod tests {
         let _lock = set_kimi_code_home(&home);
 
         for invalid in ["../credentials", r"..\credentials", "a/b", r"a\b", ""] {
-            assert!(find_session_dir_by_id(invalid).is_err(), "accepted {invalid:?}");
+            assert!(
+                find_session_dir_by_id(invalid).is_err(),
+                "accepted {invalid:?}"
+            );
         }
         assert!(find_session_dir_by_id("safe-session")
             .expect("valid id")

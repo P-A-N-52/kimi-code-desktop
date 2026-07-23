@@ -99,7 +99,15 @@ fn to_u64(value: &Value) -> u64 {
         Value::Number(n) => n
             .as_u64()
             .or_else(|| n.as_i64().map(|v| v.max(0) as u64))
-            .or_else(|| n.as_f64().map(|v| if v.is_finite() && v > 0.0 { v as u64 } else { 0 }))
+            .or_else(|| {
+                n.as_f64().map(|v| {
+                    if v.is_finite() && v > 0.0 {
+                        v as u64
+                    } else {
+                        0
+                    }
+                })
+            })
             .unwrap_or(0),
         Value::String(s) => s.parse::<u64>().unwrap_or(0),
         _ => 0,
@@ -175,13 +183,21 @@ fn series_keys(range: StatsRange, today: NaiveDate) -> Vec<String> {
         StatsRange::Days7 => {
             let start = today - Duration::days(6);
             (0..7)
-                .map(|offset| (start + Duration::days(offset)).format("%Y-%m-%d").to_string())
+                .map(|offset| {
+                    (start + Duration::days(offset))
+                        .format("%Y-%m-%d")
+                        .to_string()
+                })
                 .collect()
         }
         StatsRange::Days30 => {
             let start = today - Duration::days(29);
             (0..30)
-                .map(|offset| (start + Duration::days(offset)).format("%Y-%m-%d").to_string())
+                .map(|offset| {
+                    (start + Duration::days(offset))
+                        .format("%Y-%m-%d")
+                        .to_string()
+                })
                 .collect()
         }
     }
@@ -422,11 +438,15 @@ mod tests {
         assert_eq!(series_keys(StatsRange::Today, today).len(), 24);
         assert_eq!(series_keys(StatsRange::Days7, today).len(), 7);
         assert_eq!(
-            series_keys(StatsRange::Days7, today).first().map(String::as_str),
+            series_keys(StatsRange::Days7, today)
+                .first()
+                .map(String::as_str),
             Some("2026-07-16")
         );
         assert_eq!(
-            series_keys(StatsRange::Days30, today).last().map(String::as_str),
+            series_keys(StatsRange::Days30, today)
+                .last()
+                .map(String::as_str),
             Some("2026-07-22")
         );
     }
