@@ -1,4 +1,5 @@
 /biome.json text eol=lf
+/scripts/*.js text eol=lf
 /scripts/*.mjs text eol=lf
 /vite.config.ts text eol=lf
 /vitest.config.ts text eol=lf
