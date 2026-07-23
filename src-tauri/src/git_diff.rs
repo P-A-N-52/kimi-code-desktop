@@ -118,11 +118,20 @@ fn git_command(work_dir: &Path, args: &[&str]) -> Result<std::process::Output, S
     use std::process::Child;
     use std::sync::{Arc, Mutex};
 
-    let child = Command::new("git")
+    let mut command = Command::new("git");
+    command
         .args(args)
         .current_dir(work_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+
+    let child = command
         .spawn()
         .map_err(|err| format!("Failed to spawn git: {err}"))?;
 
