@@ -262,8 +262,33 @@ fn translate_available_commands_update(update: &Value) -> Vec<String> {
 
     let slash_commands = commands
         .iter()
-        .filter_map(|command| {
-            let name = command.get("name").and_then(Value::as_str)?;
+        .enumerate()
+        .map(|(index, command)| {
+            // Plain string entries (some plugin/skill payloads).
+            if let Some(name) = command.as_str().map(str::trim).filter(|name| !name.is_empty()) {
+                return json!({
+                    "name": name,
+                    "description": "",
+                    "aliases": [],
+                    "input_hint": Value::Null,
+                });
+            }
+
+            let name = command
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .or_else(|| {
+                    command
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                })
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("unknown-{index}"));
+
             let description = command
                 .get("description")
                 .and_then(Value::as_str)
@@ -284,12 +309,12 @@ fn translate_available_commands_update(update: &Value) -> Vec<String> {
                 })
                 .unwrap_or_default();
 
-            Some(json!({
+            json!({
                 "name": name,
                 "description": description,
                 "aliases": aliases,
                 "input_hint": input_hint,
-            }))
+            })
         })
         .collect::<Vec<_>>();
 
@@ -1202,6 +1227,34 @@ mod tests {
         assert_eq!(commands[0]["input_hint"], "optional instruction");
         assert_eq!(commands[1]["name"], "help");
         assert!(commands[1]["input_hint"].is_null());
+    }
+
+    #[test]
+    fn available_commands_update_keeps_unknown_shapes_as_fallback() {
+        let update = json!({
+            "sessionUpdate": "available_commands_update",
+            "availableCommands": [
+                "skill:demo",
+                {
+                    "command": "plugin.foo",
+                    "description": "From command field"
+                },
+                {
+                    "description": "missing name"
+                }
+            ]
+        });
+        let messages = translate_session_update("sess-1", &update);
+        let commands = parse_wire_message(&messages[0])["params"]["payload"]["slash_commands"]
+            .as_array()
+            .expect("slash_commands array")
+            .clone();
+        assert_eq!(commands.len(), 3);
+        assert_eq!(commands[0]["name"], "skill:demo");
+        assert_eq!(commands[1]["name"], "plugin.foo");
+        assert_eq!(commands[1]["description"], "From command field");
+        assert_eq!(commands[2]["name"], "unknown-2");
+        assert_eq!(commands[2]["description"], "missing name");
     }
 
     #[test]

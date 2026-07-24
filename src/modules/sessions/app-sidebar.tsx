@@ -36,6 +36,17 @@ export function AppSidebar({
 		<Moon size={15} strokeWidth={1.5} />
 	);
 
+	const searchRowActions = (
+		<>
+			<IconButton label="新会话" onClick={onNewSession}>
+				<Plus size={16} strokeWidth={1.5} />
+			</IconButton>
+			<IconButton label="收起会话列表" onClick={onToggleCollapsed}>
+				<PanelLeftClose size={16} strokeWidth={1.5} />
+			</IconButton>
+		</>
+	);
+
 	return (
 		<div className="relative h-full overflow-hidden">
 			{/* 展开态：固定在 260px 宽，收起时向左滑出并淡出，避免内容回流 */}
@@ -50,19 +61,14 @@ export function AppSidebar({
 				)}
 				style={{ width: SIDEBAR_WIDTH }}
 			>
-				<div className="flex h-full flex-col">
-					<div className="flex items-center gap-1 px-2.5 pb-1 pt-2.5">
-						{brandBlock}
-						<IconButton label="新会话" onClick={onNewSession}>
-							<Plus size={16} strokeWidth={1.5} />
-						</IconButton>
-						<div className="flex-1" />
-						<IconButton label="收起会话列表" onClick={onToggleCollapsed}>
-							<PanelLeftClose size={16} strokeWidth={1.5} />
-						</IconButton>
-					</div>
+				<div className="relative flex h-full flex-col">
+					{/* Frameless: thin drag strip so search/header controls stay clickable. */}
+					<div
+						className="absolute inset-x-0 top-0 z-20 h-3"
+						data-tauri-drag-region
+					/>
 					<div className="min-h-0 flex-1">
-						<SessionsSidebar {...sessionsProps} />
+						<SessionsSidebar {...sessionsProps} headerAction={searchRowActions} />
 					</div>
 					<div className="flex items-center gap-1 border-t border-line px-2.5 py-2">
 						<button
@@ -94,7 +100,11 @@ export function AppSidebar({
 				)}
 				style={{ width: SIDEBAR_COLLAPSED_WIDTH }}
 			>
-				<div className="flex h-full flex-col items-center gap-0.5 py-2.5">
+				<div className="relative flex h-full flex-col items-center gap-0.5 py-2.5">
+					<div
+						className="absolute inset-x-0 top-0 z-20 h-3"
+						data-tauri-drag-region
+					/>
 					<div className="mb-2.5">{brandBlock}</div>
 					<IconButton label="展开会话列表" onClick={onToggleCollapsed}>
 						<PanelLeftOpen size={16} strokeWidth={1.5} />

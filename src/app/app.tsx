@@ -3,8 +3,8 @@ import { Toaster, toast } from "sonner";
 import { useTheme } from "@/hooks/use-theme";
 import { useGitDiffStats } from "@/hooks/useGitDiffStats";
 import { useSessionStream } from "@/hooks/useSessionStream";
-import { useSessions } from "@/hooks/useSessions";
-import { getApiBaseUrl } from "@/hooks/utils";
+import { DirectoryNotFoundError, useSessions } from "@/hooks/useSessions";
+import { getApiBaseUrl, hasPlatformModifier } from "@/hooks/utils";
 import type { SessionStatus } from "@/lib/api/models";
 import { classifyIdleReason } from "@/lib/idle-turn";
 import { openKimiCodeWebsite } from "@/lib/kimi-code-link";
@@ -19,7 +19,6 @@ import {
 import { ConversationView } from "@/modules/conversation/conversation-view";
 import { ReadinessOverlay } from "@/modules/readiness/readiness-overlay";
 import { AppSidebar } from "@/modules/sessions/app-sidebar";
-import { CreateSessionDialog } from "@/modules/sessions/create-session-dialog";
 import { SettingsDialog, type SettingsTab } from "@/modules/settings/settings-dialog";
 import { Topbar } from "@/modules/topbar/topbar";
 import { ChangesPanel, type WorkspaceTab } from "@/modules/workspace/changes-panel";
@@ -29,7 +28,7 @@ import {
   mergeGitChanges,
 } from "@/modules/workspace/derive-changes";
 import { AppShell } from "./app-shell";
-import { EmptyState } from "./empty-state";
+import { NewSessionView } from "./new-session-view";
 
 export default function App() {
   useTheme();
@@ -43,7 +42,8 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [panelOpen, setPanelOpen] = useState(false);
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("changes");
-  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [newSessionWorkDir, setNewSessionWorkDir] = useState("");
+  const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | undefined>();
   const [runtimeReadiness, setRuntimeReadiness] = useState<RuntimeReadiness | null>(null);
@@ -119,6 +119,13 @@ export default function App() {
     uploadSessionFile,
     error: sessionsError,
   } = useSessions({ enabled: !shouldPauseRuntime });
+
+  useEffect(() => {
+    if (shouldPauseRuntime) return;
+    fetchStartupDir()
+      .then((dir) => setNewSessionWorkDir((current) => current || dir))
+      .catch(() => {});
+  }, [fetchStartupDir, shouldPauseRuntime]);
 
   const currentSession = useMemo(
     () => sessions.find((s) => s.sessionId === selectedSessionId),
@@ -245,16 +252,19 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      if (hasPlatformModifier(e) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         focusSessionSearch();
+      } else if (hasPlatformModifier(e) && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        selectSession("");
       } else if (e.key === "Escape" && panelOpen) {
         handleClosePanel();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [focusSessionSearch, handleClosePanel, panelOpen]);
+  }, [focusSessionSearch, handleClosePanel, panelOpen, selectSession]);
 
   useEffect(() => {
     if (sessionsError) {
@@ -262,9 +272,22 @@ export default function App() {
     }
   }, [sessionsError]);
 
-  const handleCreateSession = useCallback(
-    async (workDir: string) => {
-      await createSession(workDir);
+  const handleNewSession = useCallback(() => {
+    selectSession("");
+  }, [selectSession]);
+
+  const handleSendFirstMessage = useCallback(
+    async (workDir: string, text: string) => {
+      setPendingFirstMessage(text);
+      try {
+        await createSession(workDir);
+      } catch (err) {
+        setPendingFirstMessage(null);
+        if (err instanceof DirectoryNotFoundError) {
+          toast.error("工作目录不存在", { description: workDir });
+        }
+        throw err;
+      }
     },
     [createSession],
   );
@@ -293,7 +316,7 @@ export default function App() {
             collapsed={!sidebarOpen}
             running={anyRunning}
             onToggleCollapsed={() => setSidebarOpen((v) => !v)}
-            onNewSession={() => setShowCreateDialog(true)}
+            onNewSession={handleNewSession}
             onOpenSettings={() => openSettings()}
             sessions={sessions}
             archivedSessions={archivedSessions}
@@ -316,6 +339,10 @@ export default function App() {
             }}
             onArchiveOlderThan={async (days) => {
               await archiveSessionsOlderThan(days);
+            }}
+            onCreateInWorkDir={(workDir) => {
+              setNewSessionWorkDir(workDir);
+              selectSession("");
             }}
             onLoadArchived={refreshArchivedSessions}
             onLoadMore={(mode) =>
@@ -366,25 +393,27 @@ export default function App() {
             stream={stream}
             onOpenWorkspace={handleOpenWorkspace}
             onUploadFile={uploadSessionFile}
+            listDirectory={listSessionDirectory}
             onManageConfig={() => openSettings("config")}
+            pendingFirstMessage={pendingFirstMessage}
+            onPendingFirstMessageSent={() => setPendingFirstMessage(null)}
           />
         ) : (
-          <EmptyState onNewSession={() => setShowCreateDialog(true)} />
+          <NewSessionView
+            workDir={newSessionWorkDir}
+            onWorkDirChange={setNewSessionWorkDir}
+            fetchWorkDirs={fetchWorkDirs}
+            onSendFirstMessage={handleSendFirstMessage}
+            onManageConfig={() => openSettings("config")}
+          />
         )}
       </AppShell>
-      <CreateSessionDialog
-        open={showCreateDialog}
-        onOpenChange={setShowCreateDialog}
-        onConfirm={handleCreateSession}
-        fetchWorkDirs={fetchWorkDirs}
-        fetchStartupDir={fetchStartupDir}
-      />
       <SettingsDialog
         open={showSettings}
         onOpenChange={handleSettingsOpenChange}
         initialTab={settingsInitialTab}
       />
-      <Toaster position="top-right" />
+      <Toaster position="top-right" style={{ fontFamily: "var(--font-sans)" }} />
     </>
   );
 }

@@ -46,7 +46,6 @@ const DESKTOP_SLASH_DENYLIST = new Set([
   "auto",
   "effort",
   "undo",
-  "goal",
   "btw",
   "feedback",
   "version",
@@ -76,6 +75,7 @@ const ACP_FORWARDABLE_SLASH_COMMANDS = new Set([
   "mcp",
   "tasks",
   "task",
+  "goal",
 ]);
 
 /** Local desktop handlers (not forwarded to ACP as raw prompts). */
@@ -110,6 +110,7 @@ const DESKTOP_DESCRIPTION_OVERRIDES: Record<string, string> = {
   compact: "Compact the conversation context",
   mcp: "List MCP servers for this session",
   tasks: "List background tasks (read-only in desktop)",
+  goal: "Create or continue a long-running goal (forwarded to ACP)",
 };
 
 const DENIED_COMMAND_HINTS: Record<string, string> = {

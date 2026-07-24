@@ -6,6 +6,20 @@ export type Theme = "light" | "dark";
 const THEME_STORAGE_KEY = "kimi-theme";
 const THEME_SWITCHING_ATTR = "data-theme-switching";
 const THEME_SWITCH_DURATION_MS = 450;
+/** Hold the in-flight lock after a view transition so Chromium can tear down layers. */
+const THEME_TRANSITION_COOLDOWN_MS = 160;
+const THEME_CX_VAR = "--kimi-theme-cx";
+const THEME_CY_VAR = "--kimi-theme-cy";
+const THEME_RADIUS_VAR = "--kimi-theme-radius";
+const THEME_DURATION_VAR = "--kimi-theme-duration";
+
+/** Ignore rapid theme toggles while a view transition / apply is in flight. */
+let themeTransitionInFlight = false;
+/** If the user toggles again during a lock, apply this once the lock clears. */
+let pendingThemeApply: (() => void) | null = null;
+let pendingThemeEvent: ThemeTransitionEvent | undefined;
+/** Skip Tauri window.setTheme during VT; sync after finished. */
+let deferNativeWindowTheme = false;
 
 type ThemeState = {
   theme: Theme;
@@ -35,6 +49,23 @@ type ThemeListener = () => void;
 const themeListeners = new Set<ThemeListener>();
 let currentThemeState: ThemeState | null = null;
 
+/** @internal test-only — clear transition locks between cases. */
+export function __resetThemeTransitionForTests(): void {
+  themeTransitionInFlight = false;
+  pendingThemeApply = null;
+  pendingThemeEvent = undefined;
+  deferNativeWindowTheme = false;
+  currentThemeState = null;
+  if (typeof document !== "undefined") {
+    const root = document.documentElement;
+    root.removeAttribute(THEME_SWITCHING_ATTR);
+    root.style.removeProperty(THEME_CX_VAR);
+    root.style.removeProperty(THEME_CY_VAR);
+    root.style.removeProperty(THEME_RADIUS_VAR);
+    root.style.removeProperty(THEME_DURATION_VAR);
+  }
+}
+
 function resolveSystemTheme(): Theme {
   if (typeof window === "undefined") {
     return "light";
@@ -63,7 +94,24 @@ function getThemeState(): ThemeState {
   return currentThemeState;
 }
 
-function applyThemeState(state: ThemeState): void {
+function isTauriRuntime(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+function syncNativeWindowTheme(theme: Theme): void {
+  if (!isTauriRuntime()) return;
+  void import("@tauri-apps/api/window")
+    .then(({ getCurrentWindow }) => getCurrentWindow().setTheme(theme))
+    .catch(() => {});
+}
+
+function applyThemeState(
+  state: ThemeState,
+  options: { syncNativeWindow?: boolean } = {},
+): void {
+  const syncNativeWindow =
+    options.syncNativeWindow ?? !deferNativeWindowTheme;
+
   if (typeof document !== "undefined") {
     const root = document.documentElement;
     root.classList.toggle("dark", state.theme === "dark");
@@ -74,10 +122,8 @@ function applyThemeState(state: ThemeState): void {
     return;
   }
 
-  if ("__TAURI_INTERNALS__" in window) {
-    void import("@tauri-apps/api/window")
-      .then(({ getCurrentWindow }) => getCurrentWindow().setTheme(state.theme))
-      .catch(() => {});
+  if (syncNativeWindow) {
+    syncNativeWindowTheme(state.theme);
   }
 
   if (state.hasUserPreference) {
@@ -87,18 +133,21 @@ function applyThemeState(state: ThemeState): void {
   }
 }
 
-function setThemeState(next: ThemeState): void {
+function setThemeState(
+  next: ThemeState,
+  options: { syncNativeWindow?: boolean } = {},
+): void {
   const previous = getThemeState();
   if (
     previous.theme === next.theme &&
     previous.hasUserPreference === next.hasUserPreference
   ) {
-    applyThemeState(next);
+    applyThemeState(next, options);
     return;
   }
 
   currentThemeState = next;
-  applyThemeState(next);
+  applyThemeState(next, options);
   themeListeners.forEach((listener) => listener());
 }
 
@@ -144,6 +193,22 @@ function stopThemeSwitchingNextFrame(root: HTMLElement): void {
   });
 }
 
+function setThemeRevealVars(root: HTMLElement, event?: ThemeTransitionEvent): void {
+  const point = getTransitionPoint(event);
+  const radius = getMaxRadius(point);
+  root.style.setProperty(THEME_CX_VAR, `${point.x}px`);
+  root.style.setProperty(THEME_CY_VAR, `${point.y}px`);
+  root.style.setProperty(THEME_RADIUS_VAR, `${radius}px`);
+  root.style.setProperty(THEME_DURATION_VAR, `${THEME_SWITCH_DURATION_MS}ms`);
+}
+
+function clearThemeRevealVars(root: HTMLElement): void {
+  root.style.removeProperty(THEME_CX_VAR);
+  root.style.removeProperty(THEME_CY_VAR);
+  root.style.removeProperty(THEME_RADIUS_VAR);
+  root.style.removeProperty(THEME_DURATION_VAR);
+}
+
 function canUseViewTransition(): boolean {
   return (
     typeof document !== "undefined" &&
@@ -153,51 +218,72 @@ function canUseViewTransition(): boolean {
   );
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
 async function runThemeTransition(
   apply: () => void,
   event?: ThemeTransitionEvent,
 ): Promise<void> {
-  if (!canUseViewTransition()) {
-    if (typeof document !== "undefined") {
-      const root = document.documentElement;
-      startThemeSwitching(root);
-      flushSync(apply);
-      stopThemeSwitchingNextFrame(root);
-    } else {
-      apply();
-    }
+  if (themeTransitionInFlight) {
+    pendingThemeApply = apply;
+    pendingThemeEvent = event;
     return;
   }
-
-  const root = document.documentElement;
-  startThemeSwitching(root);
-
-  const point = getTransitionPoint(event);
-  const radius = getMaxRadius(point);
-  const start = `circle(0px at ${point.x}px ${point.y}px)`;
-  const end = `circle(${radius}px at ${point.x}px ${point.y}px)`;
-
-  const transition = document.startViewTransition(() => {
-    flushSync(apply);
-  });
+  themeTransitionInFlight = true;
+  pendingThemeApply = null;
+  pendingThemeEvent = undefined;
 
   try {
-    await transition.ready;
+    if (!canUseViewTransition()) {
+      if (typeof document !== "undefined") {
+        const root = document.documentElement;
+        startThemeSwitching(root);
+        flushSync(apply);
+        stopThemeSwitchingNextFrame(root);
+      } else {
+        apply();
+      }
+      return;
+    }
 
-    // Telegram-style: new theme expands outward from the click point.
-    root.animate(
-      { clipPath: [start, end] },
-      {
-        duration: THEME_SWITCH_DURATION_MS,
-        easing: "cubic-bezier(0.22, 1, 0.36, 1)",
-        fill: "both",
-        pseudoElement: "::view-transition-new(root)",
-      },
-    );
+    const root = document.documentElement;
+    startThemeSwitching(root);
+    setThemeRevealVars(root, event);
+    deferNativeWindowTheme = true;
 
-    await transition.finished;
+    const transition = document.startViewTransition(() => {
+      flushSync(apply);
+    });
+
+    try {
+      await transition.ready;
+      // Circle reveal is CSS-driven via --kimi-theme-* vars.
+      // Avoid Element.animate(..., { pseudoElement }) — that STATUS_BREAKPOINTs
+      // on WebView2 when theme is toggled quickly.
+      await transition.finished;
+    } catch {
+      // AbortError during teardown — theme DOM state is already applied.
+    } finally {
+      deferNativeWindowTheme = false;
+      clearThemeRevealVars(root);
+      stopThemeSwitching(root);
+      syncNativeWindowTheme(getThemeState().theme);
+      await delay(THEME_TRANSITION_COOLDOWN_MS);
+    }
   } finally {
-    stopThemeSwitching(root);
+    deferNativeWindowTheme = false;
+    themeTransitionInFlight = false;
+    const queued = pendingThemeApply;
+    const queuedEvent = pendingThemeEvent;
+    pendingThemeApply = null;
+    pendingThemeEvent = undefined;
+    if (queued) {
+      await runThemeTransition(queued, queuedEvent);
+    }
   }
 }
 

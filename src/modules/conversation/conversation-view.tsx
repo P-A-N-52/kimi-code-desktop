@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useGlobalConfig } from "@/hooks/useGlobalConfig";
+import type { SessionFileEntry } from "@/hooks/useSessions";
 import type { UseSessionStreamReturn } from "@/hooks/useSessionStream";
 import type { UploadSessionFileResponse } from "@/lib/api/models";
 import { notifyGlobalConfigApplied } from "@/lib/config-update-toast";
@@ -29,12 +30,18 @@ export function ConversationView({
   onOpenWorkspace,
   onUploadFile,
   onManageConfig,
+  listDirectory,
+  pendingFirstMessage,
+  onPendingFirstMessageSent,
 }: {
   sessionId: string;
   stream: UseSessionStreamReturn;
   onOpenWorkspace: (tab?: WorkspaceTab) => void;
   onUploadFile: (sessionId: string, file: File) => Promise<UploadSessionFileResponse>;
   onManageConfig?: () => void;
+  listDirectory?: (sessionId: string, path?: string) => Promise<SessionFileEntry[]>;
+  pendingFirstMessage?: string | null;
+  onPendingFirstMessageSent?: () => void;
 }) {
   const { messages, respondToApproval } = stream;
   const permissionMode = stream.permissionMode;
@@ -164,6 +171,7 @@ export function ConversationView({
     (textOverride?: string) => {
       const text = (textOverride ?? draft).trim();
       if (!text) return;
+      if (stream.status === "error") return;
 
       const slashDecision = classifySlashDispatch(text, stream.slashCommands);
       if (
@@ -208,12 +216,34 @@ export function ConversationView({
     });
   }, [queue, setQueue, stream]);
 
+  const sentPendingRef = useRef(false);
+  useEffect(() => {
+    sentPendingRef.current = false;
+  }, [sessionId]);
+
+  useEffect(() => {
+    const text = pendingFirstMessage?.trim();
+    if (!text || sentPendingRef.current) return;
+    sentPendingRef.current = true;
+    void stream.sendMessage(text).then((outcome) => {
+      onPendingFirstMessageSent?.();
+      if (outcome?.kind === "info-panel") {
+        setCommandResult({
+          command: outcome.command,
+          content: outcome.content,
+          loading: false,
+        });
+      }
+    });
+  }, [onPendingFirstMessageSent, pendingFirstMessage, sessionId, stream]);
+
+  const streamDead = stream.status === "error";
+
   return (
     <div className="flex min-w-0 flex-1 flex-col">
       <MessageList
         messages={messages}
-        isAwaitingFirstResponse={stream.isAwaitingFirstResponse}
-        errorMessage={stream.error?.message}
+        isAwaitingFirstResponse={stream.isAwaitingFirstResponse && !streamDead}
         onRespondApproval={(id, decision) => {
           void stream.respondToApproval(id, decision);
         }}
@@ -223,6 +253,23 @@ export function ConversationView({
       />
       <div className="shrink-0 px-6 pb-4">
         <div className="mx-auto max-w-[44rem]">
+          {streamDead && (
+            <div
+              role="alert"
+              className="mb-2 flex items-center gap-3 rounded-r2 border border-danger/40 bg-danger/10 px-3 py-2"
+            >
+              <p className="min-w-0 flex-1 text-[12px] text-danger">
+                {stream.error?.message || "连接已断开，对话已中断"}
+              </p>
+              <button
+                type="button"
+                onClick={() => stream.reconnect()}
+                className="shrink-0 rounded-r1 border border-danger/40 bg-elevated px-2.5 py-1 text-[11px] font-medium text-danger transition-colors hover:bg-hover"
+              >
+                重新连接
+              </button>
+            </div>
+          )}
           {commandResult && (
             <CommandResultPanel
               result={commandResult}
@@ -237,6 +284,7 @@ export function ConversationView({
             onCancel={stream.cancel}
             busy={busy}
             canCancel={stream.canCancel}
+            sendDisabled={streamDead}
             planMode={stream.planMode}
             slashCommands={stream.slashCommands}
             queue={queue}
@@ -244,6 +292,7 @@ export function ConversationView({
             onClearQueue={() => setQueue([])}
             onUploadFile={(file) => onUploadFile(sessionId, file)}
             onOpenContext={() => onOpenWorkspace("files")}
+            listDirectory={listDirectory}
             models={models}
             selectedModel={selectedModel || "默认模型"}
             thinkingEnabled={Boolean(config?.defaultThinking)}

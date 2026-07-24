@@ -1,0 +1,21 @@
+HarmonyOS Sans (鸿蒙 Sans) — bundled font assets
+================================================
+
+Source (official Huawei design resources):
+  https://developer.huawei.com/consumer/cn/design/resource/
+  Direct package (v2): https://developer.huawei.com/images/download/next/HarmonyOS-Sans-v2.zip
+
+Files included (unmodified copies from HarmonyOS_SansSC/ in that package):
+  - HarmonyOS_SansSC_Regular.ttf
+  - HarmonyOS_SansSC_Medium.ttf
+  - HarmonyOS_SansSC_Semibold.ttf
+
+License:
+  See LICENSE_Fonts in this directory (HarmonyOS Sans Fonts License Agreement).
+  Same text is published with OpenHarmony system resources:
+  https://github.com/openharmony/global_system_resources/blob/master/LICENSE_Fonts
+
+Notes:
+  - Only SC (Simplified Chinese) Regular / Medium / Semibold are bundled to limit Tauri binary size.
+  - Fonts are embedded with the app (not redistributed stand-alone).
+  - Do not modify the .ttf files.

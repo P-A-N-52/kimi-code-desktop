@@ -267,22 +267,39 @@ export function syncAgentMonitorFromTaskCompleted(
   const id = readString(payload, "task_id", "taskId", "id");
   if (!id) return;
   const sessionId = readString(payload, "session_id", "sessionId") ?? UNSCOPED_AGENT_SESSION_ID;
-  const status = normalizeAgentTaskStatus(
-    firstDefined(payload, "status", "state", "outcome") ?? "completed",
-  );
-  const terminalStatus = isActiveAgentStatus(status) ? "success" : status;
-  const existing = ensureTask(id, sessionId, { status: terminalStatus });
+  const rawStatus = firstDefined(payload, "status", "state", "outcome");
+  // Align with acp_translate.rs + CLI: missing status on TaskCompleted means completed.
+  const status = normalizeAgentTaskStatus(rawStatus ?? "completed");
+  const existing = ensureTask(id, sessionId, {
+    status: isActiveAgentStatus(status) ? status : "running",
+    startedAt: Date.now(),
+  });
   const outputPreview = readString(payload, "output_preview", "outputPreview");
+  const phase =
+    readString(payload, "subagent_phase", "subagentPhase", "phase") ??
+    readString(payload, "error");
+
+  // Explicit active status (running / in_progress / …): keep active — never force-check off.
+  if (rawStatus !== undefined && rawStatus !== null && isActiveAgentStatus(status)) {
+    useAgentMonitorStore.getState().updateTask(
+      id,
+      {
+        status,
+        currentStep: phase ?? existing.currentStep,
+        outputPreview: outputPreview ?? existing.outputPreview,
+        outputBytes: readNumber(payload, "output_bytes", "outputBytes") ?? existing.outputBytes,
+      },
+      sessionId,
+    );
+    return;
+  }
 
   useAgentMonitorStore.getState().updateTask(
     id,
     {
-      status: terminalStatus,
+      status,
       completedAt: readTimestamp(payload, "completed_at", "completedAt") ?? Date.now(),
-      currentStep:
-        readString(payload, "subagent_phase", "subagentPhase", "phase") ??
-        readString(payload, "error") ??
-        defaultStep(terminalStatus),
+      currentStep: phase ?? defaultStep(status),
       outputPreview: outputPreview ?? existing.outputPreview,
       outputBytes: readNumber(payload, "output_bytes", "outputBytes") ?? existing.outputBytes,
     },

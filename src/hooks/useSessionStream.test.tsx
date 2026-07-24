@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useSessionStream } from "./useSessionStream";
+import { mergeSlashCommandsByName, useSessionStream } from "./useSessionStream";
 
 let wireMessageHandler: ((message: string) => void) | null = null;
 
@@ -515,7 +515,10 @@ describe("useSessionStream Tauri watchdog", () => {
 			}),
 		);
 		expect(usageOutcome && "content" in usageOutcome ? usageOutcome.content : "").toContain(
-			"Usage",
+			"Session usage",
+		);
+		expect(usageOutcome && "content" in usageOutcome ? usageOutcome.content : "").toContain(
+			"Plan usage",
 		);
 		expect(result.current.messages).toHaveLength(messageCountBefore);
 
@@ -731,7 +734,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		},
 	);
 
-	it("prewarms ACP after local history without replaying it a second time", async () => {
+	it("replays local history without spawning ACP until a prompt is sent", async () => {
 		const { result } = renderHook(() =>
 			useSessionStream({
 				sessionId: "session-1",
@@ -743,17 +746,12 @@ describe("useSessionStream Tauri watchdog", () => {
 		await flushPromises();
 
 		expect(mocks.replaySessionHistory).toHaveBeenCalledWith("session-1");
-		expect(mocks.wireConnect).toHaveBeenCalledWith("session-1", expect.any(String));
+		expect(mocks.wireConnect).not.toHaveBeenCalled();
 		expect(result.current.status).toBe("ready");
-		expect(result.current.isConnected).toBe(true);
-		expect(
-			mocks.wireSend.mock.calls
-				.map(([, rawMessage]) => JSON.parse(rawMessage))
-				.some((message) => message.method === "replay"),
-		).toBe(false);
+		expect(result.current.isConnected).toBe(false);
 	});
 
-	it("queues a prompt sent during background warmup and flushes it once connected", async () => {
+	it("connects on first prompt after local history replay", async () => {
 		let resolveConnect: (() => void) | undefined;
 		mocks.wireConnect.mockImplementation(
 			() =>
@@ -771,10 +769,13 @@ describe("useSessionStream Tauri watchdog", () => {
 		);
 
 		await flushPromises();
+		expect(mocks.wireConnect).not.toHaveBeenCalled();
+
 		await act(async () => {
-			await result.current.sendMessage("Send during warmup");
+			await result.current.sendMessage("Send after idle replay");
 		});
 
+		expect(mocks.wireConnect).toHaveBeenCalledWith("session-1", expect.any(String));
 		expect(
 			mocks.wireSend.mock.calls
 				.map(([, rawMessage]) => JSON.parse(rawMessage))
@@ -792,9 +793,70 @@ describe("useSessionStream Tauri watchdog", () => {
 				.some(
 					(message) =>
 						message.method === "prompt" &&
-						message.params.user_input === "Send during warmup",
+						message.params.user_input === "Send after idle replay",
 				),
 		).toBe(true);
+	});
+
+	it("merges slash command waves by name instead of replacing", async () => {
+		const { result } = renderHook(() =>
+			useSessionStream({
+				sessionId: "session-1",
+				baseUrl: "http://localhost:5173",
+				autoConnect: true,
+			}),
+		);
+
+		await flushPromises();
+		completeReplay();
+
+		act(() => {
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					method: "event",
+					params: {
+						type: "SlashCommandsUpdate",
+						payload: {
+							slash_commands: [
+								{ name: "compact", description: "Compact", aliases: [] },
+								{ name: "help", description: "Help", aliases: [] },
+							],
+						},
+					},
+				}),
+			);
+		});
+		act(() => {
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					method: "event",
+					params: {
+						type: "SlashCommandsUpdate",
+						payload: {
+							slash_commands: [
+								{ name: "skill:demo", description: "Skill", aliases: [] },
+								{ name: "help", description: "Help updated", aliases: ["h"] },
+							],
+						},
+					},
+				}),
+			);
+		});
+
+		expect(result.current.slashCommands.map((command) => command.name).sort()).toEqual([
+			"compact",
+			"help",
+			"skill:demo",
+		]);
+		expect(result.current.slashCommands).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ name: "help", aliases: ["h"] }),
+				expect.objectContaining({ name: "skill:demo", description: "Skill" }),
+			]),
+		);
+		expect(result.current.slashCommands).toHaveLength(3);
 	});
 
 	it("reports connection, dispatch, first-event, and first-visible-response timing", async () => {
@@ -1266,5 +1328,26 @@ describe("useSessionStream Tauri watchdog", () => {
 			);
 		});
 		expect(onFirstTurnComplete).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("mergeSlashCommandsByName", () => {
+	it("fills earlier waves with later names and overrides duplicates", () => {
+		expect(
+			mergeSlashCommandsByName(
+				[
+					{ name: "compact", description: "a", aliases: [] },
+					{ name: "help", description: "old", aliases: [] },
+				],
+				[
+					{ name: "skill:demo", description: "skill", aliases: [] },
+					{ name: "Help", description: "new", aliases: ["h"] },
+				],
+			),
+		).toEqual([
+			{ name: "compact", description: "a", aliases: [] },
+			{ name: "Help", description: "new", aliases: ["h"] },
+			{ name: "skill:demo", description: "skill", aliases: [] },
+		]);
 	});
 });

@@ -3,9 +3,11 @@ import {
   formatDuration,
   formatResetTime,
   formatStatusReport,
+  formatTokenCount,
   formatUsageReport,
   parseManagedUsageFetchResult,
   parseManagedUsagePayload,
+  renderProgressBar,
 } from "./managed-usage";
 
 describe("managed-usage", () => {
@@ -62,7 +64,19 @@ describe("managed-usage", () => {
     expect(parsed.limits[0]?.label).toBe("5h limit");
   });
 
-  it("parses fetch wrapper and formats usage report with quotas", () => {
+  it("formats compact token counts like the CLI TUI", () => {
+    expect(formatTokenCount(0)).toBe("0");
+    expect(formatTokenCount(999)).toBe("999");
+    expect(formatTokenCount(1024)).toBe("1k");
+    expect(formatTokenCount(101 * 1024)).toBe("101k");
+    expect(formatTokenCount(6.4 * 1024 * 1024)).toBe("6.4M");
+  });
+
+  it("renders CLI-style progress bars", () => {
+    expect(renderProgressBar(0.4, 20)).toBe("████████░░░░░░░░░░░░");
+  });
+
+  it("parses fetch wrapper and formats usage report like CLI /usage", () => {
     const managed = parseManagedUsageFetchResult({
       kind: "ok",
       payload: {
@@ -73,30 +87,70 @@ describe("managed-usage", () => {
     expect(managed.kind).toBe("ok");
     const text = formatUsageReport({
       managed,
-      session: { contextUsage: 0.42, contextTokens: 4200, maxContextTokens: 10000 },
+      session: {
+        contextUsage: 0.4,
+        contextTokens: 101 * 1024,
+        maxContextTokens: 256 * 1024,
+        modelLabel: "kimi-code/kimi-for-coding",
+        tokenInput: 6.4 * 1024 * 1024,
+        tokenOutput: 35.6 * 1024,
+      },
     });
-    expect(text).toContain("Plan quotas:");
+    expect(text).toContain("Session usage");
+    expect(text).toContain(
+      "kimi-code/kimi-for-coding  input 6.4M  output 35.6k  total 6.4M",
+    );
+    expect(text).toContain("Context window");
+    expect(text).toContain("████████░░░░░░░░░░░░");
+    expect(text).toContain("40%");
+    expect(text).toContain("(101k / 256k)");
+    expect(text).toContain("Plan usage");
     expect(text).toContain("Weekly limit");
     expect(text).toContain("5h limit");
-    expect(text).toContain("42%");
-    expect(text).toContain("4,200 / 10,000");
+    expect(text).toContain("% used");
+    expect(text).not.toContain("Plan quotas:");
+    expect(text).not.toContain("% left");
   });
 
-  it("formats status report with session metadata and quota error", () => {
+  it("formats status report like CLI /status", () => {
     const text = formatStatusReport({
       managed: { kind: "error", message: "Run kimi login" },
       status: {
-        version: "0.27.0",
+        version: "0.29.1",
         model: "kimi-for-coding",
-        workDir: "C:\\proj",
-        permissionMode: "manual",
+        modelDisplayName: "K2.7 Coding",
+        workDir: "C:\\Users\\administer\\Desktop",
+        sessionId: "session_00a5a606-1377-4287-8c95-c85777eb0169",
+        sessionTitle: "我的v2r代理好像坏了",
+        permissionMode: "auto",
         planMode: false,
-        swarmMode: true,
+        thinkingEffort: "on",
+      },
+      session: {
+        contextUsage: 0.4,
+        contextTokens: 101 * 1024,
+        maxContextTokens: 256 * 1024,
       },
     });
-    expect(text).toContain("Version: 0.27.0");
-    expect(text).toContain("Swarm mode: on");
+    expect(text).toContain(">_ Kimi Code (v0.29.1)");
+    expect(text).toContain("Model");
+    expect(text).toContain("K2.7 Coding (thinking on)");
+    expect(text).toContain("Directory");
+    expect(text).toContain("C:\\Users\\administer\\Desktop");
+    expect(text).toContain("Permissions");
+    expect(text).toContain("auto");
+    expect(text).toContain("Plan mode");
+    expect(text).toContain("off");
+    expect(text).toContain("Session");
+    expect(text).toContain("session_00a5a606-1377-4287-8c95-c85777eb0169");
+    expect(text).toContain("Title");
+    expect(text).toContain("我的v2r代理好像坏了");
+    expect(text).toContain("Context window");
+    expect(text).toContain("(101k / 256k)");
+    expect(text).toContain("Plan usage");
     expect(text).toContain("Run kimi login");
+    expect(text).not.toContain("Version:");
+    expect(text).not.toContain("Swarm mode:");
   });
 
   it("formats reset hints and durations", () => {

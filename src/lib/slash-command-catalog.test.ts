@@ -14,6 +14,7 @@ describe("slash-command-catalog", () => {
       { name: "plan", description: "Toggle plan", aliases: [] },
       { name: "model", description: "Switch model", aliases: [] },
       { name: "compact", description: "Compact", aliases: [], inputHint: "hint" },
+      { name: "goal", description: "Create a goal", aliases: [] },
       { name: "plugins", description: "Plugins", aliases: [] },
       { name: "exit", description: "Exit", aliases: ["q"] },
       { name: "yolo", description: "YOLO", aliases: [] },
@@ -27,10 +28,14 @@ describe("slash-command-catalog", () => {
     expect(filtered.map((command) => command.name)).toEqual([
       "help",
       "compact",
+      "goal",
       "skill:demo",
     ]);
     expect(filtered.find((c) => c.name === "help")?.description).toContain(
       "desktop",
+    );
+    expect(filtered.find((c) => c.name === "goal")?.description).toContain(
+      "goal",
     );
   });
 
@@ -73,6 +78,13 @@ describe("slash-command-catalog", () => {
         aliases: [],
       }),
     ).toBe(false);
+    expect(
+      shouldExecuteSlashCommandImmediately({
+        name: "goal",
+        description: "",
+        aliases: [],
+      }),
+    ).toBe(false);
   });
 
   it("classifies local usage/status/help and blocks unknown or denied commands", () => {
@@ -107,6 +119,9 @@ describe("slash-command-catalog", () => {
       kind: "passthrough",
     });
     expect(classifySlashDispatch("/tasks", [])).toEqual({
+      kind: "passthrough",
+    });
+    expect(classifySlashDispatch("/goal soak the GUI", [])).toEqual({
       kind: "passthrough",
     });
     expect(classifySlashDispatch("/yolo", advertised).kind).toBe("blocked");

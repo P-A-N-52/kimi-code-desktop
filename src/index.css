@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@import "@fontsource-variable/inter";
+@import "./assets/fonts/harmonyos-sans.css";
 @import "@fontsource/iosevka/400.css";
 @import "@fontsource/iosevka/500.css";
 @import "@fontsource/iosevka/600.css";
@@ -73,7 +73,7 @@
 	--radius-r1: var(--r1);
 	--radius-r2: var(--r2);
 	--radius-r3: var(--r3);
-	--font-sans: "Inter Variable", -apple-system, "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+	--font-sans: "HarmonyOS Sans", system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 	--font-mono: "Iosevka", "JetBrains Mono", "Cascadia Code", Consolas, monospace;
 	--animate-blink: blink 1s steps(2) infinite;
 	@keyframes blink {
@@ -89,16 +89,37 @@
 	html,
 	body {
 		height: 100%;
+		font-family: var(--font-sans);
 	}
 
 	body {
 		background: var(--bg);
 		color: var(--fg);
-		font-family: var(--font-sans);
 		font-size: 14px;
 		line-height: 1.6;
-		letter-spacing: -0.011em;
 		-webkit-font-smoothing: antialiased;
+	}
+
+	/* Sonner injects its own ui-sans-serif/Roboto stack at runtime. */
+	[data-sonner-toaster],
+	[data-sonner-toast] {
+		font-family: var(--font-sans) !important;
+	}
+
+	/* Frameless window drag (Tauri 2 / WebView2 on Windows). */
+	[data-tauri-drag-region] {
+		-webkit-app-region: drag;
+		app-region: drag;
+	}
+
+	[data-tauri-drag-region] button,
+	[data-tauri-drag-region] a,
+	[data-tauri-drag-region] input,
+	[data-tauri-drag-region] textarea,
+	[data-tauri-drag-region] select,
+	[data-tauri-drag-region] [role="button"] {
+		-webkit-app-region: no-drag;
+		app-region: no-drag;
 	}
 
 	::selection {
@@ -119,19 +140,35 @@
 		background: transparent;
 	}
 
-	/* Telegram-style circular theme reveal (View Transitions API) */
+	/* Telegram-style circular theme reveal (View Transitions API).
+	   Clip-path is CSS-driven — JS animate on ::view-transition-* crashes
+	   WebView2 with STATUS_BREAKPOINT under rapid toggles. */
 	::view-transition-old(root),
 	::view-transition-new(root) {
-		animation: none;
 		mix-blend-mode: normal;
 	}
 
 	::view-transition-old(root) {
 		z-index: 1;
+		animation: none;
 	}
 
 	::view-transition-new(root) {
 		z-index: 2;
+		animation: kimi-theme-circle-reveal var(--kimi-theme-duration, 450ms)
+			cubic-bezier(0.22, 1, 0.36, 1) both;
+	}
+
+	@keyframes kimi-theme-circle-reveal {
+		from {
+			clip-path: circle(0px at var(--kimi-theme-cx, 50%) var(--kimi-theme-cy, 50%));
+		}
+		to {
+			clip-path: circle(
+				var(--kimi-theme-radius, 100vmax) at var(--kimi-theme-cx, 50%)
+					var(--kimi-theme-cy, 50%)
+			);
+		}
 	}
 
 	html[data-theme-switching],

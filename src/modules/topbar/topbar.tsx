@@ -10,6 +10,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { isTauri, openInEditor, openInExplorer } from "@/lib/tauri-api";
+import { WindowControls } from "@/modules/topbar/window-controls";
 import { IconButton } from "@/ui/icon-button";
 
 export function Topbar({
@@ -126,10 +127,11 @@ export function Topbar({
           </div>
         )}
       </div>
-      <div className="absolute right-2.5 flex gap-0.5">
+      <div className="absolute right-2.5 z-10 flex items-center gap-0.5">
         <IconButton label="工作区面板" active={panelOpen} onClick={onTogglePanel}>
           <PanelRight size={15} strokeWidth={1.5} />
         </IconButton>
+        <WindowControls />
       </div>
     </>
   );

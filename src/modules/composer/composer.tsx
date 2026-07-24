@@ -1,6 +1,7 @@
 import {
   ArrowUp,
   FileText,
+  Folder,
   LoaderCircle,
   Paperclip,
   Plus,
@@ -9,7 +10,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { toast } from "sonner";
 import type { ConfigModel, UploadSessionFileResponse } from "@/lib/api/models";
 import {
@@ -17,7 +18,9 @@ import {
   shouldExecuteSlashCommandImmediately,
 } from "@/lib/slash-command-catalog";
 import { cn } from "@/lib/utils";
+import type { FileMentionEntry } from "./file-mentions";
 import { ModelPicker } from "./model-picker";
+import { useFileMentions } from "./use-file-mentions";
 
 export type QueuedPrompt = { id: string; text: string };
 const uploadedFilesBySession = new Map<string, UploadSessionFileResponse[]>();
@@ -30,6 +33,8 @@ type ComposerProps = {
   onCancel: () => void;
   busy: boolean;
   canCancel: boolean;
+  /** When true, block sending (e.g. stream disconnected / error). */
+  sendDisabled?: boolean;
   planMode: boolean;
   slashCommands: SlashCommandDef[];
   queue: QueuedPrompt[];
@@ -37,6 +42,7 @@ type ComposerProps = {
   onClearQueue: () => void;
   onUploadFile: (file: File) => Promise<UploadSessionFileResponse>;
   onOpenContext: () => void;
+  listDirectory?: (sessionId: string, path?: string) => Promise<FileMentionEntry[]>;
   models: ConfigModel[];
   selectedModel: string;
   thinkingEnabled: boolean;
@@ -57,6 +63,7 @@ export function Composer({
   onCancel,
   busy,
   canCancel,
+  sendDisabled = false,
   planMode,
   slashCommands,
   queue,
@@ -64,6 +71,7 @@ export function Composer({
   onClearQueue,
   onUploadFile,
   onOpenContext,
+  listDirectory,
   models,
   selectedModel,
   thinkingEnabled,
@@ -77,12 +85,23 @@ export function Composer({
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const commandMenuRef = useRef<HTMLDivElement>(null);
+  const mentionMenuRef = useRef<HTMLDivElement>(null);
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const [activeCommand, setActiveCommand] = useState(0);
   const [uploading, setUploading] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const [uploadedFiles, setUploadedFilesState] = useState<UploadSessionFileResponse[]>(
     () => uploadedFilesBySession.get(sessionId) ?? [],
   );
+  const fileMentions = useFileMentions({
+    text: draft,
+    setText: onDraftChange,
+    textareaRef,
+    sessionId,
+    listDirectory,
+    disabled: commandMenuOpen,
+  });
 
   const setUploadedFiles = (
     update:
@@ -111,6 +130,10 @@ export function Composer({
     [commandQuery, slashCommands],
   );
 
+  const closeCommandMenu = () => {
+    setCommandMenuOpen(false);
+  };
+
   const selectCommand = (command: SlashCommandDef) => {
     setCommandMenuOpen(false);
     const commandText = `/${command.name}`;
@@ -124,6 +147,7 @@ export function Composer({
   };
 
   const submit = (text?: string) => {
+    if (sendDisabled) return;
     onSend(text);
     setCommandMenuOpen(false);
     setUploadedFiles([]);
@@ -160,13 +184,61 @@ export function Composer({
     }
   };
 
+  const onComposerDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (sendDisabled || uploading) return;
+    if (![...event.dataTransfer.types].includes("Files")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+    setDragActive(true);
+  };
+
+  const onComposerDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    const nextTarget = event.relatedTarget as Node | null;
+    if (nextTarget && event.currentTarget.contains(nextTarget)) return;
+    setDragActive(false);
+  };
+
+  const onComposerDrop = (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setDragActive(false);
+    if (sendDisabled || uploading) return;
+    void uploadFiles(event.dataTransfer.files);
+  };
+
+  useEffect(() => {
+    if (!commandMenuOpen && !fileMentions.isOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (commandMenuRef.current?.contains(target)) return;
+      if (mentionMenuRef.current?.contains(target)) return;
+      if (textareaRef.current?.contains(target)) return;
+      closeCommandMenu();
+      fileMentions.closeMenu();
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [commandMenuOpen, fileMentions.isOpen, fileMentions.closeMenu]);
+
   return (
     <div
+      onDragEnter={onComposerDragOver}
+      onDragOver={onComposerDragOver}
+      onDragLeave={onComposerDragLeave}
+      onDrop={onComposerDrop}
       className={cn(
         "relative rounded-r3 border bg-elevated px-3 pb-2 pt-3 shadow-pop transition-colors focus-within:border-line-strong",
         planMode ? "border-dashed border-bright/40" : "border-line-strong",
+        dragActive && "border-bright bg-active/40",
       )}
     >
+      {dragActive && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-r3 bg-elevated/80 text-[13px] text-bright">
+          松开以上传文件
+        </div>
+      )}
       {queue.length > 0 && (
         <div className="mb-2 rounded-r2 border border-line bg-surface p-2">
           <div className="mb-1.5 flex items-center text-[10px] font-medium text-muted">
@@ -217,7 +289,10 @@ export function Composer({
       )}
 
       {commandMenuOpen && (
-        <div className="absolute bottom-[3.1rem] left-3 right-3 z-30 max-h-64 overflow-y-auto rounded-r2 border border-line-strong bg-elevated p-1 shadow-pop">
+        <div
+          ref={commandMenuRef}
+          className="absolute bottom-[3.1rem] left-3 right-3 z-30 max-h-64 overflow-y-auto rounded-r2 border border-line-strong bg-elevated p-1 shadow-pop"
+        >
           {visibleCommands.length === 0 ? (
             <p className="p-3 text-center text-[11px] text-faint">没有匹配的命令</p>
           ) : (
@@ -243,18 +318,106 @@ export function Composer({
         </div>
       )}
 
+      {fileMentions.isOpen && (
+        <div
+          ref={mentionMenuRef}
+          role="listbox"
+          aria-label="文件引用"
+          className="absolute bottom-[3.1rem] left-3 right-3 z-30 max-h-64 overflow-y-auto rounded-r2 border border-line-strong bg-elevated p-1 shadow-pop"
+        >
+          {fileMentions.status === "loading" && fileMentions.options.length === 0 ? (
+            <p className="flex items-center justify-center gap-2 p-3 text-[11px] text-faint">
+              <LoaderCircle size={12} className="animate-spin" /> 加载工作区文件…
+            </p>
+          ) : fileMentions.status === "error" ? (
+            <p className="p-3 text-center text-[11px] text-danger">
+              {fileMentions.error ?? "加载失败"}
+            </p>
+          ) : fileMentions.options.length === 0 ? (
+            <p className="p-3 text-center text-[11px] text-faint">
+              {fileMentions.query
+                ? `没有匹配 @${fileMentions.query} 的文件`
+                : listDirectory
+                  ? "工作区暂无可引用文件"
+                  : "请先选择工作目录后再 @ 引用文件"}
+            </p>
+          ) : (
+            fileMentions.options.map((option, index) => (
+              <button
+                key={option.id}
+                type="button"
+                role="option"
+                aria-selected={fileMentions.activeIndex === index}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => fileMentions.selectOption(option)}
+                onMouseEnter={() => fileMentions.setActiveIndex(index)}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-r1 px-2.5 py-2 text-left",
+                  fileMentions.activeIndex === index && "bg-active",
+                )}
+              >
+                {option.isDirectory ? (
+                  <Folder size={13} className="shrink-0 text-muted" strokeWidth={1.5} />
+                ) : (
+                  <FileText size={13} className="shrink-0 text-muted" strokeWidth={1.5} />
+                )}
+                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground">
+                  {option.label}
+                </span>
+                {option.insertValue !== option.label && (
+                  <span className="max-w-[45%] truncate font-mono text-[11px] text-faint">
+                    {option.insertValue}
+                  </span>
+                )}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+
       <textarea
         ref={textareaRef}
         value={draft}
+        disabled={sendDisabled}
         onChange={(event) => {
           const value = event.target.value;
           onDraftChange(value);
-          setCommandMenuOpen(value.startsWith("/") && !value.includes("\n"));
-          setActiveCommand(0);
+          // Match CLI web: Escape only closes; further typing while still on "/…" reopens.
+          const wantsMenu = value.startsWith("/") && !value.includes("\n");
+          setCommandMenuOpen(wantsMenu);
+          if (wantsMenu) {
+            fileMentions.closeMenu();
+            setActiveCommand(0);
+          } else {
+            fileMentions.syncRangeFromCaret(event.target.selectionStart);
+          }
+        }}
+        onSelect={(event) => {
+          if (commandMenuOpen) return;
+          fileMentions.syncRangeFromCaret(event.currentTarget.selectionStart);
+        }}
+        onClick={(event) => {
+          if (commandMenuOpen) return;
+          fileMentions.syncRangeFromCaret(event.currentTarget.selectionStart);
+        }}
+        onKeyUp={(event) => {
+          if (commandMenuOpen) return;
+          if (
+            event.key === "ArrowLeft" ||
+            event.key === "ArrowRight" ||
+            event.key === "Home" ||
+            event.key === "End"
+          ) {
+            fileMentions.syncRangeFromCaret(event.currentTarget.selectionStart);
+          }
         }}
         onKeyDown={(event) => {
-          if (commandMenuOpen && visibleCommands.length > 0) {
-            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          if (fileMentions.isOpen && fileMentions.handleKeyDown(event)) return;
+          if (commandMenuOpen) {
+            if (
+              visibleCommands.length > 0 &&
+              (event.key === "ArrowDown" || event.key === "ArrowUp")
+            ) {
               event.preventDefault();
               setActiveCommand((current) =>
                 event.key === "ArrowDown"
@@ -263,14 +426,14 @@ export function Composer({
               );
               return;
             }
-            if (event.key === "Enter" && !event.shiftKey) {
+            if (visibleCommands.length > 0 && event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
               selectCommand(visibleCommands[activeCommand] ?? visibleCommands[0]);
               return;
             }
             if (event.key === "Escape") {
               event.preventDefault();
-              setCommandMenuOpen(false);
+              closeCommandMenu();
               return;
             }
           }
@@ -280,8 +443,14 @@ export function Composer({
           }
         }}
         rows={2}
-        placeholder={busy ? "继续输入；发送后会加入队列…" : "给 Kimi 布置任务…（/ 命令）"}
-        className="max-h-40 w-full resize-none bg-transparent px-1 text-[14px] leading-[1.55] text-foreground outline-none placeholder:text-faint"
+        placeholder={
+          sendDisabled
+            ? "连接已断开，请先重新连接…"
+            : busy
+              ? "继续输入；发送后会加入队列…"
+              : "给 Kimi 布置任务…（@ 文件 / 命令）"
+        }
+        className="max-h-40 w-full resize-none bg-transparent px-1 text-[14px] leading-[1.55] text-foreground outline-none placeholder:text-faint disabled:cursor-not-allowed disabled:opacity-60"
       />
       <input
         ref={fileInputRef}
@@ -294,7 +463,7 @@ export function Composer({
         <button
           type="button"
           aria-label="上传附件"
-          disabled={uploading}
+          disabled={uploading || sendDisabled}
           onClick={() => fileInputRef.current?.click()}
           className="flex h-7 w-7 items-center justify-center rounded-r1 text-muted transition-colors hover:bg-hover hover:text-foreground disabled:opacity-50"
         >
@@ -306,12 +475,14 @@ export function Composer({
         </button>
         <button
           type="button"
+          disabled={sendDisabled}
           onClick={() => {
+            fileMentions.closeMenu();
             onDraftChange(draft.startsWith("/") ? draft : "/");
             setCommandMenuOpen(true);
             requestAnimationFrame(() => textareaRef.current?.focus());
           }}
-          className="flex h-7 items-center gap-1 rounded-r1 px-1.5 font-mono text-[11px] text-muted transition-colors hover:bg-hover hover:text-foreground"
+          className="flex h-7 items-center gap-1 rounded-r1 px-1.5 font-mono text-[11px] text-muted transition-colors hover:bg-hover hover:text-foreground disabled:opacity-50"
         >
           <SquareTerminal size={13} strokeWidth={1.5} /> 命令
         </button>
@@ -320,7 +491,7 @@ export function Composer({
           onClick={onOpenContext}
           className="flex h-7 items-center gap-1 rounded-r1 px-1.5 font-mono text-[11px] text-muted transition-colors hover:bg-hover hover:text-foreground"
         >
-          <FileText size={13} strokeWidth={1.5} /> 上下文
+          <FileText size={13} strokeWidth={1.5} /> 文件
         </button>
         {planMode && (
           <span className="ml-1 rounded bg-bright px-1.5 py-0.5 font-mono text-[9.5px] font-semibold tracking-[0.12em] text-background">
@@ -332,7 +503,7 @@ export function Composer({
           selectedModel={selectedModel}
           thinkingEnabled={thinkingEnabled}
           thinkingEffort={thinkingEffort}
-          disabled={modelControlsDisabled}
+          disabled={modelControlsDisabled || sendDisabled}
           updating={modelUpdating}
           onSelectModel={onSelectModel}
           onToggleThinking={onToggleThinking}
@@ -353,7 +524,7 @@ export function Composer({
           type="button"
           aria-label={busy ? "加入发送队列" : "发送"}
           onClick={() => submit()}
-          disabled={!draft.trim() || uploading}
+          disabled={!draft.trim() || uploading || sendDisabled}
           className="flex size-7 items-center justify-center rounded-full bg-bright text-background transition-opacity hover:opacity-85 disabled:opacity-40"
         >
           <ArrowUp size={13} strokeWidth={2} />

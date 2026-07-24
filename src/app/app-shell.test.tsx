@@ -48,4 +48,42 @@ describe("AppShell", () => {
 		const sidebar = container.querySelector("[data-slot=sessions-sidebar]");
 		expect((sidebar as HTMLElement).style.width).toBe("52px");
 	});
+
+	it("双开时左栏带窄屏 overlay 类，右栏亦然", () => {
+		const { container } = render(
+			<AppShell
+				sidebar={<div>S</div>}
+				sidebarOpen
+				topbar={<div />}
+				panel={<div>P</div>}
+				panelOpen
+			>
+				<div />
+			</AppShell>,
+		);
+		const sidebar = container.querySelector("[data-slot=sessions-sidebar]");
+		const panel = container.querySelector("[data-slot=workspace-panel]");
+		expect(sidebar?.className).toContain("max-[900px]:absolute");
+		expect(sidebar?.className).toContain("max-[1100px]:absolute");
+		expect(panel?.className).toContain("max-[900px]:absolute");
+	});
+
+	it("顶栏拖拽区存在且内容层 pointer-events-none，避免挡住拖拽", () => {
+		const { container } = render(
+			<AppShell
+				sidebar={<div />}
+				sidebarOpen
+				topbar={<button type="button">title</button>}
+				panel={<div />}
+				panelOpen={false}
+			>
+				<div />
+			</AppShell>,
+		);
+		const drag = container.querySelector("[data-tauri-drag-region]");
+		expect(drag).not.toBeNull();
+		const content = drag?.querySelector(":scope > div");
+		expect(content?.className).toContain("pointer-events-none");
+		expect(content?.className).toContain("[&>*]:pointer-events-auto");
+	});
 });

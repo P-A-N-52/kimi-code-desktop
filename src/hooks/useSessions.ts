@@ -144,11 +144,67 @@ const normalizeSessionPath = (value?: string): string => {
 	return stripped === "" ? "." : stripped;
 };
 
-const PAGE_SIZE = 100;
 /** Max page size allowed by list_sessions (Tauri clamp / API docs). */
 const LIST_FETCH_PAGE_SIZE = 500;
 const AUTO_REFRESH_MS = 30_000;
 const TAURI_AUTO_REFRESH_MS = 120_000;
+
+async function fetchAllSessionsPage(args: {
+	archived?: boolean;
+	q?: string;
+}): Promise<Session[]> {
+	const all: Session[] = [];
+	let offset = 0;
+	for (;;) {
+		const page = isTauri()
+			? await tauriListSessions({
+					limit: LIST_FETCH_PAGE_SIZE,
+					offset,
+					archived: args.archived,
+					q: args.q,
+				})
+			: await apiClient.sessions.listSessionsApiSessionsGet({
+					limit: LIST_FETCH_PAGE_SIZE,
+					offset,
+					archived: args.archived,
+					q: args.q,
+				});
+		all.push(...page);
+		if (page.length < LIST_FETCH_PAGE_SIZE) break;
+		offset += page.length;
+	}
+	return all;
+}
+
+async function fetchAllArchivedSessionsHttp(): Promise<Session[]> {
+	const basePath = getApiBaseUrl();
+	const all: Session[] = [];
+	let offset = 0;
+	for (;;) {
+		const response = await fetch(
+			`${basePath}/api/sessions/?archived=true&limit=${LIST_FETCH_PAGE_SIZE}&offset=${offset}`,
+			{ headers: getAuthHeader() },
+		);
+		if (!response.ok) {
+			throw new Error("Failed to load archived sessions");
+		}
+		const data = await response.json();
+		const page: Session[] = data.map((item: Record<string, unknown>) => ({
+			sessionId: item.session_id as string,
+			title: item.title as string,
+			lastUpdated: new Date(item.last_updated as string),
+			isRunning: item.is_running as boolean,
+			status: item.status as SessionStatus | undefined,
+			workDir: item.work_dir as string | undefined,
+			sessionDir: item.session_dir as string | undefined,
+			archived: item.archived as boolean,
+		}));
+		all.push(...page);
+		if (page.length < LIST_FETCH_PAGE_SIZE) break;
+		offset += page.length;
+	}
+	return all;
+}
 
 /**
  * Custom error class for directory not found
@@ -187,8 +243,8 @@ export function useSessions(
 	const [isLoadingMoreArchived, setIsLoadingMoreArchived] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
-	const [hasMoreSessions, setHasMoreSessions] = useState(true);
-	const [hasMoreArchivedSessions, setHasMoreArchivedSessions] = useState(true);
+	const [hasMoreSessions, setHasMoreSessions] = useState(false);
+	const [hasMoreArchivedSessions, setHasMoreArchivedSessions] = useState(false);
 	const [searchQuery, setSearchQuery] = useState("");
 	const lastRefreshRef = useRef(0);
 	const refreshRequestIdRef = useRef(0);
@@ -207,26 +263,16 @@ export function useSessions(
 		setError(null);
 
 		try {
-			const sessionsList = isTauri()
-				? await tauriListSessions({
-						limit: PAGE_SIZE,
-						offset: 0,
-						q: searchQuery.trim() || undefined,
-					})
-				: await apiClient.sessions.listSessionsApiSessionsGet({
-						limit: PAGE_SIZE,
-						offset: 0,
-						q: searchQuery.trim() || undefined,
-					});
+			const sessionsList = await fetchAllSessionsPage({
+				archived: false,
+				q: searchQuery.trim() || undefined,
+			});
 
 			if (requestId !== refreshRequestIdRef.current) return;
-			// Update sessions list
 			setSessions(sessionsList);
-			setHasMoreSessions(sessionsList.length === PAGE_SIZE);
+			setHasMoreSessions(false);
 			setHasLoadedSessions(true);
 			lastRefreshRef.current = Date.now();
-
-			// Don't auto-select first session - user can click on one or create a new one
 		} catch (err) {
 			if (requestId !== refreshRequestIdRef.current) return;
 			const message =
@@ -239,46 +285,9 @@ export function useSessions(
 	}, [enabled, searchQuery]);
 
 	const loadMoreSessions = useCallback(async () => {
-		if (!enabled) {
-			return;
-		}
-		if (isLoadingMore || isLoading || !hasMoreSessions) {
-			return;
-		}
-		setIsLoadingMore(true);
-		setError(null);
-		try {
-			const offset = sessions.length;
-			const moreSessions = isTauri()
-				? await tauriListSessions({
-						limit: PAGE_SIZE,
-						offset,
-						q: searchQuery.trim() || undefined,
-					})
-				: await apiClient.sessions.listSessionsApiSessionsGet({
-						limit: PAGE_SIZE,
-						offset,
-						q: searchQuery.trim() || undefined,
-					});
-			setSessions((current) => [...current, ...moreSessions]);
-			setHasMoreSessions(moreSessions.length === PAGE_SIZE);
-			lastRefreshRef.current = Date.now();
-		} catch (err) {
-			const message =
-				err instanceof Error ? err.message : "Failed to load more sessions";
-			setError(message);
-			console.error("Failed to load more sessions:", err);
-		} finally {
-			setIsLoadingMore(false);
-		}
-	}, [
-		enabled,
-		hasMoreSessions,
-		isLoading,
-		isLoadingMore,
-		searchQuery,
-		sessions.length,
-	]);
+		// Sessions are fully loaded on refresh; keep for API compatibility.
+		return;
+	}, []);
 
 	const applySessionStatus = useCallback((status: SessionStatus) => {
 		setSessions((current) =>
@@ -303,43 +312,11 @@ export function useSessions(
 		archivedRefreshInFlightRef.current = true;
 		setIsLoadingArchived(true);
 		try {
-			if (isTauri()) {
-				const archivedList = await tauriListSessions({
-					archived: true,
-					limit: PAGE_SIZE,
-				});
-				setArchivedSessions(archivedList);
-				setHasMoreArchivedSessions(archivedList.length === PAGE_SIZE);
-				setHasLoadedArchivedSessions(true);
-				return;
-			}
-
-			const basePath = getApiBaseUrl();
-			const response = await fetch(
-				`${basePath}/api/sessions/?archived=true&limit=${PAGE_SIZE}`,
-				{
-					headers: getAuthHeader(),
-				},
-			);
-			if (!response.ok) {
-				throw new Error("Failed to load archived sessions");
-			}
-			const data = await response.json();
-			// Convert snake_case to camelCase
-			const archivedList: Session[] = data.map(
-				(item: Record<string, unknown>) => ({
-					sessionId: item.session_id as string,
-					title: item.title as string,
-					lastUpdated: new Date(item.last_updated as string),
-					isRunning: item.is_running as boolean,
-					status: item.status as SessionStatus | undefined,
-					workDir: item.work_dir as string | undefined,
-					sessionDir: item.session_dir as string | undefined,
-					archived: item.archived as boolean,
-				}),
-			);
+			const archivedList = isTauri()
+				? await fetchAllSessionsPage({ archived: true })
+				: await fetchAllArchivedSessionsHttp();
 			setArchivedSessions(archivedList);
-			setHasMoreArchivedSessions(archivedList.length === PAGE_SIZE);
+			setHasMoreArchivedSessions(false);
 			setHasLoadedArchivedSessions(true);
 		} catch (err) {
 			const message =
@@ -402,67 +379,9 @@ export function useSessions(
 	 * Load more archived sessions for pagination
 	 */
 	const loadMoreArchivedSessions = useCallback(async () => {
-		if (!enabled) {
-			return;
-		}
-		if (
-			isLoadingMoreArchived ||
-			isLoadingArchived ||
-			!hasMoreArchivedSessions
-		) {
-			return;
-		}
-		setIsLoadingMoreArchived(true);
-		try {
-			const offset = archivedSessions.length;
-			if (isTauri()) {
-				const moreArchived = await tauriListSessions({
-					archived: true,
-					limit: PAGE_SIZE,
-					offset,
-				});
-				setArchivedSessions((current) => [...current, ...moreArchived]);
-				setHasMoreArchivedSessions(moreArchived.length === PAGE_SIZE);
-				return;
-			}
-
-			const basePath = getApiBaseUrl();
-			const response = await fetch(
-				`${basePath}/api/sessions/?archived=true&limit=${PAGE_SIZE}&offset=${offset}`,
-				{
-					headers: getAuthHeader(),
-				},
-			);
-			if (!response.ok) {
-				throw new Error("Failed to load more archived sessions");
-			}
-			const data = await response.json();
-			const moreArchived: Session[] = data.map(
-				(item: Record<string, unknown>) => ({
-					sessionId: item.session_id,
-					title: item.title,
-					lastUpdated: new Date(item.last_updated as string),
-					isRunning: item.is_running,
-					status: item.status,
-					workDir: item.work_dir,
-					sessionDir: item.session_dir,
-					archived: item.archived,
-				}),
-			);
-			setArchivedSessions((current) => [...current, ...moreArchived]);
-			setHasMoreArchivedSessions(moreArchived.length === PAGE_SIZE);
-		} catch (err) {
-			console.error("Failed to load more archived sessions:", err);
-		} finally {
-			setIsLoadingMoreArchived(false);
-		}
-	}, [
-		archivedSessions.length,
-		enabled,
-		hasMoreArchivedSessions,
-		isLoadingArchived,
-		isLoadingMoreArchived,
-	]);
+		// Archived sessions are fully loaded on refresh; keep for API compatibility.
+		return;
+	}, []);
 
 	// Refresh sessions list when search changes
 	useEffect(() => {
@@ -1098,25 +1017,7 @@ export function useSessions(
 	);
 
 	const listAllActiveSessions = useCallback(async (): Promise<Session[]> => {
-		const all: Session[] = [];
-		let offset = 0;
-		for (;;) {
-			const page = isTauri()
-				? await tauriListSessions({
-						limit: LIST_FETCH_PAGE_SIZE,
-						offset,
-						archived: false,
-					})
-				: await apiClient.sessions.listSessionsApiSessionsGet({
-						limit: LIST_FETCH_PAGE_SIZE,
-						offset,
-						archived: false,
-					});
-			all.push(...page);
-			if (page.length < LIST_FETCH_PAGE_SIZE) break;
-			offset += page.length;
-		}
-		return all;
+		return fetchAllSessionsPage({ archived: false });
 	}, []);
 
 	/**

@@ -33,6 +33,8 @@ export type SessionUsageContext = {
   contextUsage?: number | null;
   contextTokens?: number | null;
   maxContextTokens?: number | null;
+  /** Model id shown in Session usage (e.g. kimi-code/kimi-for-coding). */
+  modelLabel?: string | null;
   tokenInput?: number | null;
   tokenOutput?: number | null;
   tokenCacheRead?: number | null;
@@ -42,11 +44,16 @@ export type SessionUsageContext = {
 export type SessionStatusContext = {
   version?: string | null;
   model?: string | null;
+  /** Display name override (falls back to model). */
+  modelDisplayName?: string | null;
   workDir?: string | null;
   sessionId?: string | null;
+  sessionTitle?: string | null;
   permissionMode?: string | null;
   planMode?: boolean | null;
   swarmMode?: boolean | null;
+  /** Thinking effort label: on / off / high / … */
+  thinkingEffort?: string | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -256,127 +263,202 @@ export function parseManagedUsageFetchResult(
   return { kind: "error", message: "Invalid usage response" };
 }
 
-function formatBar(used: number, limit: number): string {
-  if (limit <= 0) return "[----------]";
-  const ratio = Math.min(1, Math.max(0, used / limit));
-  const filled = Math.round(ratio * 10);
-  return `[${"#".repeat(filled)}${"-".repeat(10 - filled)}]`;
+/** 1024-based compact token count — matches Kimi Code TUI `formatTokenCount`. */
+export function formatTokenCount(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return "0";
+  if (n >= 1024 * 1024) {
+    const v = n / (1024 * 1024);
+    const s = v.toFixed(1);
+    return `${s.endsWith(".0") ? s.slice(0, -2) : s}M`;
+  }
+  if (n >= 1024) {
+    const k = n / 1024;
+    const rounded = k >= 100 ? Math.round(k) : Number(k.toFixed(1));
+    const s = String(rounded);
+    return `${s.endsWith(".0") ? s.slice(0, -2) : s}k`;
+  }
+  return String(n);
 }
 
-function formatUsageRow(row: UsageRow): string {
-  const remainingPct =
-    row.limit > 0
-      ? Math.max(0, Math.round(((row.limit - row.used) / row.limit) * 100))
-      : 0;
-  const counts =
-    row.limit > 0
-      ? `${row.used.toLocaleString("en-US")} / ${row.limit.toLocaleString("en-US")}`
-      : row.used.toLocaleString("en-US");
-  const reset = row.resetHint ? ` (${row.resetHint})` : "";
-  return `${row.label}  ${formatBar(row.used, row.limit)}  ${remainingPct}% left · ${counts}${reset}`;
+export function usagePercent(used: number, max: number): number {
+  if (!Number.isFinite(max) || max <= 0) return 0;
+  return Math.min(100, Math.max(0, Math.ceil((used / max) * 100)));
 }
 
-function formatCents(cents: number, currency: string): string {
+export function renderProgressBar(
+  ratio: number,
+  width = 20,
+  filled = "█",
+  empty = "░",
+): string {
+  const clamped = Number.isFinite(ratio) ? Math.max(0, Math.min(ratio, 1)) : 0;
+  const filledCount = Math.round(clamped * width);
+  return filled.repeat(filledCount) + empty.repeat(Math.max(0, width - filledCount));
+}
+
+function usedRatio(row: UsageRow): number {
+  return row.limit > 0 ? Math.max(0, Math.min(row.used / row.limit, 1)) : 0;
+}
+
+function currencySymbol(currency: string): string {
+  switch (currency.toUpperCase()) {
+    case "CNY":
+      return "¥";
+    case "USD":
+      return "$";
+    default:
+      return "";
+  }
+}
+
+function formatMoney(cents: number, currency: string): string {
+  const symbol = currencySymbol(currency);
   const amount = (cents / 100).toFixed(2);
-  return `${currency} ${amount}`;
+  return symbol ? `${symbol}${amount}` : `${amount} ${currency}`;
 }
 
-function formatExtraUsage(extra: BoosterWalletInfo): string[] {
-  const lines = ["Extra Usage:"];
-  if (extra.monthlyChargeLimitEnabled && extra.monthlyChargeLimitCents > 0) {
-    lines.push(
-      `  Monthly used  ${formatCents(extra.monthlyUsedCents, extra.currency)} / ${formatCents(extra.monthlyChargeLimitCents, extra.currency)}`,
+function formatExtraUsageSection(extra: BoosterWalletInfo): string[] {
+  const hasMonthlyLimit =
+    extra.monthlyChargeLimitEnabled && extra.monthlyChargeLimitCents > 0;
+  const lines: string[] = ["Extra Usage"];
+  if (hasMonthlyLimit) {
+    const ratio = Math.max(
+      0,
+      Math.min(extra.monthlyUsedCents / extra.monthlyChargeLimitCents, 1),
     );
-  } else {
+    lines.push(`  ${renderProgressBar(ratio, 20)}`);
+  }
+  const rows: Array<{ label: string; value: string }> = [
+    {
+      label: "Used this month",
+      value: formatMoney(extra.monthlyUsedCents, extra.currency),
+    },
+    {
+      label: "Monthly limit",
+      value: hasMonthlyLimit
+        ? formatMoney(extra.monthlyChargeLimitCents, extra.currency)
+        : "Unlimited",
+    },
+    {
+      label: "Balance",
+      value: formatMoney(extra.balanceCents, extra.currency),
+    },
+  ];
+  const labelWidth = Math.max(...rows.map((r) => r.label.length));
+  for (const row of rows) {
+    lines.push(`  ${row.label.padEnd(labelWidth, " ")} ${row.value}`);
+  }
+  return lines;
+}
+
+function formatPlanUsageSection(
+  parsed: ParsedManagedUsage | null,
+  error?: string,
+): string[] {
+  if (error) {
+    // Align with CLI: non-managed / unavailable → platform-only copy; keep auth hints as-is.
+    const message =
+      /not available|non-managed|unavailable|only available/i.test(error) &&
+      !/login|auth|sign.?in/i.test(error)
+        ? "Usage is available on Kimi Code platform only."
+        : error;
+    return ["Plan usage", `  ${message}`];
+  }
+  if (!parsed) {
+    return ["Plan usage", "  Usage is available on Kimi Code platform only."];
+  }
+  const rows: UsageRow[] = [];
+  if (parsed.summary) rows.push(parsed.summary);
+  rows.push(...parsed.limits);
+  if (rows.length === 0) {
+    return ["Plan usage", "  No usage data available."];
+  }
+  const labelWidth = Math.max(10, ...rows.map((r) => r.label.length));
+  const pctWidth = Math.max(
+    ...rows.map((r) => `${Math.round(usedRatio(r) * 100)}% used`.length),
+  );
+  const lines: string[] = ["Plan usage"];
+  for (const row of rows) {
+    const ratio = usedRatio(row);
+    const pct = `${Math.round(ratio * 100)}% used`;
+    const reset = row.resetHint ? `  ${row.resetHint}` : "";
     lines.push(
-      `  Monthly used  ${formatCents(extra.monthlyUsedCents, extra.currency)} / Unlimited`,
+      `  ${row.label.padEnd(labelWidth, " ")} ${renderProgressBar(ratio, 20)} ${pct.padEnd(pctWidth, " ")}${reset}`,
     );
   }
+  if (parsed.extraUsage) {
+    lines.push("");
+    lines.push(...formatExtraUsageSection(parsed.extraUsage));
+  }
+  return lines;
+}
+
+function formatContextWindowSection(session: SessionUsageContext): string[] {
+  const maxTokens =
+    typeof session.maxContextTokens === "number" ? session.maxContextTokens : 0;
+  if (maxTokens <= 0) {
+    return ["Context window", "  No context window data available."];
+  }
+  const tokens =
+    typeof session.contextTokens === "number" ? Math.max(0, session.contextTokens) : 0;
+  const ratio =
+    typeof session.contextUsage === "number" && Number.isFinite(session.contextUsage)
+      ? Math.max(0, Math.min(session.contextUsage, 1))
+      : tokens / maxTokens;
+  const pct = usagePercent(tokens, maxTokens);
+  const pctText = `${pct}%`.padStart(6, " ");
+  return [
+    "Context window",
+    `  ${renderProgressBar(ratio, 20)} ${pctText}  (${formatTokenCount(tokens)} / ${formatTokenCount(maxTokens)})`,
+  ];
+}
+
+function sessionInputTotal(session: SessionUsageContext): number {
+  return (
+    Math.max(0, session.tokenInput ?? 0) +
+    Math.max(0, session.tokenCacheRead ?? 0) +
+    Math.max(0, session.tokenCacheCreation ?? 0)
+  );
+}
+
+function formatSessionUsageSection(session: SessionUsageContext): string[] {
+  const lines: string[] = ["Session usage"];
+  const input = sessionInputTotal(session);
+  const output = Math.max(0, session.tokenOutput ?? 0);
+  if (input <= 0 && output <= 0) {
+    lines.push("  No token usage recorded yet.");
+    return lines;
+  }
+  const model = (session.modelLabel ?? "model").trim() || "model";
   lines.push(
-    `  Balance       ${formatCents(extra.balanceCents, extra.currency)}`,
+    `  ${model}  input ${formatTokenCount(input)}  output ${formatTokenCount(output)}  total ${formatTokenCount(input + output)}`,
   );
   return lines;
 }
 
-function formatQuotaBlock(parsed: ParsedManagedUsage | null, error?: string): string[] {
-  const lines: string[] = ["Plan quotas:"];
-  if (error) {
-    lines.push(`  (unavailable) ${error}`);
-    return lines;
-  }
-  if (!parsed) {
-    lines.push("  (unavailable)");
-    return lines;
-  }
-  if (parsed.summary) {
-    lines.push(`  ${formatUsageRow(parsed.summary)}`);
-  }
-  for (const limit of parsed.limits) {
-    lines.push(`  ${formatUsageRow(limit)}`);
-  }
-  if (!parsed.summary && parsed.limits.length === 0) {
-    lines.push("  No quota data returned for this account.");
-  }
-  if (parsed.extraUsage) {
-    lines.push(...formatExtraUsage(parsed.extraUsage));
-  }
-  return lines;
-}
-
-function formatContextLine(session: SessionUsageContext): string | null {
-  const tokens =
-    typeof session.contextTokens === "number" &&
-    typeof session.maxContextTokens === "number" &&
-    session.maxContextTokens > 0
-      ? `${session.contextTokens.toLocaleString("en-US")} / ${session.maxContextTokens.toLocaleString("en-US")}`
-      : null;
-  const pct =
-    typeof session.contextUsage === "number"
-      ? ` (${Math.round(session.contextUsage * 1000) / 10}%)`
-      : "";
-  if (tokens) return `Context: ${tokens}${pct}`;
-  if (typeof session.contextUsage === "number") {
-    return `Context: ${Math.round(session.contextUsage * 1000) / 10}%`;
-  }
-  return null;
-}
-
-function formatTokenLine(session: SessionUsageContext): string | null {
-  const parts: string[] = [];
-  if (typeof session.tokenInput === "number") {
-    parts.push(`input ${session.tokenInput.toLocaleString("en-US")}`);
-  }
-  if (typeof session.tokenOutput === "number") {
-    parts.push(`output ${session.tokenOutput.toLocaleString("en-US")}`);
-  }
-  if (typeof session.tokenCacheRead === "number") {
-    parts.push(`cache read ${session.tokenCacheRead.toLocaleString("en-US")}`);
-  }
-  if (typeof session.tokenCacheCreation === "number") {
-    parts.push(
-      `cache creation ${session.tokenCacheCreation.toLocaleString("en-US")}`,
-    );
-  }
-  return parts.length > 0 ? `Tokens: ${parts.join(", ")}` : null;
+function formatModelStatusLine(status: SessionStatusContext): string {
+  const model =
+    (status.modelDisplayName ?? status.model ?? "").trim() || "not set";
+  if (model === "not set") return model;
+  const effort = (status.thinkingEffort ?? "off").trim() || "off";
+  return `${model} (thinking ${effort})`;
 }
 
 export function formatUsageReport(args: {
   managed: ManagedUsageFetchResult;
   session?: SessionUsageContext;
 }): string {
-  const lines = ["Usage"];
-  if (args.managed.kind === "ok") {
-    lines.push(...formatQuotaBlock(args.managed.parsed));
-  } else {
-    lines.push(...formatQuotaBlock(null, args.managed.message));
-  }
   const session = args.session ?? {};
-  const tokenLine = formatTokenLine(session);
-  const contextLine = formatContextLine(session);
-  if (tokenLine || contextLine) {
-    lines.push("Session:");
-    if (tokenLine) lines.push(`  ${tokenLine}`);
-    if (contextLine) lines.push(`  ${contextLine}`);
+  const lines: string[] = [...formatSessionUsageSection(session), ""];
+  lines.push(...formatContextWindowSection(session));
+
+  const managedSection =
+    args.managed.kind === "ok"
+      ? formatPlanUsageSection(args.managed.parsed)
+      : formatPlanUsageSection(null, args.managed.message);
+  if (managedSection.length > 0) {
+    lines.push("");
+    lines.push(...managedSection);
   }
   return lines.join("\n");
 }
@@ -386,26 +468,41 @@ export function formatStatusReport(args: {
   status: SessionStatusContext;
   session?: SessionUsageContext;
 }): string {
-  const lines = ["Status"];
   const { status } = args;
-  if (status.version) lines.push(`Version: ${status.version}`);
-  if (status.model) lines.push(`Model: ${status.model}`);
-  if (status.workDir) lines.push(`Work dir: ${status.workDir}`);
-  if (status.sessionId) lines.push(`Session: ${status.sessionId}`);
-  if (status.permissionMode) lines.push(`Permission: ${status.permissionMode}`);
-  if (typeof status.planMode === "boolean") {
-    lines.push(`Plan mode: ${status.planMode ? "on" : "off"}`);
-  }
-  if (typeof status.swarmMode === "boolean") {
-    lines.push(`Swarm mode: ${status.swarmMode ? "on" : "off"}`);
-  }
-  const contextLine = formatContextLine(args.session ?? {});
-  if (contextLine) lines.push(contextLine);
+  const version = (status.version ?? "").trim() || "?";
+  const rows: Array<{ label: string; value: string }> = [
+    { label: "Model", value: formatModelStatusLine(status) },
+    { label: "Directory", value: (status.workDir ?? "").trim() || "—" },
+    { label: "Permissions", value: (status.permissionMode ?? "manual").trim() },
+    {
+      label: "Plan mode",
+      value: status.planMode ? "on" : "off",
+    },
+    {
+      label: "Session",
+      value: (status.sessionId ?? "").trim() || "none",
+    },
+  ];
+  const title = status.sessionTitle?.trim();
+  if (title) rows.push({ label: "Title", value: title });
 
-  if (args.managed.kind === "ok") {
-    lines.push(...formatQuotaBlock(args.managed.parsed));
-  } else {
-    lines.push(...formatQuotaBlock(null, args.managed.message));
+  const labelWidth = Math.max(10, ...rows.map((r) => r.label.length));
+  const lines: string[] = [`>_ Kimi Code (v${version})`, ""];
+  for (const row of rows) {
+    lines.push(`  ${row.label.padEnd(labelWidth, " ")} ${row.value}`);
+  }
+
+  lines.push("");
+  lines.push(...formatContextWindowSection(args.session ?? {}));
+
+  const managedSection =
+    args.managed.kind === "ok"
+      ? formatPlanUsageSection(args.managed.parsed)
+      : formatPlanUsageSection(null, args.managed.message);
+  if (managedSection.length > 0) {
+    lines.push("");
+    lines.push(...managedSection);
   }
   return lines.join("\n");
 }
+

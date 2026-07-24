@@ -25,6 +25,53 @@ pub fn sessions_root() -> Result<PathBuf, String> {
     Ok(kimi_code_home_dir()?.join("sessions"))
 }
 
+fn work_dir_by_hash() -> Result<std::collections::HashMap<String, String>, String> {
+    let metadata_path = kimi_code_home_dir()?.join("kimi.json");
+    if !metadata_path.is_file() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let content = fs::read_to_string(&metadata_path)
+        .map_err(|err| format!("Failed to read {}: {err}", metadata_path.display()))?;
+    let metadata: Value = serde_json::from_str(&content)
+        .map_err(|err| format!("Failed to parse {}: {err}", metadata_path.display()))?;
+    let mut result = std::collections::HashMap::new();
+    if let Some(entries) = metadata.get("work_dirs").and_then(Value::as_array) {
+        for entry in entries {
+            if let Some(path) = entry.get("path").and_then(Value::as_str) {
+                let hash = format!("{:x}", md5::compute(path.as_bytes()));
+                result.insert(hash, path.to_string());
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn resolve_work_dir_from_session_dir(session_dir: &Path) -> Option<String> {
+    let hash_key = session_dir
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())?;
+    work_dir_by_hash()
+        .ok()
+        .and_then(|map| map.get(hash_key).cloned())
+}
+
+fn work_dir_value_from_state(state: &Value, session_dir: &Path) -> Value {
+    let from_state = state
+        .get("workDir")
+        .or_else(|| state.get("work_dir"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| Value::String(value.to_string()));
+    if let Some(value) = from_state {
+        return value;
+    }
+    resolve_work_dir_from_session_dir(session_dir)
+        .map(Value::String)
+        .unwrap_or(Value::Null)
+}
+
 /// Locate `~/.kimi-code/sessions/<workDirKey>/<session_id>/`.
 pub fn find_session_dir_by_id(session_id: &str) -> Result<Option<PathBuf>, String> {
     validate_session_id(session_id)?;
@@ -234,11 +281,7 @@ fn local_session_from_dir(session_id: &str, session_dir: &Path) -> Result<Value,
         .filter(|title| !title.is_empty())
         .or_else(|| state.get("title").and_then(Value::as_str))
         .unwrap_or("Untitled");
-    let work_dir = state
-        .get("workDir")
-        .or_else(|| state.get("work_dir"))
-        .cloned()
-        .unwrap_or(Value::Null);
+    let work_dir = work_dir_value_from_state(&state, session_dir);
     let last_updated = state
         .get("updatedAt")
         .or_else(|| state.get("last_updated"))
@@ -576,6 +619,17 @@ pub fn merge_local_metadata_into_legacy(session: &mut Value, session_id: &str) {
     if let Some(archived) = state.get("archived").and_then(Value::as_bool) {
         obj.insert("archived".to_string(), json!(archived));
     }
+    let legacy_work_dir = obj
+        .get("work_dir")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if legacy_work_dir.is_none() {
+        let filled = work_dir_value_from_state(&state, &session_dir);
+        if !filled.is_null() {
+            obj.insert("work_dir".to_string(), filled);
+        }
+    }
 }
 
 pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
@@ -608,7 +662,16 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
     let mut messages = Vec::new();
     let mut next_step = 1u64;
     let mut emitted_turns = HashSet::new();
+    let mut latest_usage: Option<SessionUsageSnapshot> = None;
     for record in records {
+        // Capture turn usage in the same pass so callers do not re-read wire.jsonl.
+        if let Some(snapshot) = parse_usage_record(&record) {
+            let scope = record.get("usageScope").and_then(Value::as_str);
+            if scope.is_none() || scope == Some("turn") {
+                latest_usage = Some(snapshot);
+            }
+        }
+
         match record.get("type").and_then(Value::as_str) {
             Some("metadata") => continue,
             Some("turn.prompt") => {
@@ -639,6 +702,25 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
             }
             _ => {}
         }
+    }
+
+    if let Some(usage) = latest_usage {
+        let used = usage.context_tokens();
+        let model = usage.model.as_deref().unwrap_or("");
+        let size = crate::global_config::max_context_size_for_model(model);
+        let context_usage = size
+            .filter(|s| *s > 0)
+            .map(|s| ((used as f64) / (s as f64)).clamp(0.0, 1.0));
+        push_event(
+            &mut messages,
+            "StatusUpdate",
+            json!({
+                "context_usage": context_usage,
+                "token_usage": usage.to_token_usage_json(),
+                "context_tokens": used,
+                "max_context_tokens": size,
+            }),
+        )?;
     }
 
     Ok(messages)
@@ -1177,6 +1259,35 @@ mod tests {
     }
 
     #[test]
+    fn replay_session_history_appends_usage_status_from_same_read() {
+        let (_dir, home) = temp_home("usage-replay");
+        let _guard = set_kimi_code_home(&home);
+        let session_id = "session_usage_replay";
+        let session_dir = write_session_layout(&home, "wd_replay", session_id);
+        let wire_dir = session_dir.join("agents").join("main");
+        fs::create_dir_all(&wire_dir).expect("wire dir");
+        fs::write(
+            wire_dir.join("wire.jsonl"),
+            concat!(
+                r#"{"type":"turn.prompt","input":[{"type":"text","text":"hello"}],"origin":{"kind":"user"}}"#,
+                "\n",
+                r#"{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":20,"output":5,"inputCacheRead":300,"inputCacheCreation":0},"usageScope":"turn","time":2}"#,
+                "\n",
+            ),
+        )
+        .expect("write wire");
+
+        let messages = replay_session_history(session_id).expect("replay");
+        assert!(!messages.is_empty());
+        let last = messages.last().expect("last message");
+        let parsed: Value = serde_json::from_str(last).expect("json");
+        assert_eq!(parsed["method"], "event");
+        assert_eq!(parsed["params"]["type"], "StatusUpdate");
+        assert_eq!(parsed["params"]["payload"]["context_tokens"], 320);
+        assert_eq!(parsed["params"]["payload"]["token_usage"]["output"], 5);
+    }
+
+    #[test]
     fn extracts_llm_failure_before_acp_summary_is_flushed() {
         let log = r#"2026-07-19T16:11:34.288Z WARN  llm request failed errorMessage="404 status code (no body)" statusCode=404"#;
 
@@ -1691,6 +1802,45 @@ mod tests {
         });
         merge_local_metadata_into_legacy(&mut legacy, session_id);
         assert_eq!(legacy["title"], "Local Title");
+        assert_eq!(legacy["archived"], true);
+    }
+
+    #[test]
+    fn local_session_backfills_work_dir_from_kimi_json_hash() {
+        let (_guard, home) = temp_home("workdir-hash");
+        let work_path = "C:/work/from-hash";
+        let hash = format!("{:x}", md5::compute(work_path.as_bytes()));
+        let session_id = "session-hash-workdir";
+        let session_dir = write_session_layout(&home, &hash, session_id);
+        fs::write(
+            session_dir.join("state.json"),
+            r#"{
+                "title":"No cwd",
+                "updatedAt":"2026-07-19T00:00:00Z",
+                "archived":true
+            }"#,
+        )
+        .expect("write state");
+        fs::write(
+            home.join("kimi.json"),
+            format!(
+                r#"{{"work_dirs":[{{"path":"{work_path}"}}]}}"#
+            ),
+        )
+        .expect("write kimi.json");
+
+        let _lock = set_kimi_code_home(&home);
+        let session = read_local_session(session_id).expect("read local session");
+        assert_eq!(session["work_dir"], work_path);
+
+        let mut legacy = json!({
+            "session_id": session_id,
+            "title": "ACP",
+            "work_dir": Value::Null,
+            "archived": false,
+        });
+        merge_local_metadata_into_legacy(&mut legacy, session_id);
+        assert_eq!(legacy["work_dir"], work_path);
         assert_eq!(legacy["archived"], true);
     }
 

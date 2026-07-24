@@ -148,4 +148,71 @@ describe("agent monitor event synchronization", () => {
     clearAgentMonitorSession("session-1");
     expect(useAgentMonitorStore.getState().tasks).toEqual([]);
   });
+
+  it("keeps running/in_progress TaskCompleted events active instead of checking them off", () => {
+    syncAgentMonitorFromTaskCreated({
+      type: "TaskCreated",
+      payload: {
+        session_id: "session-1",
+        task: {
+          id: "agent-active",
+          kind: "subagent",
+          description: "Still working",
+          status: "running",
+        },
+      },
+    });
+
+    syncAgentMonitorFromTaskCompleted({
+      type: "TaskCompleted",
+      payload: {
+        session_id: "session-1",
+        task_id: "agent-active",
+        status: "in_progress",
+        phase: "Still reviewing",
+      },
+    });
+    expect(useAgentMonitorStore.getState().tasks[0]).toMatchObject({
+      status: "running",
+      currentStep: "Still reviewing",
+    });
+
+    // Align with acp_translate.rs / CLI: missing status on TaskCompleted => completed.
+    syncAgentMonitorFromTaskCompleted({
+      type: "TaskCompleted",
+      payload: {
+        session_id: "session-1",
+        task_id: "agent-active",
+      },
+    });
+    expect(useAgentMonitorStore.getState().tasks[0]).toMatchObject({
+      status: "success",
+    });
+  });
+
+  it("marks explicitly completed TaskCompleted events as success", () => {
+    syncAgentMonitorFromTaskCreated({
+      type: "TaskCreated",
+      payload: {
+        session_id: "session-1",
+        task: {
+          id: "agent-done",
+          kind: "subagent",
+          description: "Done",
+          status: "running",
+        },
+      },
+    });
+    syncAgentMonitorFromTaskCompleted({
+      type: "TaskCompleted",
+      payload: {
+        session_id: "session-1",
+        task_id: "agent-done",
+        status: "completed",
+      },
+    });
+    expect(useAgentMonitorStore.getState().tasks[0]).toMatchObject({
+      status: "success",
+    });
+  });
 });

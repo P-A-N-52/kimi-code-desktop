@@ -40,17 +40,17 @@ pub fn filter_sessions(
     q: Option<&str>,
     archived: Option<bool>,
 ) -> Vec<Value> {
+    // Match web API: omitted archived filter means active (non-archived) only.
+    let archived_filter = archived.unwrap_or(false);
     sessions
         .into_iter()
         .filter(|session| {
-            if let Some(archived_filter) = archived {
-                let session_archived = session
-                    .get("archived")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                if session_archived != archived_filter {
-                    return false;
-                }
+            let session_archived = session
+                .get("archived")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if session_archived != archived_filter {
+                return false;
             }
             if let Some(query) = q {
                 let query = query.to_ascii_lowercase();
@@ -222,6 +222,27 @@ mod tests {
         ];
         let filtered = filter_sessions(sessions, Some("alp"), None);
         assert_eq!(filtered.len(), 1);
+    }
+
+    #[test]
+    fn filter_sessions_none_excludes_archived() {
+        let sessions = vec![
+            json!({"session_id":"1","title":"Active","archived":false}),
+            json!({"session_id":"2","title":"Old","archived":true}),
+        ];
+        let filtered = filter_sessions(sessions, None, None);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0]["session_id"], "1");
+        let archived_only = filter_sessions(
+            vec![
+                json!({"session_id":"1","title":"Active","archived":false}),
+                json!({"session_id":"2","title":"Old","archived":true}),
+            ],
+            None,
+            Some(true),
+        );
+        assert_eq!(archived_only.len(), 1);
+        assert_eq!(archived_only[0]["session_id"], "2");
     }
 
     #[test]

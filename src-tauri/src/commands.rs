@@ -385,6 +385,21 @@ pub async fn get_session_upload_file(
 }
 
 #[tauri::command]
+pub async fn list_work_dir_directory(
+    work_dir: String,
+    path: Option<String>,
+) -> Result<Value, String> {
+    let workspace = PathBuf::from(work_dir.trim());
+    if workspace.as_os_str().is_empty() {
+        return Err("Work directory is required".to_string());
+    }
+    let rel_path = path.unwrap_or_else(|| ".".to_string());
+    let dir_path = session_files::resolve_session_file(&workspace, &rel_path)?;
+    let entries = session_files::list_directory_entries(&dir_path)?;
+    Ok(Value::Array(entries))
+}
+
+#[tauri::command]
 pub async fn list_work_dirs(
     app: tauri::AppHandle,
     acp_desktop: tauri::State<'_, AcpDesktopClient>,

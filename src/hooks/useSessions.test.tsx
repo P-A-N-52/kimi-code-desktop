@@ -93,7 +93,7 @@ describe("useSessions archived preload", () => {
 			expect(result.current.archivedSessions).toHaveLength(1);
 		});
 		expect(mocks.listSessions).toHaveBeenCalledWith(
-			expect.objectContaining({ archived: true, limit: 100 }),
+			expect.objectContaining({ archived: true, limit: 500 }),
 		);
 	});
 

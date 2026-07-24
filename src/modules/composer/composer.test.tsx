@@ -102,7 +102,7 @@ describe("Composer integrations", () => {
     });
     await waitFor(() => expect(props.onUploadFile).toHaveBeenCalledOnce());
     expect(await screen.findByText("notes.txt")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /上下文/ }));
+    fireEvent.click(screen.getByRole("button", { name: /文件/ }));
     fireEvent.click(screen.getByRole("button", { name: /当前模型 kimi-k2.5/ }));
     expect(screen.getByRole("listbox", { name: "模型列表" })).toBeTruthy();
     fireEvent.click(screen.getByRole("option", { name: /plain/ }));
@@ -182,5 +182,72 @@ describe("Composer integrations", () => {
     fireEvent.click(screen.getByRole("button", { name: "在设置中管理配置…" }));
     expect(onManageConfig).toHaveBeenCalledOnce();
     expect(screen.queryByRole("listbox", { name: "模型列表" })).toBeNull();
+  });
+
+  it("closes the command menu on Escape even when there are no matches", () => {
+    renderComposer({
+      sessionId: "escape-menu",
+      draft: "/zzz-no-match",
+    });
+    fireEvent.click(screen.getByRole("button", { name: /命令/ }));
+    expect(screen.getByText("没有匹配的命令")).toBeTruthy();
+    const textarea = screen.getByPlaceholderText(/给 Kimi 布置任务/);
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(screen.queryByText("没有匹配的命令")).toBeNull();
+    // Match CLI web: further typing while still on "/…" reopens the menu.
+    fireEvent.change(textarea, { target: { value: "/zzz-no-matchx" } });
+    expect(screen.getByText("没有匹配的命令")).toBeTruthy();
+  });
+
+  it("closes the command menu on outside click", () => {
+    renderComposer({ sessionId: "outside-menu", draft: "/" });
+    fireEvent.click(screen.getByRole("button", { name: /命令/ }));
+    expect(screen.getByText("/compact")).toBeTruthy();
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByText("/compact")).toBeNull();
+  });
+
+  it("blocks send when sendDisabled", () => {
+    const { props } = renderComposer({
+      sessionId: "send-disabled",
+      draft: "hello",
+      sendDisabled: true,
+    });
+    expect(screen.getByPlaceholderText(/连接已断开/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    expect(props.onSend).not.toHaveBeenCalled();
+  });
+
+  it("uploads files dropped onto the composer", async () => {
+    const { props, container } = renderComposer({ sessionId: "drop-files" });
+    const composer = container.firstElementChild as HTMLElement;
+    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+    fireEvent.drop(composer, {
+      dataTransfer: {
+        files: [file],
+        types: ["Files"],
+      },
+    });
+    await waitFor(() => {
+      expect(props.onUploadFile).toHaveBeenCalledWith(file);
+    });
+  });
+
+  it("opens @ file mention menu and inserts a workspace path", async () => {
+    const listDirectory = vi.fn().mockResolvedValue([
+      { name: "src", type: "directory" },
+      { name: "readme.md", type: "file", size: 12 },
+    ]);
+    const onDraftChange = vi.fn();
+    renderComposer({
+      sessionId: "mention-files",
+      draft: "@",
+      onDraftChange,
+      listDirectory,
+    });
+    expect(await screen.findByRole("listbox", { name: "文件引用" })).toBeTruthy();
+    const option = await screen.findByRole("option", { name: /readme\.md/ });
+    fireEvent.click(option);
+    expect(onDraftChange).toHaveBeenCalledWith(expect.stringMatching(/^@readme\.md ?$/));
   });
 });

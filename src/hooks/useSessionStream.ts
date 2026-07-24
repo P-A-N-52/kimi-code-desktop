@@ -238,18 +238,31 @@ function writeLegacySwarmModes(stored: Record<string, boolean>): void {
 
 async function migrateLegacySwarmModes(): Promise<Map<string, boolean>> {
   const remaining = readLegacySwarmModes();
+  const entries = Object.entries(remaining);
+  if (entries.length === 0) {
+    return new Map();
+  }
+
+  const results = await Promise.all(
+    entries.map(async ([sessionId, enabled]) => {
+      try {
+        await migrateSessionSwarmMode(sessionId, enabled);
+        return { sessionId, enabled, ok: true as const };
+      } catch (error) {
+        console.warn(
+          `[SessionStream] Failed to migrate legacy Swarm mode for ${sessionId}:`,
+          error,
+        );
+        return { sessionId, enabled, ok: false as const };
+      }
+    }),
+  );
+
   const migrated = new Map<string, boolean>();
-  for (const [sessionId, enabled] of Object.entries(remaining)) {
-    try {
-      await migrateSessionSwarmMode(sessionId, enabled);
-      migrated.set(sessionId, enabled);
-      delete remaining[sessionId];
-    } catch (error) {
-      console.warn(
-        `[SessionStream] Failed to migrate legacy Swarm mode for ${sessionId}:`,
-        error,
-      );
-    }
+  for (const result of results) {
+    if (!result.ok) continue;
+    migrated.set(result.sessionId, result.enabled);
+    delete remaining[result.sessionId];
   }
   writeLegacySwarmModes(remaining);
   return migrated;
@@ -453,6 +466,50 @@ function normalizeIncomingSlashCommands(
       inputHint: command.inputHint ?? command.input_hint ?? null,
     })),
   );
+}
+
+/** Merge ACP slash-command waves by name; later waves fill / override earlier ones. */
+export function mergeSlashCommandsByName(
+  existing: SlashCommandDef[],
+  incoming: SlashCommandDef[],
+): SlashCommandDef[] {
+  const byKey = new Map<string, SlashCommandDef>();
+  for (const command of existing) {
+    const key = command.name.trim().toLowerCase();
+    if (key) byKey.set(key, command);
+  }
+  for (const command of incoming) {
+    const key = command.name.trim().toLowerCase();
+    if (key) byKey.set(key, command);
+  }
+  return Array.from(byKey.values());
+}
+
+const HISTORY_REPLAY_CHUNK_SIZE = 40;
+
+async function replayHistoryMessagesInBatches(
+  messages: string[],
+  handleMessage: (message: string) => void,
+  isCancelled: () => boolean,
+): Promise<void> {
+  for (let index = 0; index < messages.length; index += HISTORY_REPLAY_CHUNK_SIZE) {
+    if (isCancelled()) {
+      return;
+    }
+    const chunk = messages.slice(index, index + HISTORY_REPLAY_CHUNK_SIZE);
+    for (const message of chunk) {
+      handleMessage(message);
+    }
+    if (index + HISTORY_REPLAY_CHUNK_SIZE < messages.length) {
+      await new Promise<void>((resolve) => {
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(() => resolve());
+        } else {
+          setTimeout(resolve, 0);
+        }
+      });
+    }
+  }
 }
 
 type UseSessionStreamOptions = {
@@ -3060,9 +3117,12 @@ export function useSessionStream(
         case "SlashCommandsUpdate": {
           const commands =
             (event as SlashCommandsUpdateEvent).payload.slash_commands ?? [];
-          const nextCommands = normalizeIncomingSlashCommands(commands);
-          setSlashCommands(nextCommands);
-          slashCommandsLenRef.current = nextCommands.length;
+          const incoming = normalizeIncomingSlashCommands(commands);
+          setSlashCommands((prev) => {
+            const nextCommands = mergeSlashCommandsByName(prev, incoming);
+            slashCommandsLenRef.current = nextCommands.length;
+            return nextCommands;
+          });
           usingCachedCommandsRef.current = false;
           break;
         }
@@ -3571,9 +3631,12 @@ export function useSessionStream(
           const { slash_commands } = message.result;
 
           if (slash_commands && slash_commands.length > 0) {
-            const nextCommands = normalizeIncomingSlashCommands(slash_commands);
-            setSlashCommands(nextCommands);
-            slashCommandsLenRef.current = nextCommands.length;
+            const incoming = normalizeIncomingSlashCommands(slash_commands);
+            setSlashCommands((prev) => {
+              const nextCommands = mergeSlashCommandsByName(prev, incoming);
+              slashCommandsLenRef.current = nextCommands.length;
+              return nextCommands;
+            });
             usingCachedCommandsRef.current = false;
           }
           return;
@@ -4584,24 +4647,15 @@ export function useSessionStream(
         ? await fetchManagedUsage()
         : {
             kind: "error" as const,
-            message: "Managed usage is only available in the desktop app.",
+            message: "Usage is available on Kimi Code platform only.",
           };
       const managed = parseManagedUsageFetchResult(managedRaw);
-      const sessionUsage: SessionUsageContext = {
-        contextUsage: contextUsageRef.current,
-        contextTokens: contextTokensRef.current,
-        maxContextTokens: maxContextTokensRef.current,
-        tokenInput: tokenUsageRef.current?.input_other ?? null,
-        tokenOutput: tokenUsageRef.current?.output ?? null,
-        tokenCacheRead: tokenUsageRef.current?.input_cache_read ?? null,
-        tokenCacheCreation: tokenUsageRef.current?.input_cache_creation ?? null,
-      };
-      if (command === "usage") {
-        return formatUsageReport({ managed, session: sessionUsage });
-      }
+      let modelLabel: string | null = null;
+      let modelDisplayName: string | null = null;
+      let thinkingEffort: string | null = null;
       let version: string | null = null;
-      let model: string | null = null;
       let workDir: string | null = null;
+      let sessionTitle: string | null = null;
       if (isTauri()) {
         try {
           version = await getKimiCliVersion();
@@ -4610,29 +4664,54 @@ export function useSessionStream(
         }
         try {
           const config = await getGlobalConfig();
-          model = config.defaultModel || null;
+          modelLabel = config.defaultModel || null;
+          modelDisplayName = modelLabel;
+          const matched = config.models?.find(
+            (m) => m.name === modelLabel || m.model === modelLabel,
+          );
+          if (matched?.name) modelDisplayName = matched.name;
+          const effort = (config.thinkingEffort ?? "").trim();
+          if (effort) thinkingEffort = effort;
+          else thinkingEffort = config.defaultThinking ? "on" : "off";
         } catch {
-          model = null;
+          modelLabel = null;
         }
         if (sessionId) {
           try {
             const session = await getSession(sessionId);
             workDir = session?.workDir ?? null;
+            sessionTitle = session?.title?.trim() ? session.title : null;
           } catch {
             workDir = null;
           }
         }
       }
+      const token = tokenUsageRef.current;
+      const sessionUsage: SessionUsageContext = {
+        contextUsage: contextUsageRef.current,
+        contextTokens: contextTokensRef.current,
+        maxContextTokens: maxContextTokensRef.current,
+        modelLabel,
+        tokenInput: token?.input_other ?? null,
+        tokenOutput: token?.output ?? null,
+        tokenCacheRead: token?.input_cache_read ?? null,
+        tokenCacheCreation: token?.input_cache_creation ?? null,
+      };
+      if (command === "usage") {
+        return formatUsageReport({ managed, session: sessionUsage });
+      }
       return formatStatusReport({
         managed,
         status: {
           version,
-          model,
+          model: modelLabel,
+          modelDisplayName,
           workDir,
           sessionId,
+          sessionTitle,
           permissionMode: permissionModeRef.current,
           planMode: planModeRef.current,
-          swarmMode: swarmModeRef.current,
+          thinkingEffort,
         },
         session: sessionUsage,
       });
@@ -4893,20 +4972,29 @@ export function useSessionStream(
           if (cancelled) {
             return;
           }
-          for (const message of historyMessages) {
-            handleMessageRef.current(message);
+          await replayHistoryMessagesInBatches(
+            historyMessages,
+            (message) => handleMessageRef.current(message),
+            () => cancelled,
+          );
+          if (cancelled) {
+            return;
           }
           flushInlineThinkBufferRef.current(true);
           flushBufferedStreamUpdateRef.current();
           isReplayingRef.current = false;
           setIsReplayingHistory(false);
+          // Lazy connect: only spawn `kimi acp` for a pending prompt (or when
+          // autoConnect is true for running sessions). Idle sessions stay on
+          // local history until the user sends a message.
           if (pendingMessageRef.current) {
+            preserveMessagesOnConnectRef.current = true;
+            skipReplayOnConnectRef.current = true;
             connectRef.current();
           } else {
             setStatus("ready");
             preserveMessagesOnConnectRef.current = true;
             skipReplayOnConnectRef.current = true;
-            connectRef.current();
           }
           setSwarmMode(persistedSwarmMode);
           swarmModeRef.current = persistedSwarmMode;
