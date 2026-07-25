@@ -8,6 +8,7 @@ import type {
 import { SessionFromJSON } from "../lib/api/models/Session";
 import { apiClient } from "../lib/apiClient";
 import { getAuthHeader, getAuthToken } from "../lib/auth";
+import { useI18n } from "../lib/i18n";
 import {
 	isTauri,
 	createSession as tauriCreateSession,
@@ -223,6 +224,7 @@ export class DirectoryNotFoundError extends Error {
 export function useSessions(
 	options: UseSessionsOptions = {},
 ): UseSessionsReturn {
+	const { resolvedLanguage } = useI18n();
 	const enabled = options.enabled ?? true;
 	// Sessions list (using API Session type)
 	const [sessions, setSessions] = useState<Session[]>([]);
@@ -638,8 +640,9 @@ export function useSessions(
 	 * Get formatted relative time for a session
 	 */
 	const getRelativeTime = useCallback(
-		(session: Session): string => formatRelativeTime(session.lastUpdated),
-		[],
+		(session: Session): string =>
+			formatRelativeTime(session.lastUpdated, resolvedLanguage),
+		[resolvedLanguage],
 	);
 
 	/**
@@ -1029,14 +1032,22 @@ export function useSessions(
 				const active = await listAllActiveSessions();
 				const stale = selectSessionsOlderThan(active, days);
 				if (stale.length === 0) {
-					toast.message(`没有超过 ${days} 天未活跃的会话`);
+					toast.message(
+						resolvedLanguage === "zh-CN"
+							? `没有超过 ${days} 天未活跃的会话`
+							: `No sessions inactive for more than ${days} days`,
+					);
 					return 0;
 				}
 				const count = await bulkArchiveSessions(
 					stale.map((session) => session.sessionId),
 				);
 				if (count > 0) {
-					toast.success(`已归档 ${count} 个超过 ${days} 天未活跃的会话`);
+					toast.success(
+						resolvedLanguage === "zh-CN"
+							? `已归档 ${count} 个超过 ${days} 天未活跃的会话`
+							: `Archived ${count} sessions inactive for more than ${days} days`,
+					);
 				}
 				return count;
 			} catch (err) {
@@ -1049,7 +1060,7 @@ export function useSessions(
 				return 0;
 			}
 		},
-		[bulkArchiveSessions, listAllActiveSessions],
+		[bulkArchiveSessions, listAllActiveSessions, resolvedLanguage],
 	);
 
 	/**

@@ -16,6 +16,7 @@ import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatRelativeTime } from "@/hooks/utils";
 import type { Session } from "@/lib/api/models";
+import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { Button } from "@/ui/button";
 import { Kbd } from "@/ui/kbd";
@@ -65,6 +66,7 @@ function SessionItem({
   onRename: (title: string) => void;
   onArchive: () => void;
 }) {
+  const { resolvedLanguage } = useI18n();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.title ?? "");
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -153,13 +155,14 @@ function SessionItem({
               <span className="min-w-0 flex-1 truncate">{session.title || "未命名会话"}</span>
               {groupMode === "project" && (
                 <span className="shrink-0 text-[10.5px] font-normal text-faint">
-                  {formatRelativeTime(new Date(session.lastUpdated))}
+                  {formatRelativeTime(new Date(session.lastUpdated), resolvedLanguage)}
                 </span>
               )}
             </span>
             {groupMode === "day" && (
               <span className="mt-px block truncate font-mono text-[10.5px] text-faint">
-                {workDirName(session.workDir)} · {formatRelativeTime(new Date(session.lastUpdated))}
+                {workDirName(session.workDir)} ·{" "}
+                {formatRelativeTime(new Date(session.lastUpdated), resolvedLanguage)}
               </span>
             )}
           </button>
@@ -242,6 +245,7 @@ export type SessionsSidebarProps = {
 };
 
 export function SessionsSidebar(props: SessionsSidebarProps) {
+  const { resolvedLanguage } = useI18n();
   const [mode, setMode] = useState<SidebarMode>("active");
   const [groupMode, setGroupMode] = useState<SessionGroupMode>(() => readSessionGroupMode());
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(
@@ -348,7 +352,14 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
   const runBulk = async (action: "archive" | "restore" | "delete") => {
     const ids = [...selectedIds];
     if (ids.length === 0) return;
-    if (action === "delete" && !window.confirm(`确定永久删除选中的 ${ids.length} 个会话吗？`))
+    if (
+      action === "delete" &&
+      !window.confirm(
+        resolvedLanguage === "zh-CN"
+          ? `确定永久删除选中的 ${ids.length} 个会话吗？`
+          : `Permanently delete the ${ids.length} selected sessions?`,
+      )
+    )
       return;
     setBulkBusy(true);
     try {
@@ -366,7 +377,9 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
     setStaleMenuOpen(false);
     if (
       !window.confirm(
-        `确定归档所有超过 ${days} 天未活跃的会话吗？可在「已归档」中恢复。`,
+        resolvedLanguage === "zh-CN"
+          ? `确定归档所有超过 ${days} 天未活跃的会话吗？可在「已归档」中恢复。`
+          : `Archive every session inactive for more than ${days} days? You can restore them from Archived.`,
       )
     ) {
       return;
@@ -531,7 +544,9 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
                           if (mode === "active") {
                             if (
                               !window.confirm(
-                                `确定归档「${label}」下的 ${ids.length} 个会话吗？可在「已归档」中恢复。`,
+                                resolvedLanguage === "zh-CN"
+                                  ? `确定归档「${label}」下的 ${ids.length} 个会话吗？可在「已归档」中恢复。`
+                                  : `Archive ${ids.length} sessions in "${label}"? You can restore them from Archived.`,
                               )
                             )
                               return;
@@ -595,7 +610,15 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
                     }
                     onSelect={() => props.onSelect(session.sessionId)}
                     onDelete={() => {
-                      if (window.confirm(`确定永久删除“${session.title || "未命名会话"}”吗？`))
+                      const title =
+                        session.title || (resolvedLanguage === "zh-CN" ? "未命名会话" : "Untitled");
+                      if (
+                        window.confirm(
+                          resolvedLanguage === "zh-CN"
+                            ? `确定永久删除“${title}”吗？`
+                            : `Permanently delete "${title}"?`,
+                        )
+                      )
                         props.onDelete(session.sessionId);
                     }}
                     onRename={(title) => props.onRename(session.sessionId, title)}

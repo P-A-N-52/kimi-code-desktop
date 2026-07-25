@@ -13,6 +13,7 @@ import {
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { toast } from "sonner";
 import type { ConfigModel, UploadSessionFileResponse } from "@/lib/api/models";
+import { useI18n } from "@/lib/i18n";
 import {
   type SlashCommandDef,
   shouldExecuteSlashCommandImmediately,
@@ -83,6 +84,7 @@ export function Composer({
   onSelectThinkingEffort,
   onManageConfig,
 }: ComposerProps) {
+  const { resolvedLanguage } = useI18n();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const commandMenuRef = useRef<HTMLDivElement>(null);
@@ -171,12 +173,25 @@ export function Composer({
         }
       }
       if (uploadedCount > 0) {
-        toast.success(uploadedCount === 1 ? "文件已上传" : `${uploadedCount} 个文件已上传`);
+        toast.success(
+          resolvedLanguage === "zh-CN"
+            ? uploadedCount === 1
+              ? "文件已上传"
+              : `${uploadedCount} 个文件已上传`
+            : uploadedCount === 1
+              ? "File uploaded"
+              : `${uploadedCount} files uploaded`,
+        );
       }
       if (failures.length > 0) {
-        toast.error(`${failures.length} 个文件上传失败`, {
+        toast.error(
+          resolvedLanguage === "zh-CN"
+            ? `${failures.length} 个文件上传失败`
+            : `${failures.length} file uploads failed`,
+          {
           description: failures.join("\n"),
-        });
+          },
+        );
       }
     } finally {
       setUploading(false);

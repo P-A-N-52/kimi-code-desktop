@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { useTheme } from "@/hooks/use-theme";
 import { useGlobalConfig } from "@/hooks/useGlobalConfig";
 import { notifyGlobalConfigApplied } from "@/lib/config-update-toast";
+import { useI18n, type UiLanguage } from "@/lib/i18n";
 import { openKimiCodeWebsite } from "@/lib/kimi-code-link";
 import {
   findConfigModel,
@@ -163,6 +164,7 @@ export function SettingsDialog({
   /** When opening (e.g. from model picker), jump to this tab. */
   initialTab?: SettingsTab;
 }) {
+  const { resolvedLanguage, uiLanguage, setUiLanguage, t } = useI18n();
   const { theme, setThemeWithTransition } = useTheme();
   const { config, isLoading, isUpdating, error, update } = useGlobalConfig({ enabled: open });
   const [tab, setTab] = useState<SettingsTab>("general");
@@ -181,7 +183,12 @@ export function SettingsDialog({
   const currentEditorDirty = (tab === "config" || tab === "mcp") && dirtyTabs[tab];
 
   const confirmDiscardCurrentEditor = () =>
-    !currentEditorDirty || window.confirm("当前文件有未保存的更改，确定放弃吗？");
+    !currentEditorDirty ||
+    window.confirm(
+      resolvedLanguage === "zh-CN"
+        ? "当前文件有未保存的更改，确定放弃吗？"
+        : "The current file has unsaved changes. Discard them?",
+    );
 
   const changeTab = (nextTab: SettingsTab) => {
     if (nextTab === tab || !confirmDiscardCurrentEditor()) return;
@@ -274,7 +281,7 @@ export function SettingsDialog({
           <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto pr-1">
             {tab === "general" && (
               <>
-                <Section title="外观">
+                <Section title={t("外观")}>
                   <div className="flex gap-2">
                     {(["dark", "light"] as const).map((value) => (
                       <button
@@ -289,6 +296,31 @@ export function SettingsDialog({
                         )}
                       >
                         {value === "dark" ? "深色" : "浅色"}
+                      </button>
+                    ))}
+                  </div>
+                </Section>
+                <Section title={t("界面语言")}>
+                  <div className="grid grid-cols-3 gap-1 rounded-r2 border border-line bg-subtle p-1">
+                    {(
+                      [
+                        ["system", "跟随系统"],
+                        ["en-US", "English"],
+                        ["zh-CN", "简体中文"],
+                      ] as Array<[UiLanguage, string]>
+                    ).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => setUiLanguage(value)}
+                        className={cn(
+                          "rounded-r1 px-2 py-1.5 text-[11px] transition-colors",
+                          uiLanguage === value
+                            ? "bg-active text-bright"
+                            : "text-muted hover:bg-hover hover:text-foreground",
+                        )}
+                      >
+                        {t(label)}
                       </button>
                     ))}
                   </div>

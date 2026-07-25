@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ModelCapability, type ConfigModel } from "@/lib/api/models";
+import { UiLanguageProvider } from "@/lib/i18n";
 import { Composer, type QueuedPrompt } from "./composer";
 
 const sampleModels: ConfigModel[] = [
@@ -60,7 +61,14 @@ const renderComposer = (overrides: Partial<Parameters<typeof Composer>[0]> = {})
     onSelectThinkingEffort: vi.fn(),
     ...overrides,
   };
-  return { ...render(<Composer {...props} />), props };
+  return {
+    ...render(
+      <UiLanguageProvider>
+        <Composer {...props} />
+      </UiLanguageProvider>,
+    ),
+    props,
+  };
 };
 
 describe("Composer integrations", () => {

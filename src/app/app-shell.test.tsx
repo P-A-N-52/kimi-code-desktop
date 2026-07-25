@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AppShell } from "./app-shell";
 
 describe("AppShell", () => {
@@ -85,5 +85,22 @@ describe("AppShell", () => {
 		const content = drag?.querySelector(":scope > div");
 		expect(content?.className).toContain("pointer-events-none");
 		expect(content?.className).toContain("[&>*]:pointer-events-auto");
+	});
+
+	it("在 macOS 上暴露平台标记供交通灯安全区使用", () => {
+		const platform = vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+		const { container } = render(
+			<AppShell
+				sidebar={<div />}
+				sidebarOpen
+				topbar={<div />}
+				panel={<div />}
+				panelOpen={false}
+			>
+				<div />
+			</AppShell>,
+		);
+		expect(container.firstElementChild?.getAttribute("data-platform")).toBe("macos");
+		platform.mockRestore();
 	});
 });

@@ -1,6 +1,7 @@
 import { Moon, PanelLeftClose, PanelLeftOpen, Plus, Settings, Sun } from "lucide-react";
 import { SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH } from "@/app/app-shell";
 import { useTheme } from "@/hooks/use-theme";
+import { isMacOS } from "@/hooks/utils";
 import { cn } from "@/lib/utils";
 import { IconButton } from "@/ui/icon-button";
 import { SessionsSidebar, type SessionsSidebarProps } from "./sessions-sidebar";
@@ -19,6 +20,7 @@ export function AppSidebar({
 	onNewSession: () => void;
 	onOpenSettings: () => void;
 }) {
+	const macOS = isMacOS();
 	const { theme, toggleThemeWithTransition } = useTheme();
 
 	const brandBlock = (
@@ -61,7 +63,7 @@ export function AppSidebar({
 				)}
 				style={{ width: SIDEBAR_WIDTH }}
 			>
-				<div className="relative flex h-full flex-col">
+				<div className={cn("relative flex h-full flex-col", macOS && "pt-9")}>
 					{/* Frameless: thin drag strip so search/header controls stay clickable. */}
 					<div
 						className="absolute inset-x-0 top-0 z-20 h-3"
@@ -100,7 +102,12 @@ export function AppSidebar({
 				)}
 				style={{ width: SIDEBAR_COLLAPSED_WIDTH }}
 			>
-				<div className="relative flex h-full flex-col items-center gap-0.5 py-2.5">
+				<div
+					className={cn(
+						"relative flex h-full flex-col items-center gap-0.5 py-2.5",
+						macOS && "pt-10",
+					)}
+				>
 					<div
 						className="absolute inset-x-0 top-0 z-20 h-3"
 						data-tauri-drag-region

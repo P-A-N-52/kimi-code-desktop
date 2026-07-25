@@ -101,8 +101,32 @@ npm run smoke:acp         # 验证本机 kimi acp
 ```powershell
 npm run desktop:release   # 本地可运行的 release exe
 npm run release:msi       # MSI 与发布元数据
+npm run release:macos     # Apple Silicon DMG（仅在 macOS）
 npm run release:preflight # 完整发布前检查
 ```
+
+### macOS Apple Silicon
+
+macOS 桌面包当前仅支持 Apple Silicon（`aarch64-apple-darwin`）和 macOS 12
+及以上版本。发布工作流会生成 DMG，并按以下顺序选择信任级别：
+
+1. Apple Developer ID 签名并公证；
+2. 缺少凭据或签名/公证失败时使用 ad-hoc 签名；
+3. ad-hoc 构建失败时生成未签名包。
+
+工作流产物中的 `release-manifest-macos-arm64.json` 会记录实际使用的
+`signingMode`、`notarizationStatus` 和降级原因。ad-hoc 或未签名包可能需要用户在
+macOS“隐私与安全性”中手动允许。
+
+完整签名和公证使用以下 GitHub Actions secrets：
+
+- `APPLE_CERTIFICATE`
+- `APPLE_CERTIFICATE_PASSWORD`
+- `APPLE_SIGNING_IDENTITY`
+- `APPLE_API_ISSUER`、`APPLE_API_KEY`、`APPLE_API_KEY_CONTENT`
+
+也可以用 `APPLE_ID`、`APPLE_PASSWORD`、`APPLE_TEAM_ID` 替代 API Key
+公证凭据。`KEYCHAIN_PASSWORD` 可选。
 
 产物位置：
 

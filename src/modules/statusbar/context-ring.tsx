@@ -1,4 +1,6 @@
+import { useMemo } from "react";
 import type { TokenUsage } from "@/hooks/wireTypes";
+import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import {
 	Tooltip,
@@ -8,14 +10,19 @@ import {
 } from "@/ui/tooltip";
 import { contextPercent, formatContextStatus } from "./context-format";
 
-const compact = new Intl.NumberFormat("en-US", { notation: "compact" });
-const exact = new Intl.NumberFormat("en-US");
-
-function UsageRow({ label, value }: { label: string; value: number }) {
+function UsageRow({
+	label,
+	value,
+	formatter,
+}: {
+	label: string;
+	value: number;
+	formatter: Intl.NumberFormat;
+}) {
 	return (
 		<div className="flex items-center justify-between gap-6 text-[11px]">
 			<span className="text-muted">{label}</span>
-			<span className="font-mono tabular-nums">{compact.format(value)}</span>
+			<span className="font-mono tabular-nums">{formatter.format(value)}</span>
 		</div>
 	);
 }
@@ -31,6 +38,15 @@ export function ContextRing({
 	contextTokens?: number | null;
 	maxContextTokens?: number | null;
 }) {
+	const { resolvedLanguage } = useI18n();
+	const compact = useMemo(
+		() => new Intl.NumberFormat(resolvedLanguage, { notation: "compact" }),
+		[resolvedLanguage],
+	);
+	const exact = useMemo(
+		() => new Intl.NumberFormat(resolvedLanguage),
+		[resolvedLanguage],
+	);
 	const pct = contextPercent(usage, contextTokens, maxContextTokens);
 	const statusLabel = formatContextStatus(usage, contextTokens, maxContextTokens);
 	const r = 7;
@@ -77,10 +93,10 @@ export function ContextRing({
 							)}
 							{tokenUsage && (
 								<>
-									<UsageRow label="Input" value={tokenUsage.input_other} />
-									<UsageRow label="Cache read" value={tokenUsage.input_cache_read} />
-									<UsageRow label="Cache write" value={tokenUsage.input_cache_creation} />
-									<UsageRow label="Output" value={tokenUsage.output} />
+									<UsageRow label="Input" value={tokenUsage.input_other} formatter={compact} />
+									<UsageRow label="Cache read" value={tokenUsage.input_cache_read} formatter={compact} />
+									<UsageRow label="Cache write" value={tokenUsage.input_cache_creation} formatter={compact} />
+									<UsageRow label="Output" value={tokenUsage.output} formatter={compact} />
 								</>
 							)}
 						</div>

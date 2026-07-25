@@ -31,6 +31,9 @@ jobs:
       - name: Biome lint check
         run: npm run lint:check
 
+      - name: Check i18n catalog coverage
+        run: npm run i18n:check
+
       - name: Run Vitest
         run: npm run test
 
@@ -74,3 +77,39 @@ jobs:
 
       - name: Cargo fmt check
         run: cargo fmt --check
+
+  macos-arm-check:
+    name: macOS ARM64 Check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri
+          key: macos-aarch64
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Check i18n catalog coverage
+        run: npm run i18n:check
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Check Apple Silicon target
+        run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin

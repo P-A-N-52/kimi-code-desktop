@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { isMacOS } from "@/hooks/utils";
 
 export const SIDEBAR_WIDTH = 260;
 export const SIDEBAR_COLLAPSED_WIDTH = 52;
@@ -20,8 +21,12 @@ export function AppShell({
 	panelOpen: boolean;
 	children: ReactNode;
 }) {
+	const macOS = isMacOS();
 	return (
-		<div className="relative flex h-dvh overflow-hidden bg-background text-foreground">
+		<div
+			data-platform={macOS ? "macos" : "default"}
+			className="relative flex h-dvh overflow-hidden bg-background text-foreground"
+		>
 			<div
 				data-slot="sessions-sidebar"
 				className={cn(

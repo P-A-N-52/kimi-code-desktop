@@ -5,6 +5,37 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+
+#[cfg(target_os = "macos")]
+pub fn configure_macos_cli_path() {
+    let paths = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let home = user_home_dir().ok();
+    let paths = prepend_macos_cli_paths(home.as_deref(), paths);
+
+    if let Ok(joined) = std::env::join_paths(paths) {
+        std::env::set_var("PATH", joined);
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn prepend_macos_cli_paths(home: Option<&Path>, mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut preferred = Vec::new();
+    if let Some(home) = home {
+        preferred.push(home.join(".local").join("bin"));
+    }
+    preferred.push(PathBuf::from("/opt/homebrew/bin"));
+    preferred.push(PathBuf::from("/usr/local/bin"));
+
+    for candidate in preferred.into_iter().rev() {
+        if !paths.iter().any(|existing| existing == &candidate) {
+            paths.insert(0, candidate);
+        }
+    }
+
+    paths
+}
 use tauri::AppHandle;
 
 const KIMI_CLI_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -521,9 +552,28 @@ fn user_home_dir() -> Result<PathBuf, String> {
 mod tests {
     use super::{
         kimi_code_config_file_path, kimi_code_home_dir_from_values, legacy_migration_hint,
-        parse_kimi_code_version_output, parse_version_from_output,
+        parse_kimi_code_version_output, parse_version_from_output, prepend_macos_cli_paths,
     };
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn macos_cli_paths_prefer_uv_and_homebrew_locations_without_duplicates() {
+        let existing = vec![
+            PathBuf::from("/usr/bin"),
+            PathBuf::from("/opt/homebrew/bin"),
+        ];
+        let paths = prepend_macos_cli_paths(Some(Path::new("/Users/alice")), existing);
+
+        assert_eq!(paths[0], PathBuf::from("/Users/alice/.local/bin"));
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|path| path.as_path() == Path::new("/opt/homebrew/bin"))
+                .count(),
+            1
+        );
+        assert!(paths.contains(&PathBuf::from("/usr/local/bin")));
+    }
 
     #[test]
     fn kimi_code_home_defaults_to_user_home_dot_kimi_code() {

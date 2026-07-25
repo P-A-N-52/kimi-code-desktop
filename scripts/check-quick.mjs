@@ -26,6 +26,7 @@ function runStep(name, command, args) {
 
 const steps = [
   ["Version alignment check", "node", ["scripts/sync-version.js"]],
+  ["i18n catalog coverage", "npm", ["run", "i18n:check"]],
   ["Frontend unit tests", "npm", ["run", "test"]],
   ["Type check", "npx", ["tsc", "-b"]],
   ["Frontend production build", "npm", ["run", "build"]],

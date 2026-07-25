@@ -658,10 +658,11 @@ pub fn open_in_explorer(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        let mut command = std::process::Command::new("open");
+        if path_obj.is_file() {
+            command.arg("-R");
+        }
+        command.arg(&path).spawn().map_err(|e| e.to_string())?;
     }
     #[cfg(target_os = "linux")]
     {
@@ -677,12 +678,29 @@ pub fn open_in_explorer(path: String) -> Result<(), String> {
 pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
     let path_obj = validate_local_absolute_path(&path)?;
     let path = path_obj.to_string_lossy().to_string();
+    #[cfg(target_os = "macos")]
+    {
+        let app = match editor.as_str() {
+            "vscode" => "Visual Studio Code",
+            "cursor" => "Cursor",
+            _ => return Err(format!("Unsupported editor: {}", editor)),
+        };
+        return Command::new("open")
+            .args(["-a", app])
+            .arg(&path)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+    }
+
+    #[cfg(not(target_os = "macos"))]
     let bin = match editor.as_str() {
         "vscode" => "code",
         "cursor" => "cursor",
         _ => return Err(format!("Unsupported editor: {}", editor)),
     };
 
+    #[cfg(not(target_os = "macos"))]
     open::with_detached(path, bin).map_err(|e| e.to_string())
 }
 

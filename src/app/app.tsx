@@ -5,6 +5,7 @@ import { useGitDiffStats } from "@/hooks/useGitDiffStats";
 import { useSessionStream } from "@/hooks/useSessionStream";
 import { DirectoryNotFoundError, useSessions } from "@/hooks/useSessions";
 import { getApiBaseUrl, hasPlatformModifier } from "@/hooks/utils";
+import { useDomTranslations, useI18n } from "@/lib/i18n";
 import type { SessionStatus } from "@/lib/api/models";
 import { classifyIdleReason } from "@/lib/idle-turn";
 import { openKimiCodeWebsite } from "@/lib/kimi-code-link";
@@ -14,7 +15,9 @@ import {
   isTauri,
   type RuntimeReadiness,
   sendNotification,
+  setNativeUiLanguage,
   showWindow,
+  listenEvent,
 } from "@/lib/tauri-api";
 import { ConversationView } from "@/modules/conversation/conversation-view";
 import { ReadinessOverlay } from "@/modules/readiness/readiness-overlay";
@@ -32,12 +35,19 @@ import { NewSessionView } from "./new-session-view";
 
 export default function App() {
   useTheme();
+  useDomTranslations();
+  const { resolvedLanguage, t } = useI18n();
 
   useLayoutEffect(() => {
     if (isTauri()) {
       showWindow().catch(() => {});
     }
   }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    void setNativeUiLanguage(resolvedLanguage).catch(() => {});
+  }, [resolvedLanguage]);
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [panelOpen, setPanelOpen] = useState(false);
@@ -149,7 +159,7 @@ export default function App() {
         !document.hasFocus() &&
         classified.wouldNotifySuccess
       ) {
-        const body = classified.isCancelled ? "任务已取消" : "任务已完成";
+        const body = classified.isCancelled ? t("任务已取消") : t("任务已完成");
         const completedSession = sessions.find(
           (session) => session.sessionId === status.sessionId,
         );
@@ -199,9 +209,9 @@ export default function App() {
       const notificationKey = `${selectedSessionId}:${approval.id}`;
       if (notifiedApprovalsRef.current.has(notificationKey)) continue;
       notifiedApprovalsRef.current.add(notificationKey);
-      void sendNotification("Kimi Code 需要批准", approval.description).catch(() => {});
+      void sendNotification(t("Kimi Code 需要批准"), approval.description).catch(() => {});
     }
-  }, [pendingApprovals, selectedSessionId]);
+  }, [pendingApprovals, selectedSessionId, t]);
 
   useEffect(() => {
     if (changes.length > 0 && !userClosedPanelRef.current) {
@@ -258,13 +268,16 @@ export default function App() {
       } else if (hasPlatformModifier(e) && e.key.toLowerCase() === "n") {
         e.preventDefault();
         selectSession("");
+      } else if (hasPlatformModifier(e) && e.key === ",") {
+        e.preventDefault();
+        openSettings();
       } else if (e.key === "Escape" && panelOpen) {
         handleClosePanel();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [focusSessionSearch, handleClosePanel, panelOpen, selectSession]);
+  }, [focusSessionSearch, handleClosePanel, openSettings, panelOpen, selectSession]);
 
   useEffect(() => {
     if (sessionsError) {
@@ -276,6 +289,15 @@ export default function App() {
     selectSession("");
   }, [selectSession]);
 
+  useEffect(() => {
+    const stopNewSession = listenEvent("tauri://new-session", handleNewSession);
+    const stopOpenSettings = listenEvent("tauri://open-settings", () => openSettings());
+    return () => {
+      stopNewSession();
+      stopOpenSettings();
+    };
+  }, [handleNewSession, openSettings]);
+
   const handleSendFirstMessage = useCallback(
     async (workDir: string, text: string) => {
       setPendingFirstMessage(text);
@@ -284,12 +306,12 @@ export default function App() {
       } catch (err) {
         setPendingFirstMessage(null);
         if (err instanceof DirectoryNotFoundError) {
-          toast.error("工作目录不存在", { description: workDir });
+          toast.error(t("工作目录不存在"), { description: workDir });
         }
         throw err;
       }
     },
-    [createSession],
+    [createSession, t],
   );
 
   if (shouldPauseRuntime) {

@@ -1,5 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { UiLanguageProvider } from "@/lib/i18n";
 import { useSessions } from "./useSessions";
 import type { Session } from "@/lib/api/models";
 
@@ -50,6 +52,10 @@ function session(id: string, archived = false): Session {
 	};
 }
 
+function I18nWrapper({ children }: { children: ReactNode }) {
+	return <UiLanguageProvider>{children}</UiLanguageProvider>;
+}
+
 describe("useSessions archived preload", () => {
 	let idleCallbacks: IdleRequestCallback[];
 
@@ -81,7 +87,7 @@ describe("useSessions archived preload", () => {
 			Promise.resolve(args?.archived ? [session("archived", true)] : [session("active")]),
 		);
 
-		const { result } = renderHook(() => useSessions());
+		const { result } = renderHook(() => useSessions(), { wrapper: I18nWrapper });
 
 		await waitFor(() => expect(result.current.sessions).toHaveLength(1));
 		expect(result.current.hasLoadedArchivedSessions).toBe(false);
@@ -105,7 +111,7 @@ describe("useSessions archived preload", () => {
 			return Promise.resolve([session("active")]);
 		});
 
-		const { result } = renderHook(() => useSessions());
+		const { result } = renderHook(() => useSessions(), { wrapper: I18nWrapper });
 
 		await waitFor(() => expect(result.current.sessions).toHaveLength(1));
 		await runIdleCallbacks();
@@ -128,7 +134,7 @@ describe("useSessions archived preload", () => {
 			return Promise.resolve([session("active")]);
 		});
 
-		const { result } = renderHook(() => useSessions());
+		const { result } = renderHook(() => useSessions(), { wrapper: I18nWrapper });
 
 		await waitFor(() => expect(result.current.sessions).toHaveLength(1));
 		await runIdleCallbacks();
@@ -160,7 +166,7 @@ describe("useSessions archived preload", () => {
 			return Promise.resolve([session("initial")]);
 		});
 
-		const { result } = renderHook(() => useSessions());
+		const { result } = renderHook(() => useSessions(), { wrapper: I18nWrapper });
 		await waitFor(() => expect(result.current.sessions[0]?.sessionId).toBe("initial"));
 
 		act(() => result.current.setSearchQuery("first"));

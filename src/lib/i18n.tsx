@@ -31,6 +31,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "API key override": "API Key 覆盖",
   "API model": "API 模型",
   "App theme": "应用主题",
+  Appearance: "外观",
   "Approval action failed": "审批操作失败",
   Approve: "批准",
   "Approve for session": "本会话内批准",
@@ -104,6 +105,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Delete Session": "删除会话",
   "Diff Review": "Diff 审查",
   "Directory Not Found": "目录不存在",
+  "This action is only available in the desktop app": "该入口仅在桌面应用中可用",
   Dismiss: "忽略",
   "Display name": "显示名称",
   "Display type:": "显示类型：",
@@ -176,6 +178,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   Input: "输入",
   "Input Tokens": "输入 Token",
   "Interface language": "界面语言",
+  "Follow system": "跟随系统",
   "Invalid MCP JSON": "MCP JSON 无效",
   "Invalid JSON": "JSON 无效",
   Invoke: "调用",
@@ -184,6 +187,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Kimi Code auth": "Kimi Code 鉴权",
   "Kimi Code CLI configuration": "Kimi Code CLI 配置",
   "Kimi Code credentials": "Kimi Code 凭据",
+  "Kimi Code needs approval": "Kimi Code 需要批准",
   "Kimi login is only available in the desktop app":
     "Kimi 登录只能在桌面应用中使用",
   "Kimi login terminal opened": "Kimi 登录终端已打开",
@@ -219,7 +223,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Loading files...": "正在加载文件...",
   "Loading settings...": "正在加载设置...",
   "Loading workspace files...": "正在加载工作区文件...",
-  "Loading workspace files…": "正在加载工作区文件...",
+  "Loading workspace files…": "加载工作区文件…",
   "Manual approval required by": "需要手动批准，来源：",
   "Max context size": "最大上下文长度",
   "mcp.json saved": "mcp.json 已保存",
@@ -235,7 +239,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Move up": "上移",
   Navigate: "导航",
   "nested settings": "嵌套设置",
-  "New session": "新建会话",
+  "New session": "新会话",
   "New Session": "新建会话",
   "New session here": "在此处新建会话",
   "Next branch": "下一个分支",
@@ -258,6 +262,8 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Optional; env/CLI login can stay empty":
     "可选；使用环境变量/CLI 登录时可留空",
   "Open in": "打开方式",
+  "Open in File Explorer": "在资源管理器中打开",
+  "Open in VS Code": "在 VS Code 中打开",
   "Open sessions sidebar": "打开会话侧边栏",
   "Open settings": "打开设置",
   "Open side chat": "打开侧聊",
@@ -344,6 +350,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   Settings: "设置",
   "Settings saved": "设置已保存",
   "Show API key": "显示 API 密钥",
+  "Show in Finder": "在 Finder 中显示",
   "Show thinking stream": "显示思考流",
   "Side Chat": "侧聊",
   "Skills Library": "技能库",
@@ -361,6 +368,8 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Switch to dark mode": "切换到深色模式",
   "Switch to light mode": "切换到浅色模式",
   System: "系统",
+  "Task cancelled": "任务已取消",
+  "Task completed": "任务已完成",
   Tasks: "任务",
   Telemetry: "遥测",
   "Tell the model what to do instead...": "告诉模型改为执行什么...",
@@ -401,6 +410,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   Usage: "用量",
   "Uses Kimi CLI runtime credentials. If you sign in with environment variables or an existing CLI login, leave the API key empty here.":
     "使用 Kimi CLI 运行时凭据。如果通过环境变量或已有 CLI 登录态登录，这里的 API Key 保持为空即可。",
+  "Unable to open working directory": "无法打开工作目录",
   User: "用户",
   Video: "视频",
   "Waiting for approval...": "正在等待批准...",
@@ -409,6 +419,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "What would you like to know?": "想了解什么？",
   "Work dir": "工作目录",
   "Working Directory": "工作目录",
+  "Working directory does not exist": "工作目录不存在",
   Workspace: "工作区",
   "Workspace files": "工作区文件",
   "Workspace files indexed.": "工作区文件已索引。",
@@ -416,6 +427,128 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Write": "写入",
   "Writing files...": "正在写入文件...",
   "[models.*] in config.toml": "config.toml 中的 [models.*]",
+  "Switch model failed": "切换模型失败",
+  "Update thinking mode failed": "更新思考模式失败",
+  "Update thinking effort failed": "更新思考档位失败",
+  "Choose a working directory first": "请先选择工作目录",
+  "Send a message to create a session first": "请先发送消息创建会话",
+  "Swarm mode can be changed from the status bar after entering a session":
+    "Swarm 模式可在进入会话后通过状态栏切换",
+  "Give Kimi a task": "给 Kimi 布置一个任务",
+  "Saved as the global default; idle sessions will restart to apply it.":
+    "已写入全局默认；空闲会话将重启以应用。",
+  "Some busy sessions skipped restart": "部分忙碌会话已跳过重启",
+  "The new configuration will apply after those sessions become idle.":
+    "新配置将在这些会话空闲后生效。",
+  "Querying…": "查询中…",
+  "Drop to upload files": "松开以上传文件",
+  "Pending queue ·": "待发送队列 ·",
+  Clear: "清空",
+  "No matching commands": "没有匹配的命令",
+  "File references": "文件引用",
+  "Upload attachment": "上传附件",
+  Commands: "命令",
+  "Model list": "模型列表",
+  "No models available": "暂无可用模型",
+  "Thinking effort": "思考档位",
+  "Manage configuration in Settings…": "在设置中管理配置…",
+  "Kimi wants to perform an action": "Kimi 请求执行操作",
+  Allow: "允许",
+  "Do not ask again in this session": "本会话不再询问",
+  Reconnect: "重新连接",
+  Summary: "摘要",
+  "… and": "… 还有",
+  lines: "行",
+  "Fork session from this turn": "从此轮分叉会话",
+  "Waiting for model response…": "等待模型响应…",
+  "Kimi has a few questions": "Kimi 想确认几个问题",
+  Submitted: "已提交",
+  "✗ Failed": "✗ 失败",
+  "(no output)": "（无输出）",
+  "Preparing the Kimi Code runtime": "准备 Kimi Code 运行时",
+  "Checking the runtime environment…": "正在检查运行环境…",
+  "Continue anyway": "仍要继续",
+  "Go to download": "前往下载",
+  "Collapse session list": "收起会话列表",
+  "Expand session list": "展开会话列表",
+  "Choose a working directory where Kimi will perform tasks.":
+    "选择一个工作目录，Kimi 会在该目录下执行任务。",
+  "Working directory, for example C:\\projects\\foo": "工作目录，如 C:\\projects\\foo",
+  "Session title": "会话标题",
+  "Confirm rename": "确认重命名",
+  "Cancel rename": "取消重命名",
+  "Restore session": "恢复会话",
+  "Search sessions": "搜索会话",
+  "Bulk manage": "批量管理",
+  "Quick archive": "一键归档",
+  "d ago": "d 以前",
+  Projects: "项目",
+  selected: "已选择",
+  sessions: "个会话",
+  "Kimi will perform tasks in this directory": "Kimi 会在该目录下执行任务",
+  "Enter a path, for example C:\\projects\\foo": "输入路径，如 C:\\projects\\foo",
+  Confirm: "确定",
+  "Loading…": "加载中…",
+  "The current file has unsaved changes. Discard them?":
+    "当前文件有未保存的更改，确定放弃吗？",
+  "Update default model failed": "更新默认模型失败",
+  "Update Thinking failed": "更新 Thinking 失败",
+  "Manage app appearance, Kimi Code configuration, MCP servers, usage, and version information.":
+    "管理应用外观、Kimi Code 配置、MCP Server、用量统计和版本信息。",
+  "Kimi Code sign-in": "Kimi Code 登录",
+  "Signed in successfully; credentials were saved": "登录成功，凭据已写入",
+  "Signed out; credentials were cleared": "已退出登录，凭据已清除",
+  "Global configuration": "全局配置",
+  "The global default for new and restarted sessions. Use the model menu in chat for everyday switching; add or edit model definitions under Config.":
+    "新会话与重启后的全局默认。日常切换请用聊天区模型菜单；在 Config 中添加或编辑模型定义。",
+  "Enable Plan mode by default": "默认开启 Plan 模式",
+  "Enable Thinking by default": "默认开启 Thinking",
+  "Saving…": "保存中…",
+  "Unable to read configuration": "无法读取配置",
+  "Add or edit models, capabilities, and providers. This edits the complete Kimi Code CLI TOML; idle sessions restart after saving.":
+    "添加 / 编辑模型、capabilities 与 provider。直接编辑 Kimi Code CLI 的完整 TOML；保存后空闲会话会重启以应用。",
+  "Manage MCP Server configuration. JSON is validated locally before saving.":
+    "管理 MCP Server 配置。保存前会在本地检查 JSON 格式。",
+  Version: "版本",
+  "Desktop app": "桌面版",
+  "Visit the Kimi Code website": "访问 Kimi Code 官网",
+  "Token usage trend": "Token 用量趋势",
+  "Loading quota…": "额度加载中…",
+  "Current quota unavailable:": "当前额度不可用：",
+  "No quota data returned for this account": "账号未返回配额数据",
+  "Extra Usage this month": "Extra Usage 本月",
+  "· Balance": "· 余额",
+  "Local token usage": "本地 Token 用量",
+  "Scanning session records…": "扫描会话记录中…",
+  "Total Tokens": "总 Tokens",
+  "Cache reads": "Cache 读",
+  "Cache writes": "Cache 写",
+  Scanned: "已扫描",
+  "wire files · matched": "个 wire · 命中",
+  "turn records": "条 turn 记录",
+  "No local usage records yet. LLM calls in new sessions are written to wire.jsonl and will be summarized here.":
+    "暂无本地用量记录。新会话中的 LLM 调用会写入 wire.jsonl，之后可在此汇总。",
+  "By model": "按模型",
+  Total: "合计",
+  "Current Plan quota": "当前 Plan 额度",
+  "No token usage data": "暂无 token 用量数据",
+  "Enter to send · ⇧⏎ for newline": "Enter 发送 · ⇧⏎ 换行",
+  "Workspace panel": "工作区面板",
+  Minimize: "最小化",
+  "No agent tasks in this session": "当前会话还没有代理任务",
+  "Refresh changes": "刷新更改",
+  "No file changes in this session": "当前会话还没有文件更改",
+  "Statistics were read from Git; this turn has no line-level preview.":
+    "已从 Git 读取统计；本轮事件没有可用的行级预览。",
+  "Close panel": "关闭面板",
+  "Approve pending actions": "批准待执行",
+  "Reject pending actions": "拒绝待执行",
+  "Go to parent directory": "返回上级目录",
+  "Refresh files": "刷新文件",
+  "Directory is empty": "目录为空",
+  "No task summary in this session": "当前会话还没有任务摘要",
+  "Current goal": "当前目标",
+  "Files in this turn": "本轮文件",
 };
 
 const EN_US_RESTORE_TRANSLATIONS = Object.entries(ZH_CN_TRANSLATIONS).reduce<
@@ -511,7 +644,7 @@ export function translateUiString(
   language: ResolvedUiLanguage,
 ): string {
   if (language !== "zh-CN") {
-    return value;
+    return restoreUiString(value);
   }
 
   const leading = value.match(/^\s*/)?.[0] ?? "";
@@ -695,10 +828,12 @@ export function UiLanguageProvider({
 }) {
   const [uiLanguage, setUiLanguageState] =
     useState<UiLanguage>(getInitialUiLanguage);
+  const [systemLanguage, setSystemLanguage] =
+    useState<ResolvedUiLanguage>(getSystemLanguage);
 
   const resolvedLanguage = useMemo(
-    () => resolveUiLanguage(uiLanguage),
-    [uiLanguage],
+    () => (uiLanguage === "system" ? systemLanguage : uiLanguage),
+    [systemLanguage, uiLanguage],
   );
 
   const setUiLanguage = useCallback((language: UiLanguage) => {
@@ -718,6 +853,18 @@ export function UiLanguageProvider({
 
     document.documentElement.lang = resolvedLanguage;
   }, [resolvedLanguage, uiLanguage]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || uiLanguage !== "system") {
+      return;
+    }
+
+    const handleLanguageChange = () => {
+      setSystemLanguage(getSystemLanguage());
+    };
+    window.addEventListener("languagechange", handleLanguageChange);
+    return () => window.removeEventListener("languagechange", handleLanguageChange);
+  }, [uiLanguage]);
 
   useEffect(() => {
     if (typeof window === "undefined") {

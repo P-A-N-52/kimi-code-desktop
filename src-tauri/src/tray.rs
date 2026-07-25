@@ -57,11 +57,20 @@ pub fn setup_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Erro
                 if button == MouseButton::Left && button_state == MouseButtonState::Up {
                     let app = tray.app_handle();
                     if let Some(window) = app.get_webview_window("main") {
-                        if window.is_visible().unwrap_or(false) {
-                            let _ = window.hide();
-                        } else {
+                        #[cfg(target_os = "macos")]
+                        {
+                            let _ = window.unminimize();
                             let _ = window.show();
                             let _ = window.set_focus();
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            if window.is_visible().unwrap_or(false) {
+                                let _ = window.hide();
+                            } else {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
                         }
                     }
                 }

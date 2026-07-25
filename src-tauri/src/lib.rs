@@ -6,6 +6,7 @@ pub mod git_diff;
 pub mod global_config;
 pub mod managed_usage;
 pub mod mcp_config;
+pub mod native_menu;
 pub mod notify;
 pub mod oauth_login;
 pub mod runtime_backend;
@@ -22,6 +23,9 @@ pub mod wire_events;
 use tauri::Manager;
 
 pub fn run() {
+    #[cfg(target_os = "macos")]
+    runtime_check::configure_macos_cli_path();
+
     let app = tauri::Builder::default()
         // Register this first so a second launch is intercepted before any
         // other plugin or application state is initialized.
@@ -80,26 +84,39 @@ pub fn run() {
             commands::open_in_editor,
             commands::fetch_managed_usage,
             commands::fetch_usage_stats,
+            native_menu::set_native_ui_language,
         ])
+        .on_menu_event(|app, event| {
+            native_menu::handle_menu_event(app, event.id().as_ref());
+        })
         .setup(|app| {
             let handle = app.handle().clone();
             tray::setup_tray(&handle)?;
+            #[cfg(target_os = "macos")]
+            native_menu::setup_macos_menu(&handle, "en-US")?;
             // Keep the main window hidden until React has mounted and invokes
             // show_window. This avoids exposing a blank webview during startup.
 
             #[cfg(desktop)]
             {
                 use tauri_plugin_global_shortcut::{Code, Modifiers, ShortcutState};
+                #[cfg(target_os = "macos")]
+                let shortcut_text = "super+shift+k";
+                #[cfg(not(target_os = "macos"))]
+                let shortcut_text = "ctrl+shift+k";
+
                 let shortcut_result = tauri_plugin_global_shortcut::Builder::new()
-                    .with_shortcuts(["ctrl+shift+k"])
+                    .with_shortcuts([shortcut_text])
                     .map(|builder| {
                         builder
                             .with_handler(|app, shortcut, event| {
+                                #[cfg(target_os = "macos")]
+                                let modifiers = Modifiers::SUPER | Modifiers::SHIFT;
+                                #[cfg(not(target_os = "macos"))]
+                                let modifiers = Modifiers::CONTROL | Modifiers::SHIFT;
+
                                 if event.state == ShortcutState::Pressed
-                                    && shortcut.matches(
-                                        Modifiers::CONTROL | Modifiers::SHIFT,
-                                        Code::KeyK,
-                                    )
+                                    && shortcut.matches(modifiers, Code::KeyK)
                                 {
                                     if let Some(window) = app.get_webview_window("main") {
                                         if window.is_visible().unwrap_or(false) {
@@ -120,7 +137,7 @@ pub fn run() {
                         }
                     }
                     Err(e) => {
-                        eprintln!("[WARN] Global shortcut ctrl+shift+k is already taken by another application: {}", e);
+                        eprintln!("[WARN] Global shortcut {shortcut_text} is already taken by another application: {e}");
                         eprintln!("[WARN] You can still use the tray icon to show/hide the window.");
                     }
                 }
@@ -138,6 +155,15 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = &event {
+            if let Some(window) = app_handle.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }
+
         if let tauri::RunEvent::ExitRequested { .. } = event {
             let acp_manager = app_handle.state::<acp::AcpProcessManager>();
             acp_manager.stop_all();

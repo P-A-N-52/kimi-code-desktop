@@ -278,6 +278,11 @@ export async function openInEditor(
 	return invoke<void>("open_in_editor", { path, editor: editor ?? "vscode" });
 }
 
+export async function setNativeUiLanguage(language: "en-US" | "zh-CN"): Promise<void> {
+	if (!isTauri()) return;
+	return invoke<void>("set_native_ui_language", { language });
+}
+
 export async function wireConnect(sessionId: string, connectionId: string): Promise<void> {
 	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	return invoke<void>("wire_connect", { sessionId, connectionId });

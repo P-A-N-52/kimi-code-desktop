@@ -55,22 +55,26 @@ export const createMessageId = (prefix: "user" | "assistant"): string => {
 /**
  * Format relative time for session display
  */
-export const formatRelativeTime = (date: Date): string => {
+export const formatRelativeTime = (
+  date: Date,
+  locale: "en-US" | "zh-CN" = "en-US",
+): string => {
   const now = new Date();
   const diff = now.getTime() - date.getTime();
   const minutes = Math.floor(diff / 60000);
+  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
 
   if (minutes < 1) {
-    return "Just now";
+    return locale === "zh-CN" ? "刚刚" : "Just now";
   } else if (minutes < 60) {
-    return `${minutes}m ago`;
+    return formatter.format(-minutes, "minute");
   } else {
     const hours = Math.floor(minutes / 60);
     if (hours < 24) {
-      return `${hours}h ago`;
+      return formatter.format(-hours, "hour");
     } else {
       const days = Math.floor(hours / 24);
-      return `${days}d ago`;
+      return formatter.format(-days, "day");
     }
   }
 };

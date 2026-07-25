@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { isMacOS } from "@/hooks/utils";
+import { useI18n } from "@/lib/i18n";
 import { isTauri, openInEditor, openInExplorer } from "@/lib/tauri-api";
 import { WindowControls } from "@/modules/topbar/window-controls";
 import { IconButton } from "@/ui/icon-button";
@@ -30,6 +32,8 @@ export function Topbar({
   onTogglePanel: () => void;
   onOpenSettings: () => void;
 }) {
+  const { t } = useI18n();
+  const macOS = isMacOS();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -46,7 +50,7 @@ export function Topbar({
   const runNative = async (operation: "explorer" | "editor") => {
     if (!workDir) return;
     if (!isTauri()) {
-      toast("该入口仅在桌面应用中可用");
+      toast(t("该入口仅在桌面应用中可用"));
       return;
     }
     try {
@@ -54,7 +58,7 @@ export function Topbar({
       else await openInEditor(workDir);
       setOpen(false);
     } catch (error) {
-      toast.error("无法打开工作目录", {
+      toast.error(t("无法打开工作目录"), {
         description: error instanceof Error ? error.message : String(error),
       });
     }
@@ -104,7 +108,8 @@ export function Topbar({
               onClick={() => void runNative("explorer")}
               className="flex w-full items-center gap-2 rounded-r1 px-2 py-2 text-left text-[11px] text-muted hover:bg-hover hover:text-foreground disabled:opacity-40"
             >
-              <FolderOpen size={13} /> 在资源管理器中打开
+              <FolderOpen size={13} />{" "}
+              {macOS ? t("在 Finder 中显示") : t("在资源管理器中打开")}
             </button>
             <button
               type="button"
@@ -112,7 +117,7 @@ export function Topbar({
               onClick={() => void runNative("editor")}
               className="flex w-full items-center gap-2 rounded-r1 px-2 py-2 text-left text-[11px] text-muted hover:bg-hover hover:text-foreground disabled:opacity-40"
             >
-              <SquareCode size={13} /> 在 VS Code 中打开
+              <SquareCode size={13} /> {t("在 VS Code 中打开")}
             </button>
             <button
               type="button"
@@ -122,7 +127,7 @@ export function Topbar({
               }}
               className="flex w-full items-center gap-2 rounded-r1 px-2 py-2 text-left text-[11px] text-muted hover:bg-hover hover:text-foreground"
             >
-              <Settings size={13} /> 打开设置
+              <Settings size={13} /> {t("打开设置")}
             </button>
           </div>
         )}

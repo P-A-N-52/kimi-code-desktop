@@ -1,6 +1,7 @@
 import { Copy, Minus, Square, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { isTauri } from "@/lib/tauri-api";
+import { isMacOS } from "@/hooks/utils";
 import { cn } from "@/lib/utils";
 
 async function withWindow(action: (win: {
@@ -39,7 +40,7 @@ export function WindowControls({ className }: { className?: string }) {
 		};
 	}, []);
 
-	if (!isTauri()) return null;
+	if (!isTauri() || isMacOS()) return null;
 
 	return (
 		<div className={cn("flex items-center", className)}>
