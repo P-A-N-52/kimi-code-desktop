@@ -1601,7 +1601,13 @@ mod tests {
 
         let _lock = set_kimi_code_home(&home);
         let messages = replay_session_history(session_id).expect("replay");
-        assert!(messages.is_empty());
+        let parsed: Vec<Value> = messages
+            .iter()
+            .map(|message| serde_json::from_str(message).expect("json"))
+            .collect();
+        // Runtime mode StatusUpdate is always emitted for lazy-connect UIs.
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["params"]["type"], "StatusUpdate");
     }
 
     #[test]
@@ -1611,7 +1617,13 @@ mod tests {
         write_session_layout(&home, "hash3", session_id);
         let _lock = set_kimi_code_home(&home);
         let messages = replay_session_history(session_id).expect("replay");
-        assert!(messages.is_empty());
+        let parsed: Vec<Value> = messages
+            .iter()
+            .map(|message| serde_json::from_str(message).expect("json"))
+            .collect();
+        // Runtime mode StatusUpdate is always emitted for lazy-connect UIs.
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["params"]["type"], "StatusUpdate");
     }
 
     #[test]
@@ -1645,7 +1657,7 @@ mod tests {
             .map(|message| serde_json::from_str(message).expect("json"))
             .collect();
 
-        assert_eq!(parsed.len(), 6);
+        assert_eq!(parsed.len(), 7);
         assert_eq!(parsed[0]["params"]["type"], "TurnBegin");
         assert_eq!(parsed[0]["params"]["payload"]["user_input"], "hello");
         assert_eq!(parsed[1]["params"]["type"], "StepBegin");
@@ -1699,7 +1711,7 @@ mod tests {
             .map(|message| serde_json::from_str(message).expect("json"))
             .collect();
 
-        assert_eq!(parsed.len(), 5);
+        assert_eq!(parsed.len(), 6);
         assert_eq!(parsed[0]["params"]["type"], "TurnBegin");
         assert_eq!(
             parsed[0]["params"]["payload"]["user_input"],
@@ -1753,12 +1765,13 @@ mod tests {
             .map(|message| serde_json::from_str(message).expect("json"))
             .collect();
 
-        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0]["params"]["type"], "TurnBegin");
         assert_eq!(
             parsed[0]["params"]["payload"]["user_input"],
             "<system-reminder>literal user text</system-reminder>"
         );
+        assert_eq!(parsed[1]["params"]["type"], "StatusUpdate");
     }
 
     #[test]
@@ -1792,7 +1805,7 @@ mod tests {
             .map(|message| serde_json::from_str(message).expect("json"))
             .collect();
 
-        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed.len(), 4);
         assert_eq!(parsed[0]["params"]["type"], "TurnBegin");
         assert_eq!(
             parsed[0]["params"]["payload"]["user_input"],
@@ -1827,7 +1840,7 @@ mod tests {
             .map(|message| serde_json::from_str(message).expect("json"))
             .collect();
 
-        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed.len(), 3);
         assert_eq!(parsed[1]["params"]["type"], "SteerInput");
         assert_eq!(
             parsed[1]["params"]["payload"]["user_input"],
