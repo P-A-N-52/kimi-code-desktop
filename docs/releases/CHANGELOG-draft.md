@@ -1,12 +1,12 @@
 # Changelog Draft — since v0.1.9
 
-> 对比范围：`v0.1.9`（`3f430d4`）→ 准备发布 **v0.1.10**（含 shell UX + Agent/Swarm 等 WIP）  
-> 建议正式版：**0.1.10**  
+> 对比范围：`v0.1.9`（`3f430d4`）→ **v0.1.10**  
+> 正式版本：**0.1.10**  
 > 整理日期：2026-07-25
 
 ---
 
-## Kimi Code Desktop v0.1.10（建议）
+## Kimi Code Desktop v0.1.10
 
 相对 **v0.1.9** 的用户可见改动汇总。
 
@@ -82,7 +82,7 @@
 - 新增 `list_work_dir_directory` 等后端能力，支撑 `@` 与工作区浏览
 - 移除 `@fontsource-variable/inter` 依赖；内置 HarmonyOS 字体资源与许可说明
 - 补充多项前端测试与 issue 排期文档（`docs/plans/2026-07-24-issue-triage-roadmap.md`）
-- README 版本号与壳版本对齐说明（`d1264f1`）
+- README 版本号与壳版本对齐说明
 
 ---
 
@@ -91,13 +91,7 @@
 | 项 | 值 |
 |---|---|
 | 上一正式版 / tag | `v0.1.9` @ `3f430d4`（2026-07-23） |
-| 已推送 tip（changelog 起草前） | `5848954` — `feat: sync desktop shell UX progress` |
-| 另含提交 | `d1264f1` — README 版本说明；本 WIP 功能提交；随后 `chore: bump version to 0.1.10` |
-| 建议发布版本 | `0.1.10` |
-| 工作区（起草时） | dirty → 将随 WIP + bump 提交清空；排除 `.tmp-upstream/` |
-
-发布前待办：
-
-1. bump 至 `0.1.10`（`package.json` / `tauri.conf.json` / `Cargo.toml`）
-2. `npm run release:preflight` 通过
-3. push + tag `v0.1.10` / 走既有 release 流程
+| 功能 tip | `a812b86` — `feat: agent/swarm cards, config thinking fix, and session UX polish` |
+| 另含提交 | `d1264f1` README；`5848954` shell UX |
+| `package.json` / Tauri / Cargo | `0.1.10`（随 bump 提交） |
+| 发布版本 | `0.1.10` |
