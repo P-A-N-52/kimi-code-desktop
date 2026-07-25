@@ -509,10 +509,7 @@ pub(crate) fn resolved_runtime_modes(session_id: &str) -> Result<ResolvedRuntime
     })
 }
 
-fn push_runtime_mode_status(
-    messages: &mut Vec<String>,
-    session_id: &str,
-) -> Result<(), String> {
+fn push_runtime_mode_status(messages: &mut Vec<String>, session_id: &str) -> Result<(), String> {
     let modes = resolved_runtime_modes(session_id)?;
     push_event(
         messages,
@@ -1911,9 +1908,7 @@ mod tests {
         .expect("write state");
         fs::write(
             home.join("kimi.json"),
-            format!(
-                r#"{{"work_dirs":[{{"path":"{work_path}"}}]}}"#
-            ),
+            format!(r#"{{"work_dirs":[{{"path":"{work_path}"}}]}}"#),
         )
         .expect("write kimi.json");
 

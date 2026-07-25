@@ -158,11 +158,7 @@ export default defineConfig({
     // Transient/locked paths on Windows can throw EBUSY and kill Vite (and thus
     // tauri beforeDevCommand) when chokidar tries to watch them.
     watch: {
-      ignored: [
-        "**/src-tauri/target/**",
-        "**/.tmp-upstream/**",
-        "**/node_modules/**",
-      ],
+      ignored: ["**/src-tauri/target/**", "**/.tmp-upstream/**", "**/node_modules/**"],
     },
     proxy: {
       "/api": {

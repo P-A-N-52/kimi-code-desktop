@@ -518,9 +518,7 @@ fn thinking_table_mut(parsed: &mut toml::Value) -> &mut toml::map::Map<String, t
     if !thinking.is_table() {
         *thinking = toml::Value::Table(toml::map::Map::new());
     }
-    thinking
-        .as_table_mut()
-        .expect("thinking must be a table")
+    thinking.as_table_mut().expect("thinking must be a table")
 }
 
 fn set_thinking_enabled(parsed: &mut toml::Value, enabled: bool) {

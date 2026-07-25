@@ -265,7 +265,11 @@ fn translate_available_commands_update(update: &Value) -> Vec<String> {
         .enumerate()
         .map(|(index, command)| {
             // Plain string entries (some plugin/skill payloads).
-            if let Some(name) = command.as_str().map(str::trim).filter(|name| !name.is_empty()) {
+            if let Some(name) = command
+                .as_str()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
                 return json!({
                     "name": name,
                     "description": "",
