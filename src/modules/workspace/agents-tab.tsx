@@ -1,7 +1,10 @@
 import { Bot, ChevronRight } from "lucide-react";
 import { useMemo, useState } from "react";
 import { groupAgentTasks, useAgentMonitorStore } from "@/lib/agent-monitor/store";
+import { statusToDotKind } from "@/lib/swarm/swarmCardRows";
 import { cn } from "@/lib/utils";
+import { Expandable } from "@/ui/expandable";
+import { StatusDot } from "@/ui/status-dot";
 
 const STATUS_LABELS = {
   queued: "排队中",
@@ -44,13 +47,8 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
               }
               className="flex w-full items-center gap-2 px-2.5 py-2 text-left hover:bg-hover"
             >
-              <Bot
-                size={13}
-                className={cn(
-                  "shrink-0",
-                  group.status === "running" ? "text-success" : "text-muted",
-                )}
-              />
+              <StatusDot status={statusToDotKind(group.status)} />
+              <Bot size={13} className="shrink-0 text-muted" />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[11.5px] text-foreground">
                   {group.tasks.length > 1
@@ -63,17 +61,21 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
               </div>
               <ChevronRight
                 size={12}
-                className={cn("text-faint transition-transform", open && "rotate-90")}
+                className={cn(
+                  "text-faint transition-transform duration-[160ms] ease-out motion-reduce:transition-none",
+                  open && "rotate-90",
+                )}
               />
             </button>
-            {open && (
+            <Expandable open={open}>
               <div className="space-y-1 border-t border-line p-2">
                 {group.tasks.map((task) => (
                   <div
                     key={`${task.sessionId}:${task.id}`}
-                    className="rounded-r1 bg-surface px-2 py-1.5"
+                    className="rounded-r1 bg-secondary px-2 py-1.5"
                   >
-                    <div className="flex gap-2 text-[10.5px]">
+                    <div className="flex items-center gap-2 text-[10.5px]">
+                      <StatusDot status={statusToDotKind(task.status)} />
                       <span className="font-mono text-bright">{task.agentType || task.kind}</span>
                       <span className="ml-auto text-faint">{STATUS_LABELS[task.status]}</span>
                     </div>
@@ -83,7 +85,7 @@ export function AgentsTab({ sessionId }: { sessionId: string }) {
                   </div>
                 ))}
               </div>
-            )}
+            </Expandable>
           </div>
         );
       })}

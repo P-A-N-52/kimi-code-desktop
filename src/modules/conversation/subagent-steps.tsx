@@ -1,7 +1,9 @@
-import { Check, ChevronRight, LoaderCircle, X } from "lucide-react";
+import { Check, ChevronRight, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { SubagentStep } from "@/hooks/types";
 import { cn } from "@/lib/utils";
+import { Expandable } from "@/ui/expandable";
+import { StatusDot } from "@/ui/status-dot";
 
 function titleCase(value?: string): string {
   if (!value) return "Agent";
@@ -15,19 +17,16 @@ function Step({ step }: { step: SubagentStep }) {
   if (step.kind === "text") {
     return <div className="line-clamp-4 text-muted">{step.text}</div>;
   }
-  const Icon = step.status === "success" ? Check : step.status === "error" ? X : LoaderCircle;
   return (
     <div className="rounded-r1 border border-line bg-background px-2 py-1.5">
       <div className="flex items-center gap-1.5 font-mono text-[10.5px] text-foreground">
-        <Icon
-          size={11}
-          strokeWidth={1.5}
-          className={cn(
-            step.status === "success" && "text-success",
-            step.status === "error" && "text-danger",
-            step.status === "running" && "animate-spin text-faint",
-          )}
-        />
+        {step.status === "success" ? (
+          <Check size={11} strokeWidth={1.5} className="text-success" />
+        ) : step.status === "error" ? (
+          <X size={11} strokeWidth={1.5} className="text-danger" />
+        ) : (
+          <StatusDot status="running" />
+        )}
         <span>{step.toolName}</span>
       </div>
       {step.errorText || step.output ? (
@@ -66,29 +65,28 @@ export function SubagentSteps({
       <button
         type="button"
         aria-label={label}
+        aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
         className="flex w-full items-center gap-2 text-left font-mono text-[10.5px] text-muted"
       >
-        <span
-          className={cn(
-            "size-1.5 rounded-full",
-            running ? "animate-breathe bg-success" : "bg-faint",
-          )}
-        />
+        <StatusDot status={running ? "running" : "ok"} />
         <span>{label}</span>
         <ChevronRight
           size={11}
           strokeWidth={1.5}
-          className={cn("ml-auto transition-transform", open && "rotate-90")}
+          className={cn(
+            "ml-auto transition-transform duration-[160ms] ease-out motion-reduce:transition-none",
+            open && "rotate-90",
+          )}
         />
       </button>
-      {open ? (
+      <Expandable open={open}>
         <div className="mt-2 space-y-1.5 border-l border-line pl-3 text-[11px] leading-relaxed">
           {steps?.map((step, index) => (
             <Step key={`${step.kind}-${index}`} step={step} />
           ))}
         </div>
-      ) : null}
+      </Expandable>
     </div>
   );
 }

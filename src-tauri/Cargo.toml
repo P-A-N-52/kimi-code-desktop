@@ -1,6 +1,6 @@
 [package]
 name = "kimi-code-desktop"
-version = "0.1.9"
+version = "0.1.10"
 description = "Kimi Code 桌面应用 / Kimi Code Desktop App"
 authors = [ "Kimi Team" ]
 license = "Apache-2.0"
@@ -61,3 +61,4 @@ features = []
 
 [dev-dependencies]
 tempfile = "3"
+

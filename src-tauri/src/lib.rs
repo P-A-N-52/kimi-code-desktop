@@ -48,6 +48,7 @@ pub fn run() {
             commands::get_session,
             commands::replay_session_history,
             commands::get_session_swarm_mode,
+            commands::get_session_runtime_modes,
             commands::migrate_session_swarm_mode,
             commands::create_session,
             commands::delete_session,

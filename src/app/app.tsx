@@ -23,6 +23,7 @@ import { ConversationView } from "@/modules/conversation/conversation-view";
 import { ReadinessOverlay } from "@/modules/readiness/readiness-overlay";
 import { AppSidebar } from "@/modules/sessions/app-sidebar";
 import { SettingsDialog, type SettingsTab } from "@/modules/settings/settings-dialog";
+import type { SessionModeDraft } from "@/modules/statusbar/permission-mode";
 import { Topbar } from "@/modules/topbar/topbar";
 import { ChangesPanel, type WorkspaceTab } from "@/modules/workspace/changes-panel";
 import {
@@ -54,6 +55,7 @@ export default function App() {
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("changes");
   const [newSessionWorkDir, setNewSessionWorkDir] = useState("");
   const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
+  const [pendingFirstModes, setPendingFirstModes] = useState<SessionModeDraft | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | undefined>();
   const [runtimeReadiness, setRuntimeReadiness] = useState<RuntimeReadiness | null>(null);
@@ -299,12 +301,14 @@ export default function App() {
   }, [handleNewSession, openSettings]);
 
   const handleSendFirstMessage = useCallback(
-    async (workDir: string, text: string) => {
+    async (workDir: string, text: string, modes: SessionModeDraft | null) => {
       setPendingFirstMessage(text);
+      setPendingFirstModes(modes);
       try {
         await createSession(workDir);
       } catch (err) {
         setPendingFirstMessage(null);
+        setPendingFirstModes(null);
         if (err instanceof DirectoryNotFoundError) {
           toast.error(t("工作目录不存在"), { description: workDir });
         }
@@ -313,6 +317,11 @@ export default function App() {
     },
     [createSession, t],
   );
+
+  const handlePendingFirstMessageSent = useCallback(() => {
+    setPendingFirstMessage(null);
+    setPendingFirstModes(null);
+  }, []);
 
   if (shouldPauseRuntime) {
     return (
@@ -412,13 +421,15 @@ export default function App() {
           <ConversationView
             key={selectedSessionId}
             sessionId={selectedSessionId}
+            workDir={currentSession?.workDir}
             stream={stream}
             onOpenWorkspace={handleOpenWorkspace}
             onUploadFile={uploadSessionFile}
             listDirectory={listSessionDirectory}
             onManageConfig={() => openSettings("config")}
             pendingFirstMessage={pendingFirstMessage}
-            onPendingFirstMessageSent={() => setPendingFirstMessage(null)}
+            pendingFirstModes={pendingFirstModes}
+            onPendingFirstMessageSent={handlePendingFirstMessageSent}
           />
         ) : (
           <NewSessionView

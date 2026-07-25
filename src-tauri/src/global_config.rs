@@ -118,7 +118,8 @@ fn update_global_config_value(
     }
 
     if let Some(thinking) = default_thinking {
-        set_top_level_bool(parsed, "default_thinking", thinking);
+        // CLI ≥0.21 reads `[thinking].enabled`; top-level `default_thinking` is deprecated.
+        set_thinking_enabled(parsed, thinking);
     }
 
     if let Some(effort) = thinking_effort {
@@ -328,10 +329,7 @@ pub(crate) fn build_global_config_json(parsed: &toml::Value) -> Value {
         .and_then(toml::Value::as_str)
         .unwrap_or("")
         .to_string();
-    let default_thinking = parsed
-        .get("default_thinking")
-        .and_then(toml::Value::as_bool)
-        .unwrap_or(false);
+    let default_thinking = configured_thinking_enabled(parsed);
     let default_plan_mode = parsed
         .get("default_plan_mode")
         .and_then(toml::Value::as_bool)
@@ -489,6 +487,49 @@ fn configured_thinking_effort(parsed: &toml::Value) -> Option<&str> {
         .and_then(toml::Value::as_str)
 }
 
+/// Resolve whether Thinking is enabled for new sessions.
+///
+/// Preference order matches Kimi Code CLI ≥0.21:
+/// 1. `[thinking].enabled`
+/// 2. deprecated top-level `default_thinking`
+/// 3. CLI default (`true`)
+fn configured_thinking_enabled(parsed: &toml::Value) -> bool {
+    if let Some(enabled) = parsed
+        .get("thinking")
+        .and_then(|thinking| thinking.get("enabled"))
+        .and_then(toml::Value::as_bool)
+    {
+        return enabled;
+    }
+    if let Some(enabled) = parsed
+        .get("default_thinking")
+        .and_then(toml::Value::as_bool)
+    {
+        return enabled;
+    }
+    true
+}
+
+fn thinking_table_mut(parsed: &mut toml::Value) -> &mut toml::map::Map<String, toml::Value> {
+    let root = parsed.as_table_mut().expect("config root must be a table");
+    let thinking = root
+        .entry("thinking".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    if !thinking.is_table() {
+        *thinking = toml::Value::Table(toml::map::Map::new());
+    }
+    thinking
+        .as_table_mut()
+        .expect("thinking must be a table")
+}
+
+fn set_thinking_enabled(parsed: &mut toml::Value, enabled: bool) {
+    thinking_table_mut(parsed).insert("enabled".to_string(), toml::Value::Boolean(enabled));
+    if let Some(root) = parsed.as_table_mut() {
+        root.remove("default_thinking");
+    }
+}
+
 fn validate_thinking_effort(parsed: &toml::Value, effort: &str) -> Result<(), String> {
     let model_name = selected_model_name(parsed)
         .ok_or_else(|| "Cannot set thinking effort without a selected default model".to_string())?;
@@ -503,20 +544,10 @@ fn validate_thinking_effort(parsed: &toml::Value, effort: &str) -> Result<(), St
 }
 
 fn set_thinking_effort(parsed: &mut toml::Value, effort: &str) {
-    let root = parsed.as_table_mut().expect("config root must be a table");
-    let thinking = root
-        .entry("thinking".to_string())
-        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    if !thinking.is_table() {
-        *thinking = toml::Value::Table(toml::map::Map::new());
-    }
-    thinking
-        .as_table_mut()
-        .expect("thinking must be a table")
-        .insert(
-            "effort".to_string(),
-            toml::Value::String(effort.to_string()),
-        );
+    thinking_table_mut(parsed).insert(
+        "effort".to_string(),
+        toml::Value::String(effort.to_string()),
+    );
 }
 
 fn reconcile_thinking_effort(parsed: &mut toml::Value) {
@@ -547,7 +578,6 @@ mod tests {
     use super::*;
 
     const SAMPLE_CONFIG: &str = r#"default_model = "kimi"
-default_thinking = true
 default_plan_mode = false
 default_permission_mode = "auto"
 
@@ -563,6 +593,7 @@ default_effort = "high"
 support_efforts = ["low", "high", "max"]
 
 [thinking]
+enabled = true
 effort = "max"
 "#;
 
@@ -623,11 +654,86 @@ default_permission_mode = "unexpected"
     #[test]
     fn update_global_config_fields_updates_defaults() {
         let parsed: toml::Value = SAMPLE_CONFIG.parse().expect("sample config parses");
-        let updated = update_fields_on_value(&parsed, None, Some(false), None, Some(true))
+        let mut next = parsed.clone();
+        update_global_config_value(&mut next, None, Some(false), None, Some(true))
             .expect("update succeeds");
+        let updated = build_global_config_json(&next);
 
         assert_eq!(updated["default_thinking"], false);
         assert_eq!(updated["default_plan_mode"], true);
+        assert_eq!(
+            next.get("thinking")
+                .and_then(|thinking| thinking.get("enabled"))
+                .and_then(toml::Value::as_bool),
+            Some(false)
+        );
+        assert!(next.get("default_thinking").is_none());
+    }
+
+    #[test]
+    fn reads_deprecated_default_thinking_when_enabled_missing() {
+        let parsed: toml::Value = r#"default_model = "kimi"
+default_thinking = false
+
+[models.kimi]
+provider = "kimi"
+model = "kimi-k2"
+"#
+        .parse()
+        .expect("sample config parses");
+
+        let config = build_global_config_json(&parsed);
+        assert_eq!(config["default_thinking"], false);
+    }
+
+    #[test]
+    fn thinking_enabled_defaults_true_when_unset() {
+        let parsed: toml::Value = r#"default_model = "kimi"
+
+[models.kimi]
+provider = "kimi"
+model = "kimi-k2"
+"#
+        .parse()
+        .expect("sample config parses");
+
+        let config = build_global_config_json(&parsed);
+        assert_eq!(config["default_thinking"], true);
+    }
+
+    #[test]
+    fn persists_thinking_enabled_to_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _home = crate::test_env::lock::set_kimi_code_home(dir.path());
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"default_model = "kimi"
+
+[models.kimi]
+provider = "kimi"
+model = "kimi-k2"
+capabilities = ["thinking"]
+"#,
+        )
+        .expect("config written");
+
+        let updated = update_global_config_fields(None, Some(false), None, None)
+            .expect("toggle thinking off");
+        assert_eq!(updated["default_thinking"], false);
+
+        let on_disk: toml::Value = fs::read_to_string(&path)
+            .expect("config readable")
+            .parse()
+            .expect("valid toml");
+        assert_eq!(
+            on_disk
+                .get("thinking")
+                .and_then(|thinking| thinking.get("enabled"))
+                .and_then(toml::Value::as_bool),
+            Some(false)
+        );
+        assert!(on_disk.get("default_thinking").is_none());
     }
 
     #[test]

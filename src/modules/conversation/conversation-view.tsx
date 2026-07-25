@@ -16,7 +16,11 @@ import {
   type CommandResultPanelState,
 } from "@/modules/composer/command-result-panel";
 import { Composer, type QueuedPrompt } from "@/modules/composer/composer";
-import { shouldAutoApprove } from "@/modules/statusbar/permission-mode";
+import { WorkDirPicker } from "@/modules/sessions/work-dir-picker";
+import {
+  shouldAutoApprove,
+  type SessionModeDraft,
+} from "@/modules/statusbar/permission-mode";
 import { StatusStrip } from "@/modules/statusbar/status-strip";
 import type { WorkspaceTab } from "@/modules/workspace/changes-panel";
 import { MessageList } from "./message-list";
@@ -26,21 +30,26 @@ const composerStateBySession = new Map<string, SessionComposerState>();
 
 export function ConversationView({
   sessionId,
+  workDir,
   stream,
   onOpenWorkspace,
   onUploadFile,
   onManageConfig,
   listDirectory,
   pendingFirstMessage,
+  pendingFirstModes,
   onPendingFirstMessageSent,
 }: {
   sessionId: string;
+  /** Session work directory — shown fixed above the composer (not selectable). */
+  workDir?: string | null;
   stream: UseSessionStreamReturn;
   onOpenWorkspace: (tab?: WorkspaceTab) => void;
   onUploadFile: (sessionId: string, file: File) => Promise<UploadSessionFileResponse>;
   onManageConfig?: () => void;
   listDirectory?: (sessionId: string, path?: string) => Promise<SessionFileEntry[]>;
   pendingFirstMessage?: string | null;
+  pendingFirstModes?: SessionModeDraft | null;
   onPendingFirstMessageSent?: () => void;
 }) {
   const { messages, respondToApproval } = stream;
@@ -167,6 +176,7 @@ export function ConversationView({
     [stream],
   );
 
+  const sendInFlightRef = useRef(false);
   const send = useCallback(
     (textOverride?: string) => {
       const text = (textOverride ?? draft).trim();
@@ -188,22 +198,39 @@ export function ConversationView({
         setQueue((current) => [...current, { id: crypto.randomUUID(), text }]);
         return;
       }
-      void stream.sendMessage(text).then((outcome) => {
-        if (outcome?.kind === "info-panel") {
-          setCommandResult({
-            command: outcome.command,
-            content: outcome.content,
-            loading: false,
-          });
-        }
-      });
+      // Sync guard: `busy` lags one render behind the first sendMessage call.
+      if (sendInFlightRef.current) return;
+      sendInFlightRef.current = true;
+      void stream
+        .sendMessage(text)
+        .then((outcome) => {
+          if (outcome?.kind === "info-panel") {
+            setCommandResult({
+              command: outcome.command,
+              content: outcome.content,
+              loading: false,
+            });
+          }
+        })
+        .finally(() => {
+          sendInFlightRef.current = false;
+        });
     },
     [busy, draft, setDraft, setQueue, showInfoPanel, stream],
   );
 
+  // Dedupe queue flushes: React StrictMode re-runs effects with the same
+  // closed-over queue, which would otherwise prompt twice.
+  const flushedQueueIdsRef = useRef(new Set<string>());
+  useEffect(() => {
+    flushedQueueIdsRef.current.clear();
+  }, [sessionId]);
+
   useEffect(() => {
     if (stream.status !== "ready" || queue.length === 0) return;
-    const next = queue[0];
+    const next = queue.find((item) => !flushedQueueIdsRef.current.has(item.id));
+    if (!next) return;
+    flushedQueueIdsRef.current.add(next.id);
     setQueue((current) => current.filter((item) => item.id !== next.id));
     void stream.sendMessage(next.text).then((outcome) => {
       if (outcome?.kind === "info-panel") {
@@ -214,19 +241,27 @@ export function ConversationView({
         });
       }
     });
-  }, [queue, setQueue, stream]);
+  }, [queue, setQueue, stream.sendMessage, stream.status]);
 
-  const sentPendingRef = useRef(false);
-  useEffect(() => {
-    sentPendingRef.current = false;
-  }, [sessionId]);
-
+  // Keyed by session+text so StrictMode's effect re-run cannot wipe a boolean
+  // guard (the old sessionId effect reset sentPendingRef to false mid-cycle).
+  const sentPendingKeyRef = useRef<string | null>(null);
   useEffect(() => {
     const text = pendingFirstMessage?.trim();
-    if (!text || sentPendingRef.current) return;
-    sentPendingRef.current = true;
+    if (!text) return;
+    const sendKey = `${sessionId}\0${text}`;
+    if (sentPendingKeyRef.current === sendKey) return;
+    sentPendingKeyRef.current = sendKey;
+    // Apply new-session draft modes before the first prompt so ACP / prompt
+    // params see the same permission / plan / swarm choices from the start strip.
+    if (pendingFirstModes) {
+      stream.sendSetPermissionMode(pendingFirstModes.permissionMode);
+      stream.sendSetPlanMode(pendingFirstModes.planMode);
+      stream.sendSetSwarmMode(pendingFirstModes.swarmMode);
+    }
+    // Clear parent pending immediately so a remount/re-run cannot retry.
+    onPendingFirstMessageSent?.();
     void stream.sendMessage(text).then((outcome) => {
-      onPendingFirstMessageSent?.();
       if (outcome?.kind === "info-panel") {
         setCommandResult({
           command: outcome.command,
@@ -235,7 +270,16 @@ export function ConversationView({
         });
       }
     });
-  }, [onPendingFirstMessageSent, pendingFirstMessage, sessionId, stream]);
+  }, [
+    onPendingFirstMessageSent,
+    pendingFirstMessage,
+    pendingFirstModes,
+    sessionId,
+    stream.sendMessage,
+    stream.sendSetPermissionMode,
+    stream.sendSetPlanMode,
+    stream.sendSetSwarmMode,
+  ]);
 
   const streamDead = stream.status === "error";
 
@@ -276,6 +320,11 @@ export function ConversationView({
               onClose={() => setCommandResult(null)}
             />
           )}
+          {workDir?.trim() ? (
+            <div className="mb-2 flex justify-start">
+              <WorkDirPicker workDir={workDir.trim()} readOnly />
+            </div>
+          ) : null}
           <Composer
             sessionId={sessionId}
             draft={draft}

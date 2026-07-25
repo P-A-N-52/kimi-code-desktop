@@ -160,7 +160,7 @@ import {
   getGlobalConfig,
   getKimiCliVersion,
   getSession,
-  getSessionSwarmMode,
+  getSessionRuntimeModes,
   isTauri,
   migrateSessionSwarmMode,
   onWireMessage,
@@ -268,12 +268,29 @@ async function migrateLegacySwarmModes(): Promise<Map<string, boolean>> {
   return migrated;
 }
 
-async function loadSessionSwarmMode(sessionId: string): Promise<boolean> {
+type PersistedSessionModes = {
+  planMode: boolean;
+  permissionMode: PermissionMode;
+  swarmMode: boolean;
+};
+
+async function loadSessionRuntimeModes(
+  sessionId: string,
+): Promise<PersistedSessionModes> {
   const migrated = await migrateLegacySwarmModes();
+  const modes = await getSessionRuntimeModes(sessionId);
   if (migrated.has(sessionId)) {
-    return migrated.get(sessionId) ?? false;
+    return {
+      planMode: modes.planMode,
+      permissionMode: modes.permissionMode,
+      swarmMode: migrated.get(sessionId) ?? false,
+    };
   }
-  return getSessionSwarmMode(sessionId);
+  return {
+    planMode: modes.planMode,
+    permissionMode: modes.permissionMode,
+    swarmMode: modes.swarmMode,
+  };
 }
 
 type InlineThinkParseState = {
@@ -4801,6 +4818,21 @@ export function useSessionStream(
         return;
       }
 
+      // Defense against double-fire from StrictMode effects, unstable effect
+      // deps, or rapid double Enter/click before React re-renders `busy`.
+      if (
+        pendingMessageRef.current !== null ||
+        promptRequestIdsRef.current.size > 0 ||
+        awaitingFirstResponseRef.current ||
+        statusRef.current === "submitted" ||
+        statusRef.current === "streaming"
+      ) {
+        console.warn(
+          "[SessionStream] Ignoring duplicate send while a prompt is in flight",
+        );
+        return;
+      }
+
       clearStepRetryStatus();
       resetStepState();
       setError(null);
@@ -4941,23 +4973,43 @@ export function useSessionStream(
         return;
       }
 
-      let persistedSwarmMode = false;
+      let persistedModes: PersistedSessionModes = {
+        planMode: false,
+        permissionMode: "manual",
+        swarmMode: false,
+      };
       if (isTauri()) {
         try {
-          persistedSwarmMode = await loadSessionSwarmMode(sessionId);
+          persistedModes = await loadSessionRuntimeModes(sessionId);
           if (cancelled) {
             return;
           }
-          setSwarmMode(persistedSwarmMode);
-          swarmModeRef.current = persistedSwarmMode;
+          setPlanMode(persistedModes.planMode);
+          planModeRef.current = persistedModes.planMode;
+          setPermissionMode(persistedModes.permissionMode);
+          permissionModeRef.current = persistedModes.permissionMode;
+          setSwarmMode(persistedModes.swarmMode);
+          swarmModeRef.current = persistedModes.swarmMode;
         } catch (error) {
-          console.warn("[SessionStream] Failed to load session Swarm mode:", error);
+          console.warn(
+            "[SessionStream] Failed to load session runtime modes:",
+            error,
+          );
         }
       }
 
       if (cancelled) {
         return;
       }
+
+      const applyPersistedModes = () => {
+        setPlanMode(persistedModes.planMode);
+        planModeRef.current = persistedModes.planMode;
+        setPermissionMode(persistedModes.permissionMode);
+        permissionModeRef.current = persistedModes.permissionMode;
+        setSwarmMode(persistedModes.swarmMode);
+        swarmModeRef.current = persistedModes.swarmMode;
+      };
 
       // In Tauri, opening a completed session should not pay the full worker
       // startup cost. Read persisted history first; connect the worker only for
@@ -4996,8 +5048,10 @@ export function useSessionStream(
             preserveMessagesOnConnectRef.current = true;
             skipReplayOnConnectRef.current = true;
           }
-          setSwarmMode(persistedSwarmMode);
-          swarmModeRef.current = persistedSwarmMode;
+          // History StatusUpdate may restore modes; re-apply the resolved
+          // snapshot so permission / plan / swarm stay consistent if replay
+          // omitted them.
+          applyPersistedModes();
         } catch (err) {
           if (cancelled) {
             return;
@@ -5009,13 +5063,13 @@ export function useSessionStream(
           isReplayingRef.current = false;
           setIsReplayingHistory(false);
           setStatus("ready");
+          applyPersistedModes();
         }
         return;
       }
 
       connectRef.current();
-      setSwarmMode(persistedSwarmMode);
-      swarmModeRef.current = persistedSwarmMode;
+      applyPersistedModes();
     };
 
     void startSession();

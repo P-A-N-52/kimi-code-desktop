@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useGlobalConfig } from "@/hooks/useGlobalConfig";
 import { notifyGlobalConfigApplied } from "@/lib/config-update-toast";
@@ -20,6 +20,11 @@ import {
 import { Composer } from "@/modules/composer/composer";
 import type { FileMentionEntry } from "@/modules/composer/file-mentions";
 import { WorkDirPicker } from "@/modules/sessions/work-dir-picker";
+import {
+	parsePermissionMode,
+	type SessionModeDraft,
+} from "@/modules/statusbar/permission-mode";
+import { StatusStrip } from "@/modules/statusbar/status-strip";
 
 const DRAFT_SESSION_PREFIX = "__new-session__:";
 
@@ -33,14 +38,33 @@ export function NewSessionView({
 	workDir: string;
 	onWorkDirChange: (dir: string) => void;
 	fetchWorkDirs: () => Promise<string[]>;
-	onSendFirstMessage: (workDir: string, text: string) => Promise<void>;
+	onSendFirstMessage: (
+		workDir: string,
+		text: string,
+		modes: SessionModeDraft | null,
+	) => Promise<void>;
 	onManageConfig?: () => void;
 }) {
 	const [draft, setDraft] = useState("");
 	const [recentDirs, setRecentDirs] = useState<string[]>([]);
 	const [creating, setCreating] = useState(false);
+	const creatingRef = useRef(false);
 	const [commandResult, setCommandResult] = useState<CommandResultPanelState | null>(null);
 	const { config, update, isUpdating } = useGlobalConfig();
+
+	const [permissionMode, setPermissionMode] = useState<SessionModeDraft["permissionMode"]>("manual");
+	const [planMode, setPlanMode] = useState(false);
+	const [swarmMode, setSwarmMode] = useState(false);
+	const [modesSeeded, setModesSeeded] = useState(false);
+
+	// Seed toggles once from global defaults so the strip matches what a new
+	// session would resolve to before any wire-log overrides exist.
+	useEffect(() => {
+		if (!config || modesSeeded) return;
+		setPermissionMode(parsePermissionMode(config.defaultPermissionMode));
+		setPlanMode(Boolean(config.defaultPlanMode));
+		setModesSeeded(true);
+	}, [config, modesSeeded]);
 
 	const mentionSessionKey = workDir.trim()
 		? `${DRAFT_SESSION_PREFIX}${workDir.trim()}`
@@ -117,7 +141,8 @@ export function NewSessionView({
 	const send = useCallback(
 		async (textOverride?: string) => {
 			const text = (textOverride ?? draft).trim();
-			if (!text || creating) return;
+			// Ref guard: state `creating` is async and cannot stop double Enter/click.
+			if (!text || creatingRef.current) return;
 
 			const dir = workDir.trim();
 			if (!dir) {
@@ -137,10 +162,7 @@ export function NewSessionView({
 					return;
 				}
 				toast.message("请先发送消息创建会话", {
-					description:
-						slashDecision.name === "swarm"
-							? "Swarm 模式可在进入会话后通过状态栏切换"
-							: `/${slashDecision.name} 需要在会话中使用`,
+					description: `/${slashDecision.name} 需要在会话中使用`,
 				});
 				return;
 			}
@@ -149,17 +171,35 @@ export function NewSessionView({
 				return;
 			}
 
+			creatingRef.current = true;
 			setCreating(true);
 			if (textOverride === undefined) setDraft("");
 			try {
-				await onSendFirstMessage(dir, text);
+				// Only forward draft modes after config seed; otherwise ACP
+				// global defaults would be clobbered by placeholder local state.
+				await onSendFirstMessage(
+					dir,
+					text,
+					modesSeeded
+						? { permissionMode, planMode, swarmMode }
+						: null,
+				);
 			} catch {
 				if (textOverride === undefined) setDraft(text);
 			} finally {
+				creatingRef.current = false;
 				setCreating(false);
 			}
 		},
-		[creating, draft, onSendFirstMessage, workDir],
+		[
+			draft,
+			modesSeeded,
+			onSendFirstMessage,
+			permissionMode,
+			planMode,
+			swarmMode,
+			workDir,
+		],
 	);
 
 	return (
@@ -196,7 +236,7 @@ export function NewSessionView({
 						busy={creating}
 						canCancel={false}
 						sendDisabled={creating}
-						planMode={false}
+						planMode={planMode}
 						slashCommands={PRE_SESSION_SLASH_COMMANDS}
 						queue={[]}
 						onRemoveQueued={() => {}}
@@ -219,6 +259,26 @@ export function NewSessionView({
 						onToggleThinking={(enabled) => void handleToggleThinking(enabled)}
 						onSelectThinkingEffort={(effort) => void handleSelectThinkingEffort(effort)}
 						onManageConfig={onManageConfig}
+					/>
+					<StatusStrip
+						permissionMode={permissionMode}
+						onPermissionModeChange={(mode) => {
+							setModesSeeded(true);
+							setPermissionMode(mode);
+						}}
+						planMode={planMode}
+						swarmMode={swarmMode}
+						onPlanModeChange={(enabled) => {
+							setModesSeeded(true);
+							setPlanMode(enabled);
+						}}
+						onSwarmModeChange={(enabled) => {
+							setModesSeeded(true);
+							setSwarmMode(enabled);
+						}}
+						modeControlsDisabled={creating}
+						contextUsage={0}
+						tokenUsage={null}
 					/>
 				</div>
 			</div>

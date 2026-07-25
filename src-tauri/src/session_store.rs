@@ -475,6 +475,58 @@ pub(crate) struct PersistedRuntimeModes {
     pub permission_mode: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedRuntimeModes {
+    pub plan_mode: bool,
+    pub permission_mode: String,
+    pub swarm_mode: bool,
+}
+
+/// Resolve Plan / permission / Swarm the same way ACP does at worker start:
+/// session wire-log state first, then global defaults, with Swarm from desktop
+/// custom session state.
+pub(crate) fn resolved_runtime_modes(session_id: &str) -> Result<ResolvedRuntimeModes, String> {
+    let defaults = crate::global_config::runtime_mode_defaults().unwrap_or_default();
+    let persisted = persisted_runtime_modes(session_id).unwrap_or_else(|err| {
+        eprintln!("[session_store] failed to read persisted runtime modes for {session_id}: {err}");
+        PersistedRuntimeModes::default()
+    });
+    let permission_mode = persisted
+        .permission_mode
+        .unwrap_or_else(|| defaults.permission_mode.clone());
+    let permission_mode = match permission_mode.as_str() {
+        "auto" | "yolo" | "manual" => permission_mode,
+        _ => "manual".to_string(),
+    };
+    let swarm_mode = session_swarm_mode(session_id).unwrap_or_else(|err| {
+        eprintln!("[session_store] failed to read persisted swarm mode for {session_id}: {err}");
+        false
+    });
+    Ok(ResolvedRuntimeModes {
+        plan_mode: persisted.plan_mode.unwrap_or(defaults.plan_mode),
+        permission_mode,
+        swarm_mode,
+    })
+}
+
+fn push_runtime_mode_status(
+    messages: &mut Vec<String>,
+    session_id: &str,
+) -> Result<(), String> {
+    let modes = resolved_runtime_modes(session_id)?;
+    push_event(
+        messages,
+        "StatusUpdate",
+        json!({
+            "context_usage": null,
+            "token_usage": null,
+            "plan_mode": modes.plan_mode,
+            "permission_mode": modes.permission_mode,
+            "swarm_mode": modes.swarm_mode,
+        }),
+    )
+}
+
 /// Read the latest independent Plan and permission states persisted by Kimi Code.
 ///
 /// ACP exposes these as mutually exclusive mode IDs, but Kimi's native session
@@ -635,7 +687,10 @@ pub fn merge_local_metadata_into_legacy(session: &mut Value, session_id: &str) {
 pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
     let session_dir = find_session_dir_by_id_or_err(session_id)?;
     let Some(wire_file) = wire_jsonl_path(&session_dir) else {
-        return Ok(Vec::new());
+        // Lazy-connect path never starts ACP, so still surface persisted modes.
+        let mut messages = Vec::new();
+        push_runtime_mode_status(&mut messages, session_id)?;
+        return Ok(messages);
     };
 
     let content = fs::read_to_string(&wire_file)
@@ -722,6 +777,10 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
             }),
         )?;
     }
+
+    // Emit after usage so lazy-connect UIs restore permission / plan / swarm
+    // without waiting for an ACP worker (which may never start until a prompt).
+    push_runtime_mode_status(&mut messages, session_id)?;
 
     Ok(messages)
 }
@@ -1273,18 +1332,34 @@ mod tests {
                 "\n",
                 r#"{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":20,"output":5,"inputCacheRead":300,"inputCacheCreation":0},"usageScope":"turn","time":2}"#,
                 "\n",
+                r#"{"type":"permission.set_mode","mode":"yolo"}"#,
+                "\n",
+                r#"{"type":"plan_mode.enter"}"#,
+                "\n",
             ),
         )
         .expect("write wire");
+        update_session_swarm_mode(session_id, true).expect("enable swarm");
 
         let messages = replay_session_history(session_id).expect("replay");
         assert!(!messages.is_empty());
-        let last = messages.last().expect("last message");
-        let parsed: Value = serde_json::from_str(last).expect("json");
-        assert_eq!(parsed["method"], "event");
-        assert_eq!(parsed["params"]["type"], "StatusUpdate");
-        assert_eq!(parsed["params"]["payload"]["context_tokens"], 320);
-        assert_eq!(parsed["params"]["payload"]["token_usage"]["output"], 5);
+        let status_updates: Vec<Value> = messages
+            .iter()
+            .filter_map(|raw| serde_json::from_str::<Value>(raw).ok())
+            .filter(|parsed| parsed["params"]["type"] == "StatusUpdate")
+            .collect();
+        assert!(status_updates.len() >= 2, "expected usage + mode status");
+
+        let usage = status_updates
+            .iter()
+            .find(|parsed| parsed["params"]["payload"]["context_tokens"] == 320)
+            .expect("usage status");
+        assert_eq!(usage["params"]["payload"]["token_usage"]["output"], 5);
+
+        let modes = status_updates.last().expect("mode status");
+        assert_eq!(modes["params"]["payload"]["plan_mode"], true);
+        assert_eq!(modes["params"]["payload"]["permission_mode"], "yolo");
+        assert_eq!(modes["params"]["payload"]["swarm_mode"], true);
     }
 
     #[test]
@@ -1526,7 +1601,13 @@ mod tests {
 
         let _lock = set_kimi_code_home(&home);
         let messages = replay_session_history(session_id).expect("replay");
-        assert!(messages.is_empty());
+        let parsed: Vec<Value> = messages
+            .iter()
+            .map(|message| serde_json::from_str(message).expect("json"))
+            .collect();
+        // Runtime mode StatusUpdate is always emitted for lazy-connect UIs.
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["params"]["type"], "StatusUpdate");
     }
 
     #[test]
@@ -1536,7 +1617,13 @@ mod tests {
         write_session_layout(&home, "hash3", session_id);
         let _lock = set_kimi_code_home(&home);
         let messages = replay_session_history(session_id).expect("replay");
-        assert!(messages.is_empty());
+        let parsed: Vec<Value> = messages
+            .iter()
+            .map(|message| serde_json::from_str(message).expect("json"))
+            .collect();
+        // Runtime mode StatusUpdate is always emitted for lazy-connect UIs.
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["params"]["type"], "StatusUpdate");
     }
 
     #[test]
@@ -1570,7 +1657,7 @@ mod tests {
             .map(|message| serde_json::from_str(message).expect("json"))
             .collect();
 
-        assert_eq!(parsed.len(), 6);
+        assert_eq!(parsed.len(), 7);
         assert_eq!(parsed[0]["params"]["type"], "TurnBegin");
         assert_eq!(parsed[0]["params"]["payload"]["user_input"], "hello");
         assert_eq!(parsed[1]["params"]["type"], "StepBegin");
@@ -1624,7 +1711,7 @@ mod tests {
             .map(|message| serde_json::from_str(message).expect("json"))
             .collect();
 
-        assert_eq!(parsed.len(), 5);
+        assert_eq!(parsed.len(), 6);
         assert_eq!(parsed[0]["params"]["type"], "TurnBegin");
         assert_eq!(
             parsed[0]["params"]["payload"]["user_input"],
@@ -1678,12 +1765,13 @@ mod tests {
             .map(|message| serde_json::from_str(message).expect("json"))
             .collect();
 
-        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0]["params"]["type"], "TurnBegin");
         assert_eq!(
             parsed[0]["params"]["payload"]["user_input"],
             "<system-reminder>literal user text</system-reminder>"
         );
+        assert_eq!(parsed[1]["params"]["type"], "StatusUpdate");
     }
 
     #[test]
@@ -1717,7 +1805,7 @@ mod tests {
             .map(|message| serde_json::from_str(message).expect("json"))
             .collect();
 
-        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed.len(), 4);
         assert_eq!(parsed[0]["params"]["type"], "TurnBegin");
         assert_eq!(
             parsed[0]["params"]["payload"]["user_input"],
@@ -1752,7 +1840,7 @@ mod tests {
             .map(|message| serde_json::from_str(message).expect("json"))
             .collect();
 
-        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed.len(), 3);
         assert_eq!(parsed[1]["params"]["type"], "SteerInput");
         assert_eq!(
             parsed[1]["params"]["payload"]["user_input"],

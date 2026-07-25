@@ -27,6 +27,12 @@ describe("WorkDirPicker", () => {
 		fireEvent.click(screen.getByRole("button", { name: /beta/i }));
 		expect(onWorkDirChange).toHaveBeenCalledWith("C:\\projects\\beta");
 	});
+
+	it("renders a fixed label without a selectable button when readOnly", () => {
+		render(<WorkDirPicker workDir="C:\\projects\\my-app" readOnly />);
+		expect(screen.getByLabelText(/工作目录 my-app/i)).toBeTruthy();
+		expect(screen.queryByRole("button")).toBeNull();
+	});
 });
 
 describe("workDirBasename", () => {

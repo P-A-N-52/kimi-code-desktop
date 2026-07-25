@@ -2,7 +2,10 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useTheme } from "@/hooks/use-theme";
 import { useGlobalConfig } from "@/hooks/useGlobalConfig";
-import { notifyGlobalConfigApplied } from "@/lib/config-update-toast";
+import {
+  notifyGlobalConfigApplied,
+  notifyTextConfigSaved,
+} from "@/lib/config-update-toast";
 import { useI18n, type UiLanguage } from "@/lib/i18n";
 import { openKimiCodeWebsite } from "@/lib/kimi-code-link";
 import {
@@ -17,6 +20,7 @@ import {
   updateConfigTomlFile,
   updateMcpConfigFile,
 } from "@/lib/settings-api";
+import type { UpdateTextConfigResponse } from "@/lib/tauri-api";
 import { cn } from "@/lib/utils";
 import { desktopVersion, resolveKimiCliVersion } from "@/lib/version";
 import { Button } from "@/ui/button";
@@ -60,7 +64,7 @@ function TextConfigEditor({
   description: string;
   language: "toml" | "json";
   load: () => Promise<{ content: string; path: string }>;
-  save: (content: string) => Promise<unknown>;
+  save: (content: string) => Promise<UpdateTextConfigResponse>;
   onDirtyChange: (dirty: boolean) => void;
 }) {
   const [content, setContent] = useState("");
@@ -109,9 +113,12 @@ function TextConfigEditor({
     }
     setSaving(true);
     try {
-      await save(content);
+      const resp = await save(content);
+      if (!resp.success) {
+        throw new Error(resp.error || `保存 ${label} 失败`);
+      }
       setSavedContent(content);
-      toast.success(`${label} 已保存`);
+      notifyTextConfigSaved(resp, `${label} 已保存`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -120,8 +127,8 @@ function TextConfigEditor({
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="mb-3">
+    <div className="flex h-full min-h-0 flex-1 flex-col">
+      <div className="mb-3 shrink-0">
         <p className="text-[12.5px] text-foreground">{description}</p>
         <p className="mt-1 truncate font-mono text-[10px] text-faint">{path || "读取中…"}</p>
       </div>
@@ -132,13 +139,16 @@ function TextConfigEditor({
           value={content}
           onChange={(event) => setContent(event.target.value)}
           spellCheck={false}
-          className="min-h-72 flex-1 resize-none rounded-r2 border border-line bg-background p-3 font-mono text-[11px] leading-relaxed text-foreground outline-none focus:border-line-strong"
+          disabled={saving}
+          className="min-h-0 w-full flex-1 resize-none rounded-r2 border border-line bg-background p-3 font-mono text-[11px] leading-relaxed text-foreground outline-none focus:border-line-strong disabled:opacity-60"
         />
       )}
       {error && (
-        <p className="mt-2 whitespace-pre-wrap font-mono text-[10.5px] text-danger">{error}</p>
+        <p className="mt-2 shrink-0 whitespace-pre-wrap font-mono text-[10.5px] text-danger">
+          {error}
+        </p>
       )}
-      <div className="mt-3 flex items-center">
+      <div className="mt-3 flex shrink-0 items-center">
         <span className="font-mono text-[10px] text-faint">
           {content === savedContent ? "没有未保存的更改" : "有未保存的更改"}
         </span>
@@ -278,7 +288,14 @@ export function SettingsDialog({
               </button>
             ))}
           </nav>
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto pr-1">
+          <div
+            className={cn(
+              "flex min-h-0 min-w-0 flex-1 flex-col pr-1",
+              tab === "config" || tab === "mcp"
+                ? "overflow-hidden"
+                : "overflow-y-auto",
+            )}
+          >
             {tab === "general" && (
               <>
                 <Section title={t("外观")}>

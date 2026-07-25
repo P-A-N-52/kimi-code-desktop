@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { shouldAutoApprove } from "./permission-mode";
+import { parsePermissionMode, shouldAutoApprove } from "./permission-mode";
+
+describe("parsePermissionMode", () => {
+	it("accepts known modes and maps legacy ask to manual", () => {
+		expect(parsePermissionMode("manual")).toBe("manual");
+		expect(parsePermissionMode("yolo")).toBe("yolo");
+		expect(parsePermissionMode("auto")).toBe("auto");
+		expect(parsePermissionMode("ask")).toBe("manual");
+		expect(parsePermissionMode("unexpected")).toBe("manual");
+		expect(parsePermissionMode(undefined)).toBe("manual");
+	});
+});
 
 describe("shouldAutoApprove", () => {
 	it("manual 模式全部不自动批准", () => {

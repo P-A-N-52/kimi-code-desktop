@@ -83,6 +83,23 @@
 	@keyframes breathe {
 		50% { opacity: 0.35; }
 	}
+	/* Soft pulse ring for running StatusDot (kimi-web kw-dot-pulse parity). */
+	--animate-dot-pulse: kw-dot-pulse 1.4s ease-out infinite;
+	@keyframes kw-dot-pulse {
+		0% {
+			box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 40%, transparent);
+		}
+		100% {
+			box-shadow: 0 0 0 6px transparent;
+		}
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.animate-dot-pulse,
+	.animate-breathe {
+		animation: none !important;
+	}
 }
 
 @layer base {

@@ -155,6 +155,15 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     allowedHosts: true,
+    // Transient/locked paths on Windows can throw EBUSY and kill Vite (and thus
+    // tauri beforeDevCommand) when chokidar tries to watch them.
+    watch: {
+      ignored: [
+        "**/src-tauri/target/**",
+        "**/.tmp-upstream/**",
+        "**/node_modules/**",
+      ],
+    },
     proxy: {
       "/api": {
         target: process.env.VITE_API_TARGET ?? "http://127.0.0.1:5494",

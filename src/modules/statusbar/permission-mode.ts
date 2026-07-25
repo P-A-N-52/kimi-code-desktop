@@ -2,6 +2,19 @@ import type { PermissionMode } from "@/hooks/wireTypes";
 
 export type { PermissionMode } from "@/hooks/wireTypes";
 
+/** Draft modes chosen on the new-session screen before ACP connects. */
+export type SessionModeDraft = {
+	permissionMode: PermissionMode;
+	planMode: boolean;
+	swarmMode: boolean;
+};
+
+export function parsePermissionMode(value: string | null | undefined): PermissionMode {
+	if (value === "yolo" || value === "auto" || value === "manual") return value;
+	if (value === "ask") return "manual";
+	return "manual";
+}
+
 /**
  * Client-side auto-approve for approval cards that still reach the UI.
  * Source of truth for the active mode is Kimi Code itself:

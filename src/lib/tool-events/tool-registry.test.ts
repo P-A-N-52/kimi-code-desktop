@@ -28,4 +28,24 @@ describe("tool registry", () => {
     expect(isWriteTool("Write")).toBe(true);
     expect(isTodoTool("TodoList")).toBe(true);
   });
+
+  it("registers AgentSwarm under the agent category", () => {
+    expect(getToolPresentation("AgentSwarm")).toEqual({
+      canonicalName: "AgentSwarm",
+      displayName: "Swarm",
+      category: "agent",
+    });
+    expect(getToolPresentation("agentswarm")).toMatchObject({
+      canonicalName: "AgentSwarm",
+      displayName: "Swarm",
+    });
+  });
+
+  it("normalizes lowercase agent alias", () => {
+    expect(getToolPresentation("agent")).toMatchObject({
+      canonicalName: "Agent",
+      displayName: "Agent",
+      category: "agent",
+    });
+  });
 });

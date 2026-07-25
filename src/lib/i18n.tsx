@@ -437,6 +437,8 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Give Kimi a task": "给 Kimi 布置一个任务",
   "Saved as the global default; idle sessions will restart to apply it.":
     "已写入全局默认；空闲会话将重启以应用。",
+  "Configuration saved; idle sessions will restart to apply it.":
+    "已写入配置文件；空闲会话将重启以应用。",
   "Some busy sessions skipped restart": "部分忙碌会话已跳过重启",
   "The new configuration will apply after those sessions become idle.":
     "新配置将在这些会话空闲后生效。",
@@ -461,6 +463,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   lines: "行",
   "Fork session from this turn": "从此轮分叉会话",
   "Waiting for model response…": "等待模型响应…",
+  "Waiting for subagents to start…": "等待子代理启动…",
   "Kimi has a few questions": "Kimi 想确认几个问题",
   Submitted: "已提交",
   "✗ Failed": "✗ 失败",
