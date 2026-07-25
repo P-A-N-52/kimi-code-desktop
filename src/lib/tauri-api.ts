@@ -28,6 +28,8 @@ export type TextConfigFile = {
 export type UpdateTextConfigResponse = {
 	success: boolean;
 	error?: string | null;
+	restartedSessionIds?: string[];
+	skippedBusySessionIds?: string[];
 };
 
 export type WireEventPayload = {
@@ -353,6 +355,33 @@ export async function replaySessionHistory(
 export async function getSessionSwarmMode(sessionId: string): Promise<boolean> {
 	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	return Boolean(await invoke<unknown>("get_session_swarm_mode", { sessionId }));
+}
+
+export type SessionRuntimeModes = {
+	planMode: boolean;
+	permissionMode: "manual" | "yolo" | "auto";
+	swarmMode: boolean;
+};
+
+export async function getSessionRuntimeModes(
+	sessionId: string,
+): Promise<SessionRuntimeModes> {
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+	const raw = await invoke<Record<string, unknown>>("get_session_runtime_modes", {
+		sessionId,
+	});
+	const permissionRaw = String(raw.permission_mode ?? "manual");
+	const permissionMode =
+		permissionRaw === "ask"
+			? "manual"
+			: permissionRaw === "yolo" || permissionRaw === "auto"
+				? permissionRaw
+				: "manual";
+	return {
+		planMode: Boolean(raw.plan_mode),
+		permissionMode,
+		swarmMode: Boolean(raw.swarm_mode),
+	};
 }
 
 export async function migrateSessionSwarmMode(
@@ -779,6 +808,11 @@ function normalizeUpdateTextConfigResponse(
 	return {
 		success: Boolean(raw.success),
 		error: typeof raw.error === "string" ? raw.error : null,
+		restartedSessionIds:
+			(raw.restarted_session_ids as string[] | null | undefined) ?? undefined,
+		skippedBusySessionIds:
+			(raw.skipped_busy_session_ids as string[] | null | undefined) ??
+			undefined,
 	};
 }
 

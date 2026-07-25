@@ -223,6 +223,16 @@ pub fn get_session_swarm_mode(session_id: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
+pub fn get_session_runtime_modes(session_id: String) -> Result<Value, String> {
+    let modes = session_store::resolved_runtime_modes(&session_id)?;
+    Ok(json!({
+        "plan_mode": modes.plan_mode,
+        "permission_mode": modes.permission_mode,
+        "swarm_mode": modes.swarm_mode,
+    }))
+}
+
+#[tauri::command]
 pub fn migrate_session_swarm_mode(session_id: String, enabled: bool) -> Result<(), String> {
     session_store::update_session_swarm_mode(&session_id, enabled)?;
     Ok(())
@@ -472,9 +482,22 @@ pub fn get_config_toml() -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub fn update_config_toml(content: String) -> Result<Value, String> {
+pub async fn update_config_toml(
+    app: tauri::AppHandle,
+    acp_wire: tauri::State<'_, AcpProcessManager>,
+    content: String,
+) -> Result<Value, String> {
     validate_toml(&content)?;
-    write_kimi_config_file("config.toml", &content)
+    write_kimi_config_file("config.toml", &content)?;
+    let summary = acp_wire
+        .restart_running_workers(&app, "config_update", false)
+        .await;
+    Ok(json!({
+        "success": true,
+        "error": Value::Null,
+        "restarted_session_ids": if summary.restarted_session_ids.is_empty() { Value::Null } else { json!(summary.restarted_session_ids) },
+        "skipped_busy_session_ids": if summary.skipped_busy_session_ids.is_empty() { Value::Null } else { json!(summary.skipped_busy_session_ids) },
+    }))
 }
 
 #[tauri::command]
@@ -483,9 +506,22 @@ pub fn get_mcp_config() -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub fn update_mcp_config(content: String) -> Result<Value, String> {
+pub async fn update_mcp_config(
+    app: tauri::AppHandle,
+    acp_wire: tauri::State<'_, AcpProcessManager>,
+    content: String,
+) -> Result<Value, String> {
     validate_mcp_config(&content)?;
-    write_kimi_config_file("mcp.json", &content)
+    write_kimi_config_file("mcp.json", &content)?;
+    let summary = acp_wire
+        .restart_running_workers(&app, "config_update", false)
+        .await;
+    Ok(json!({
+        "success": true,
+        "error": Value::Null,
+        "restarted_session_ids": if summary.restarted_session_ids.is_empty() { Value::Null } else { json!(summary.restarted_session_ids) },
+        "skipped_busy_session_ids": if summary.skipped_busy_session_ids.is_empty() { Value::Null } else { json!(summary.skipped_busy_session_ids) },
+    }))
 }
 
 #[tauri::command]

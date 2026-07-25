@@ -8,17 +8,23 @@ export function workDirBasename(path: string): string {
 	return parts[parts.length - 1] || path || "工作目录";
 }
 
+const chipClassName =
+	"flex max-w-[min(100%,20rem)] items-center gap-1.5 rounded-r2 border border-line px-2.5 py-1.5 text-left";
+
 export function WorkDirPicker({
 	workDir,
 	onWorkDirChange,
-	recentDirs,
+	recentDirs = [],
 	disabled = false,
+	readOnly = false,
 	className,
 }: {
 	workDir: string;
-	onWorkDirChange: (dir: string) => void;
-	recentDirs: string[];
+	onWorkDirChange?: (dir: string) => void;
+	recentDirs?: string[];
 	disabled?: boolean;
+	/** Fixed display — no folder selection (used in active conversation). */
+	readOnly?: boolean;
 	className?: string;
 }) {
 	const [open, setOpen] = useState(false);
@@ -26,16 +32,16 @@ export function WorkDirPicker({
 	const menuRef = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
-		if (!open) return;
+		if (!open || readOnly) return;
 		const close = (event: MouseEvent) => {
 			if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
 		};
 		document.addEventListener("mousedown", close);
 		return () => document.removeEventListener("mousedown", close);
-	}, [open]);
+	}, [open, readOnly]);
 
 	const selectDir = (dir: string) => {
-		onWorkDirChange(dir);
+		onWorkDirChange?.(dir);
 		setOpen(false);
 		setCustomDir("");
 	};
@@ -46,6 +52,21 @@ export function WorkDirPicker({
 		selectDir(dir);
 	};
 
+	const label = workDir ? workDirBasename(workDir) : readOnly ? "工作目录" : "选择工作目录";
+
+	if (readOnly) {
+		return (
+			<div className={cn("relative", className)} title={workDir || "工作目录"}>
+				<div className={chipClassName} aria-label={`工作目录 ${label}`}>
+					<FolderOpen size={13} strokeWidth={1.5} className="shrink-0 text-muted" />
+					<span className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted">
+						{label}
+					</span>
+				</div>
+			</div>
+		);
+	}
+
 	return (
 		<div ref={menuRef} className={cn("relative", className)}>
 			<button
@@ -54,7 +75,8 @@ export function WorkDirPicker({
 				title={workDir || "选择工作目录"}
 				onClick={() => setOpen((value) => !value)}
 				className={cn(
-					"flex max-w-[min(100%,20rem)] items-center gap-1.5 rounded-r2 border border-line px-2.5 py-1.5 text-left transition-colors",
+					chipClassName,
+					"transition-colors",
 					disabled
 						? "cursor-not-allowed opacity-50"
 						: "hover:border-line-strong hover:bg-hover",
@@ -62,7 +84,7 @@ export function WorkDirPicker({
 			>
 				<FolderOpen size={13} strokeWidth={1.5} className="shrink-0 text-muted" />
 				<span className="min-w-0 flex-1 truncate font-mono text-[12px] text-muted">
-					{workDir ? workDirBasename(workDir) : "选择工作目录"}
+					{label}
 				</span>
 				<ChevronDown size={11} strokeWidth={1.5} className="shrink-0 text-faint" />
 			</button>

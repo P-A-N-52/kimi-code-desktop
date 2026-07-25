@@ -27,6 +27,7 @@ const PRESENTATIONS: Record<string, Omit<ToolPresentation, "canonicalName">> = {
   SearchWeb: { displayName: "Web Search", category: "search" },
   FetchURL: { displayName: "Fetch URL", category: "search" },
   Agent: { displayName: "Agent", category: "agent" },
+  AgentSwarm: { displayName: "Swarm", category: "agent" },
   Task: { displayName: "Agent Task", category: "task" },
   TaskList: { displayName: "Task List", category: "task" },
   TaskOutput: { displayName: "Task Output", category: "task" },
@@ -57,6 +58,9 @@ const ALIASES: Record<string, string> = {
   searchweb: "SearchWeb",
   todolist: "SetTodoList",
   settodolist: "SetTodoList",
+  agent: "Agent",
+  agentswarm: "AgentSwarm",
+  swarm: "AgentSwarm",
 };
 
 export function getToolPresentation(rawName: string): ToolPresentation {

@@ -34,7 +34,8 @@ export interface GlobalConfig {
      */
     defaultModel: string;
     /**
-     * Current default thinking mode
+     * Current default thinking mode from `[thinking].enabled`
+     * (falls back to deprecated top-level `default_thinking`, then CLI default true).
      * @type {boolean}
      * @memberof GlobalConfig
      */

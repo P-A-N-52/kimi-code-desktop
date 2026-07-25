@@ -14,12 +14,13 @@ const baseToolCall: NonNullable<LiveMessage["toolCall"]> = {
 describe("ToolCard", () => {
   it("默认折叠，点击展开显示输出，再点收起", () => {
     render(<ToolCard toolCall={baseToolCall} />);
-    expect(document.querySelector("[data-slot=tool-body]")).toBeNull();
+    const body = () => document.querySelector("[data-slot=tool-body]");
+    expect(body()?.getAttribute("data-open")).toBe("false");
     fireEvent.click(screen.getByRole("button"));
-    expect(document.querySelector("[data-slot=tool-body]")).not.toBeNull();
+    expect(body()?.getAttribute("data-open")).toBe("true");
     expect(screen.getByText(/all passed/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button"));
-    expect(document.querySelector("[data-slot=tool-body]")).toBeNull();
+    expect(body()?.getAttribute("data-open")).toBe("false");
   });
   it("显示参数摘要", () => {
     render(<ToolCard toolCall={baseToolCall} />);
@@ -47,7 +48,7 @@ describe("ToolCard", () => {
     expect(screen.getByText("Wire the workspace")).toBeTruthy();
   });
 
-  it("renders tool media and subagent activity", () => {
+  it("routes Agent tools to AgentToolCard with structured output", () => {
     render(
       <ToolCard
         defaultOpen
@@ -55,8 +56,20 @@ describe("ToolCard", () => {
           title: "Agent",
           type: "tool-Agent" as never,
           state: "output-available",
+          input: {
+            description: "测试子代理功能",
+            subagent_type: "explore",
+            prompt: "List dirs",
+          },
+          output: [
+            "agent_id: agent-0",
+            "actual_subagent_type: explore",
+            "status: completed",
+            "[summary]",
+            "ok",
+          ].join("\n"),
           mediaParts: [{ type: "image_url", url: "https://example.com/agent.png" }],
-          subagentType: "coder",
+          subagentType: "explore",
           subagentRunning: false,
           subagentSteps: [
             { kind: "thinking", text: "Inspecting files" },
@@ -72,11 +85,35 @@ describe("ToolCard", () => {
       />,
     );
 
+    expect(document.querySelector("[data-slot=agent-tool-card]")).not.toBeNull();
+    expect(document.querySelector("[data-slot=agent-type-chip]")?.textContent).toBe("explore");
+    expect(screen.queryByText(/agent_id: agent-0/)).toBeNull();
     expect(screen.getByRole("img", { name: "agent.png" })).toBeTruthy();
-    expect(screen.getByText(/Coder agent completed/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /Coder agent completed/ }));
+    expect(screen.getByText(/Explore agent completed/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Explore agent completed/ }));
     expect(screen.getByText("Inspecting files")).toBeTruthy();
     expect(screen.getByText("ReadFile")).toBeTruthy();
+  });
+
+  it("routes agent-shaped inputs even when the title is a description", () => {
+    render(
+      <ToolCard
+        toolCall={{
+          title: "测试子代理功能",
+          type: "tool-call" as never,
+          state: "output-available",
+          input: {
+            description: "测试子代理功能",
+            subagent_type: "explore",
+            prompt: "go",
+          },
+          output: "agent_id: agent-0\nstatus: completed\n[summary]\ndone",
+        }}
+      />,
+    );
+
+    expect(document.querySelector("[data-slot=agent-tool-card]")).not.toBeNull();
+    expect(document.querySelector("[data-slot=swarm-tool-card]")).toBeNull();
   });
 
   it("keeps a JSON fallback for unknown display blocks", () => {
@@ -92,5 +129,47 @@ describe("ToolCard", () => {
 
     expect(screen.getByText("custom_result")).toBeTruthy();
     expect(screen.getByText(/"answer": 42/)).toBeTruthy();
+  });
+
+  it("routes AgentSwarm tool calls to the swarm card", () => {
+    render(
+      <ToolCard
+        toolCall={{
+          title: "AgentSwarm",
+          type: "tool-AgentSwarm" as never,
+          state: "input-available",
+          toolCallId: "swarm-1",
+          input: {
+            description: "Parallel review",
+            prompt_template: "Review {{item}}",
+            items: ["a", "b"],
+          },
+        }}
+      />,
+    );
+
+    expect(document.querySelector("[data-slot=swarm-tool-card]")).not.toBeNull();
+    expect(screen.getByText("Swarm")).toBeTruthy();
+  });
+
+  it("routes swarm-shaped inputs even when the title is a description", () => {
+    render(
+      <ToolCard
+        toolCall={{
+          title: "Review the ACP bridge in parallel",
+          type: "tool-call" as never,
+          state: "output-available",
+          toolCallId: "swarm-desc",
+          input: {
+            description: "Parallel review",
+            prompt_template: "Review {{item}}",
+            items: ["mode", "events"],
+          },
+          output: "<agent_swarm_result>\ncompleted: 2\nfailed: 0\naborted: 0\n</agent_swarm_result>",
+        }}
+      />,
+    );
+
+    expect(document.querySelector("[data-slot=swarm-tool-card]")).not.toBeNull();
   });
 });

@@ -5,7 +5,7 @@ import { mergeSlashCommandsByName, useSessionStream } from "./useSessionStream";
 let wireMessageHandler: ((message: string) => void) | null = null;
 
 const mocks = vi.hoisted(() => ({
-	getSessionSwarmMode: vi.fn(),
+	getSessionRuntimeModes: vi.fn(),
 	isTauri: vi.fn(),
 	migrateSessionSwarmMode: vi.fn(),
 	onWireMessage: vi.fn(),
@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/tauri-api", () => ({
-	getSessionSwarmMode: mocks.getSessionSwarmMode,
+	getSessionRuntimeModes: mocks.getSessionRuntimeModes,
 	isTauri: mocks.isTauri,
 	migrateSessionSwarmMode: mocks.migrateSessionSwarmMode,
 	onWireMessage: mocks.onWireMessage,
@@ -100,7 +100,11 @@ describe("useSessionStream Tauri watchdog", () => {
 			},
 		);
 		mocks.replaySessionHistory.mockResolvedValue([]);
-		mocks.getSessionSwarmMode.mockResolvedValue(false);
+		mocks.getSessionRuntimeModes.mockResolvedValue({
+			planMode: false,
+			permissionMode: "manual",
+			swarmMode: false,
+		});
 		mocks.migrateSessionSwarmMode.mockResolvedValue(undefined);
 		mocks.wireConnect.mockResolvedValue(undefined);
 		mocks.wireDisconnect.mockResolvedValue(undefined);
@@ -218,8 +222,12 @@ describe("useSessionStream Tauri watchdog", () => {
 		expect(result.current.swarmMode).toBe(false);
 	});
 
-	it("loads Swarm mode from the Kimi session state", async () => {
-		mocks.getSessionSwarmMode.mockResolvedValue(true);
+	it("loads permission / plan / swarm modes from the Kimi session state", async () => {
+		mocks.getSessionRuntimeModes.mockResolvedValue({
+			planMode: true,
+			permissionMode: "yolo",
+			swarmMode: true,
+		});
 		const { result } = renderHook(() =>
 			useSessionStream({
 				sessionId: "session-1",
@@ -230,7 +238,9 @@ describe("useSessionStream Tauri watchdog", () => {
 
 		await flushPromises();
 
-		expect(mocks.getSessionSwarmMode).toHaveBeenCalledWith("session-1");
+		expect(mocks.getSessionRuntimeModes).toHaveBeenCalledWith("session-1");
+		expect(result.current.planMode).toBe(true);
+		expect(result.current.permissionMode).toBe("yolo");
 		expect(result.current.swarmMode).toBe(true);
 		expect(
 			window.localStorage.getItem(
@@ -244,6 +254,11 @@ describe("useSessionStream Tauri watchdog", () => {
 			"kimi-code-desktop.swarm-mode-by-session.v1",
 			JSON.stringify({ "session-1": true, "session-2": false }),
 		);
+		mocks.getSessionRuntimeModes.mockResolvedValue({
+			planMode: false,
+			permissionMode: "auto",
+			swarmMode: false,
+		});
 		const { result } = renderHook(() =>
 			useSessionStream({
 				sessionId: "session-1",
@@ -262,7 +277,8 @@ describe("useSessionStream Tauri watchdog", () => {
 			"session-2",
 			false,
 		);
-		expect(mocks.getSessionSwarmMode).not.toHaveBeenCalled();
+		expect(mocks.getSessionRuntimeModes).toHaveBeenCalledWith("session-1");
+		expect(result.current.permissionMode).toBe("auto");
 		expect(result.current.swarmMode).toBe(true);
 		expect(
 			window.localStorage.getItem(
@@ -1276,6 +1292,33 @@ describe("useSessionStream Tauri watchdog", () => {
 		});
 
 		expect(result.current.status).toBe("ready");
+	});
+
+	it("ignores a second sendMessage while a prompt is already in flight", async () => {
+		const { result } = renderHook(() =>
+			useSessionStream({
+				sessionId: "session-1",
+				baseUrl: "http://localhost:5173",
+				autoConnect: false,
+			}),
+		);
+
+		await flushPromises();
+
+		await act(async () => {
+			await result.current.sendMessage("First prompt");
+			await result.current.sendMessage("Duplicate prompt");
+		});
+		await flushPromises();
+
+		const prompts = mocks.wireSend.mock.calls
+			.map(([, rawMessage]) => JSON.parse(rawMessage))
+			.filter((message) => message.method === "prompt");
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]?.params?.user_input).toBe("First prompt");
+		expect(
+			result.current.messages.filter((message) => message.role === "user"),
+		).toHaveLength(1);
 	});
 
 	it("auto-renames only after the first prompt response, not the connection idle status", async () => {
