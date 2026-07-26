@@ -343,14 +343,17 @@ pub async fn generate_title(session_id: String) -> Result<Value, String> {
 #[tauri::command]
 pub async fn upload_session_file(
     _app: tauri::AppHandle,
-    state: tauri::State<'_, AcpProcessManager>,
-    session_id: String,
+    _state: tauri::State<'_, AcpProcessManager>,
+    _session_id: String,
     filename: String,
     data: Vec<u8>,
 ) -> Result<Value, String> {
-    state.ensure_editable(&session_id)?;
-    let session_dir = session_store::find_session_dir_by_id_or_err(&session_id)?;
-    session_files::upload_session_file_to_dir(&session_dir, &filename, &data)
+    session_files::upload_pending_file(&filename, &data)
+}
+
+#[tauri::command]
+pub async fn delete_uploaded_file(file_id: String) -> Result<(), String> {
+    session_files::delete_pending_file(&file_id)
 }
 
 #[tauri::command]

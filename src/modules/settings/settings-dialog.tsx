@@ -310,7 +310,7 @@ export function SettingsDialog({
                     ))}
                   </div>
                 </Section>
-                <Section title="Kimi Code 登录">
+                <Section title="Kimi Code 登录（可选）">
                   <KimiLoginPanel
                     onSuccess={() => {
                       toast.success("登录成功，凭据已写入");

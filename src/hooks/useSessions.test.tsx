@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../lib/tauri-api", () => ({
 	isTauri: mocks.isTauri,
 	createSession: vi.fn(),
+	deleteUploadedFile: vi.fn(),
 	deleteSession: vi.fn(),
 	forkSession: vi.fn(),
 	getSession: vi.fn(),

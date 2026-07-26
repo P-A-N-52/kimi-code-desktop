@@ -50,6 +50,7 @@ const renderComposer = (overrides: Partial<Parameters<typeof Composer>[0]> = {})
     onUploadFile: vi
       .fn()
       .mockResolvedValue({ path: "uploads/notes.txt", filename: "notes.txt", size: 4 }),
+    onRemoveFile: vi.fn().mockResolvedValue(undefined),
     onOpenContext: vi.fn(),
     models: sampleModels,
     selectedModel: "kimi-k2.5",
@@ -131,6 +132,60 @@ describe("Composer integrations", () => {
     expect(await screen.findByText("good.txt")).toBeTruthy();
     await waitFor(() => expect(onUploadFile).toHaveBeenCalledTimes(2));
     expect(screen.queryByText("bad.txt")).toBeNull();
+  });
+
+  it("pastes clipboard files into the pending attachment list", async () => {
+    const { container, props } = renderComposer({ sessionId: "paste-files" });
+    const textarea = container.querySelector("textarea");
+    if (!textarea) throw new Error("Expected the composer textarea");
+    const file = new File(["image"], "paste.png", { type: "image/png" });
+
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        items: [{ kind: "file", getAsFile: () => file }],
+      },
+    });
+
+    await waitFor(() => expect(props.onUploadFile).toHaveBeenCalledWith(file));
+    expect(await screen.findByText("notes.txt")).toBeTruthy();
+  });
+
+  it("deletes a pending attachment by its file id", async () => {
+    const { container, props } = renderComposer({ sessionId: "remove-file" });
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("Expected the composer file input");
+    fireEvent.change(input, {
+      target: { files: [new File(["test"], "notes.txt", { type: "text/plain" })] },
+    });
+
+    const remove = await screen.findByRole("button", {
+      name: "Remove attachment notes.txt",
+    });
+    fireEvent.click(remove);
+
+    await waitFor(() => expect(props.onRemoveFile).toHaveBeenCalledWith("notes.txt"));
+    await waitFor(() => expect(screen.queryByText("notes.txt")).toBeNull());
+  });
+
+  it("submits an attachment without requiring message text", async () => {
+    const { container, props } = renderComposer({ sessionId: "file-only" });
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("Expected the composer file input");
+    fireEvent.change(input, {
+      target: { files: [new File(["test"], "notes.txt", { type: "text/plain" })] },
+    });
+    await screen.findByText("notes.txt");
+
+    const sendButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.querySelector(".lucide-arrow-up"),
+    );
+    if (!sendButton) throw new Error("Expected the composer send button");
+    expect(sendButton.disabled).toBe(false);
+    fireEvent.click(sendButton);
+
+    expect(props.onSend).toHaveBeenCalledWith(undefined, [
+      { path: "uploads/notes.txt", filename: "notes.txt", size: 4 },
+    ]);
   });
 
   it("shows a thinking toggle only for models that support it", () => {

@@ -6,7 +6,7 @@ export type SlashCommandDef = {
 };
 
 /**
- * Desktop already exposes these via UI, or they are TUI/login-only.
+ * Desktop already exposes these via UI, or they are TUI-only.
  * Skills and other ACP-advertised commands stay available.
  */
 const DESKTOP_SLASH_DENYLIST = new Set([
@@ -126,9 +126,9 @@ const DENIED_COMMAND_HINTS: Record<string, string> = {
   rename: "Rename the session from the sidebar.",
   settings: "Open Settings from the app menu.",
   config: "Open Settings from the app menu.",
-  login: "Sign in from Settings (device code), then reconnect.",
-  logout: "Sign out from Settings, then reconnect.",
-  provider: "Manage providers with `kimi` CLI / Settings.",
+  login: "Manage account credentials with the `kimi` CLI when needed.",
+  logout: "Manage account credentials with the `kimi` CLI when needed.",
+  provider: "Manage providers with the `kimi` CLI or config.toml.",
   yolo: "Use the permission mode control (YOLO) in the status bar.",
   yes: "Use the permission mode control (YOLO) in the status bar.",
   auto: "Use the permission mode control (Auto) in the status bar.",

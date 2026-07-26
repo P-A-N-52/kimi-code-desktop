@@ -10,7 +10,14 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+} from "react";
 import { toast } from "sonner";
 import type { ConfigModel, UploadSessionFileResponse } from "@/lib/api/models";
 import {
@@ -22,14 +29,18 @@ import type { FileMentionEntry } from "./file-mentions";
 import { ModelPicker } from "./model-picker";
 import { useFileMentions } from "./use-file-mentions";
 
-export type QueuedPrompt = { id: string; text: string };
+export type QueuedPrompt = {
+  id: string;
+  text: string;
+  attachments?: UploadSessionFileResponse[];
+};
 const uploadedFilesBySession = new Map<string, UploadSessionFileResponse[]>();
 
 type ComposerProps = {
   sessionId: string;
   draft: string;
   onDraftChange: (value: string) => void;
-  onSend: (text?: string) => void;
+  onSend: (text?: string, attachments?: UploadSessionFileResponse[]) => void;
   onCancel: () => void;
   busy: boolean;
   canCancel: boolean;
@@ -41,6 +52,7 @@ type ComposerProps = {
   onRemoveQueued: (id: string) => void;
   onClearQueue: () => void;
   onUploadFile: (file: File) => Promise<UploadSessionFileResponse>;
+  onRemoveFile: (fileId: string) => Promise<void>;
   onOpenContext: () => void;
   listDirectory?: (sessionId: string, path?: string) => Promise<FileMentionEntry[]>;
   models: ConfigModel[];
@@ -70,6 +82,7 @@ export function Composer({
   onRemoveQueued,
   onClearQueue,
   onUploadFile,
+  onRemoveFile,
   onOpenContext,
   listDirectory,
   models,
@@ -148,18 +161,21 @@ export function Composer({
 
   const submit = (text?: string) => {
     if (sendDisabled) return;
-    onSend(text);
+    const message = (text ?? draft).trim();
+    if (!message && uploadedFiles.length === 0) return;
+    onSend(text, uploadedFiles);
     setCommandMenuOpen(false);
     setUploadedFiles([]);
   };
 
-  const uploadFiles = async (files: FileList | null) => {
-    if (!files?.length) return;
+  const uploadFiles = async (files: Iterable<File> | ArrayLike<File> | null) => {
+    const selected = files ? Array.from(files) : [];
+    if (selected.length === 0) return;
     setUploading(true);
     const failures: string[] = [];
     let uploadedCount = 0;
     try {
-      for (const file of Array.from(files)) {
+      for (const file of selected) {
         try {
           const uploaded = await onUploadFile(file);
           uploadedCount += 1;
@@ -182,6 +198,27 @@ export function Composer({
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
+  };
+
+  const removeUploadedFile = async (file: UploadSessionFileResponse) => {
+    try {
+      await onRemoveFile(file.filename);
+      setUploadedFiles((current) => current.filter((item) => item.filename !== file.filename));
+    } catch (error) {
+      toast.error("Failed to remove attachment", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const onComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null);
+    if (files.length === 0) return;
+    event.preventDefault();
+    void uploadFiles(files);
   };
 
   const onComposerDragOver = (event: DragEvent<HTMLDivElement>) => {
@@ -283,6 +320,14 @@ export function Composer({
               className="flex items-center gap-1 rounded-r1 border border-line bg-surface px-2 py-1 font-mono text-[9.5px] text-muted"
             >
               <Paperclip size={10} /> {file.filename}
+              <button
+                type="button"
+                aria-label={`Remove attachment ${file.filename}`}
+                onClick={() => void removeUploadedFile(file)}
+                className="ml-0.5 text-faint transition-colors hover:text-danger"
+              >
+                <X size={10} />
+              </button>
             </span>
           ))}
         </div>
@@ -392,6 +437,7 @@ export function Composer({
             fileMentions.syncRangeFromCaret(event.target.selectionStart);
           }
         }}
+        onPaste={onComposerPaste}
         onSelect={(event) => {
           if (commandMenuOpen) return;
           fileMentions.syncRangeFromCaret(event.currentTarget.selectionStart);
@@ -524,7 +570,7 @@ export function Composer({
           type="button"
           aria-label={busy ? "加入发送队列" : "发送"}
           onClick={() => submit()}
-          disabled={!draft.trim() || uploading || sendDisabled}
+          disabled={(!draft.trim() && uploadedFiles.length === 0) || uploading || sendDisabled}
           className="flex size-7 items-center justify-center rounded-full bg-bright text-background transition-opacity hover:opacity-85 disabled:opacity-40"
         >
           <ArrowUp size={13} strokeWidth={2} />

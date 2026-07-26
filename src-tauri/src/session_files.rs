@@ -6,7 +6,7 @@ use crate::runtime_check;
 use crate::session_store;
 use base64::Engine;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
@@ -156,11 +156,26 @@ pub fn read_session_file_payload(file_path: &Path) -> Result<Value, String> {
     }))
 }
 
-pub fn upload_session_file_to_dir(
-    session_dir: &Path,
-    filename: &str,
-    data: &[u8],
-) -> Result<Value, String> {
+pub fn upload_pending_file(filename: &str, data: &[u8]) -> Result<Value, String> {
+    let upload_dir = pending_uploads_dir()?;
+    upload_file_to_dir(&upload_dir, filename, data)
+}
+
+pub fn delete_pending_file(file_id: &str) -> Result<(), String> {
+    let upload_dir = pending_uploads_dir()?;
+    let file_path = resolve_session_file(&upload_dir, file_id)?;
+    if !file_path.is_file() {
+        return Err("Uploaded file not found".to_string());
+    }
+    fs::remove_file(&file_path)
+        .map_err(|err| format!("Failed to delete {}: {err}", file_path.display()))
+}
+
+fn pending_uploads_dir() -> Result<PathBuf, String> {
+    Ok(runtime_check::kimi_code_home_dir()?.join("desktop-uploads"))
+}
+
+fn upload_file_to_dir(upload_dir: &Path, filename: &str, data: &[u8]) -> Result<Value, String> {
     if data.len() as u64 > MAX_DESKTOP_API_FILE_BYTES {
         return Err(format!(
             "File is too large for desktop API transfer ({} > {})",
@@ -170,8 +185,7 @@ pub fn upload_session_file_to_dir(
     }
 
     let safe_name = sanitize_filename(filename);
-    let upload_dir = session_dir.join("uploads");
-    fs::create_dir_all(&upload_dir).map_err(|err| {
+    fs::create_dir_all(upload_dir).map_err(|err| {
         format!(
             "Failed to create uploads directory {}: {err}",
             upload_dir.display()
@@ -291,82 +305,43 @@ pub fn work_dirs_from_metadata() -> Result<Vec<String>, String> {
     Ok(work_dirs)
 }
 
-pub fn load_sent_upload_names(session_id: &str) -> HashSet<String> {
-    let Some(session_dir) = session_store::find_session_dir_by_id(session_id)
-        .ok()
-        .flatten()
-    else {
-        return HashSet::new();
-    };
-    let marker = session_dir.join("uploads").join(".sent");
-    if !marker.is_file() {
-        return HashSet::new();
-    }
-    let Ok(content) = fs::read_to_string(&marker) else {
-        return HashSet::new();
-    };
-    serde_json::from_str::<Vec<String>>(&content)
-        .map(|names| names.into_iter().collect())
-        .unwrap_or_default()
-}
-
-fn persist_sent_upload_names(
-    session_dir: &Path,
-    sent_files: &HashSet<String>,
-) -> Result<(), String> {
-    let uploads_dir = session_dir.join("uploads");
-    fs::create_dir_all(&uploads_dir)
-        .map_err(|err| format!("Failed to create uploads directory: {err}"))?;
-    let marker = uploads_dir.join(".sent");
-    let names: Vec<String> = sent_files.iter().cloned().collect();
-    let serialized = serde_json::to_string(&names)
-        .map_err(|err| format!("Failed to serialize sent upload marker: {err}"))?;
-    fs::write(&marker, serialized)
-        .map_err(|err| format!("Failed to write {}: {err}", marker.display()))
-}
-
 const TEXT_FILE_EXTENSIONS: &[&str] = &[
     "txt", "md", "json", "yaml", "yml", "xml", "html", "css", "js", "ts", "py", "sh", "csv", "log",
     "rst", "toml", "ini",
 ];
 
-/// Inject pending `uploads/` files into a legacy wire `prompt` params object.
-pub fn expand_prompt_with_uploads(
-    session_id: &str,
-    params: &Value,
-    sent_files: &mut HashSet<String>,
-) -> Result<Value, String> {
+/// Resolve explicitly selected desktop file ids into ACP prompt content.
+pub fn expand_prompt_with_uploads(session_id: &str, params: &Value) -> Result<Value, String> {
+    let attachment_ids: Vec<&str> = params
+        .get("attachment_ids")
+        .and_then(Value::as_array)
+        .map(|ids| ids.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if attachment_ids.is_empty() {
+        return Ok(params.clone());
+    }
+
     let Some(session_dir) = session_store::find_session_dir_by_id(session_id)? else {
         return Ok(params.clone());
     };
     let uploads_dir = session_dir.join("uploads");
-    if !uploads_dir.is_dir() {
-        return Ok(params.clone());
-    }
-
-    for name in load_sent_upload_names(session_id) {
-        sent_files.insert(name);
-    }
-
-    let mut pending_files: Vec<PathBuf> = fs::read_dir(&uploads_dir)
-        .map_err(|err| format!("Failed to read uploads directory: {err}"))?
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name != ".sent")
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| !sent_files.contains(name))
-        })
-        .collect();
-    pending_files.sort_by_key(|path| path.file_name().map(|name| name.to_owned()));
-
-    if pending_files.is_empty() {
-        return Ok(params.clone());
+    fs::create_dir_all(&uploads_dir)
+        .map_err(|err| format!("Failed to create uploads directory: {err}"))?;
+    let pending_dir = pending_uploads_dir()?;
+    let mut pending_files = Vec::with_capacity(attachment_ids.len());
+    for file_id in attachment_ids {
+        let source = resolve_session_file(&pending_dir, file_id)?;
+        if !source.is_file() {
+            return Err(format!("Uploaded file not found: {file_id}"));
+        }
+        let target = uploads_dir.join(file_id);
+        fs::copy(&source, &target).map_err(|err| {
+            format!(
+                "Failed to attach uploaded file {} to session: {err}",
+                source.display()
+            )
+        })?;
+        pending_files.push(target);
     }
 
     let mut parts: Vec<Value> = Vec::new();
@@ -454,13 +429,6 @@ pub fn expand_prompt_with_uploads(
         _ => {}
     }
 
-    for file in pending_files {
-        if let Some(name) = file.file_name().and_then(|value| value.to_str()) {
-            sent_files.insert(name.to_string());
-        }
-    }
-    persist_sent_upload_names(&session_dir, sent_files)?;
-
     Ok(json!({ "user_input": parts }))
 }
 
@@ -488,14 +456,17 @@ mod tests {
         std::fs::create_dir_all(&home).expect("home");
         let session_id = "sess-binary";
         let session_dir = home.join("sessions").join("abc").join(session_id);
-        let uploads = session_dir.join("uploads");
-        std::fs::create_dir_all(&uploads).expect("uploads");
-        std::fs::write(uploads.join("notes.pdf"), b"%PDF-1.4").expect("file");
+        std::fs::create_dir_all(&session_dir).expect("session");
+        let pending = home.join("desktop-uploads");
+        std::fs::create_dir_all(&pending).expect("pending uploads");
+        std::fs::write(pending.join("notes.pdf"), b"%PDF-1.4").expect("file");
 
         let _home_guard = set_kimi_code_home(&home);
-        let mut sent = HashSet::new();
-        let params = json!({ "user_input": "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE" });
-        let expanded = expand_prompt_with_uploads(session_id, &params, &mut sent).expect("expand");
+        let params = json!({
+            "user_input": "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE",
+            "attachment_ids": ["notes.pdf"]
+        });
+        let expanded = expand_prompt_with_uploads(session_id, &params).expect("expand");
         let parts = expanded["user_input"].as_array().expect("parts");
         let combined = parts
             .iter()
@@ -504,7 +475,7 @@ mod tests {
             .join("");
         assert!(combined.contains("<resource"));
         assert!(combined.contains("application/pdf"));
-        assert!(sent.contains("notes.pdf"));
+        assert!(session_dir.join("uploads").join("notes.pdf").is_file());
     }
 
     #[test]
@@ -565,14 +536,17 @@ mod tests {
         std::fs::create_dir_all(&home).expect("home");
         let session_id = "sess-upload";
         let session_dir = home.join("sessions").join("abc").join(session_id);
-        let uploads = session_dir.join("uploads");
-        std::fs::create_dir_all(&uploads).expect("uploads");
-        std::fs::write(uploads.join("notes.txt"), "hello upload").expect("file");
+        std::fs::create_dir_all(&session_dir).expect("session");
+        let pending = home.join("desktop-uploads");
+        std::fs::create_dir_all(&pending).expect("pending uploads");
+        std::fs::write(pending.join("notes.txt"), "hello upload").expect("file");
 
         let _home_guard = set_kimi_code_home(&home);
-        let mut sent = HashSet::new();
-        let params = json!({ "user_input": "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE" });
-        let expanded = expand_prompt_with_uploads(session_id, &params, &mut sent).expect("expand");
+        let params = json!({
+            "user_input": "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE",
+            "attachment_ids": ["notes.txt"]
+        });
+        let expanded = expand_prompt_with_uploads(session_id, &params).expect("expand");
         let parts = expanded["user_input"].as_array().expect("parts");
         let combined = parts
             .iter()
@@ -581,6 +555,38 @@ mod tests {
             .join("");
         assert!(combined.contains("<uploaded_files>"));
         assert!(combined.contains("hello upload"));
-        assert!(sent.contains("notes.txt"));
+        assert!(session_dir.join("uploads").join("notes.txt").is_file());
+    }
+
+    #[test]
+    fn expand_prompt_with_uploads_ignores_unselected_pending_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        let session_id = "sess-explicit";
+        let session_dir = home.join("sessions").join("abc").join(session_id);
+        let pending = home.join("desktop-uploads");
+        std::fs::create_dir_all(&session_dir).expect("session");
+        std::fs::create_dir_all(&pending).expect("pending uploads");
+        std::fs::write(pending.join("selected.txt"), "selected").expect("selected file");
+        std::fs::write(pending.join("ignored.txt"), "ignored").expect("ignored file");
+
+        let _home_guard = set_kimi_code_home(&home);
+        let params = json!({
+            "user_input": "hello",
+            "attachment_ids": ["selected.txt"]
+        });
+        let expanded = expand_prompt_with_uploads(session_id, &params).expect("expand");
+        let combined = expanded["user_input"]
+            .as_array()
+            .expect("parts")
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("");
+
+        assert!(combined.contains("selected"));
+        assert!(!combined.contains("ignored"));
+        assert!(session_dir.join("uploads").join("selected.txt").is_file());
+        assert!(!session_dir.join("uploads").join("ignored.txt").exists());
     }
 }

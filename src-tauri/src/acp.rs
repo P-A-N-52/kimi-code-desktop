@@ -306,7 +306,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn pick_login_method_id(initialize_result: &Value) -> String {
+fn pick_auth_method_id(initialize_result: &Value) -> String {
     let methods = initialize_result
         .get("authMethods")
         .or_else(|| initialize_result.get("authenticationMethods"))
@@ -403,7 +403,6 @@ pub(crate) struct AcpWorker {
     status_seq: AtomicU64,
     in_flight_prompt_ids: Mutex<HashSet<String>>,
     pending_permission_ids: Mutex<HashMap<String, u64>>,
-    sent_upload_files: Mutex<HashSet<String>>,
     last_session_update_at: Mutex<Option<Instant>>,
     plan_mode: Mutex<bool>,
     permission_mode: Mutex<PermissionMode>,
@@ -518,7 +517,6 @@ impl AcpProcessManager {
             status_seq: AtomicU64::new(0),
             in_flight_prompt_ids: Mutex::new(HashSet::new()),
             pending_permission_ids: Mutex::new(HashMap::new()),
-            sent_upload_files: Mutex::new(session_files::load_sent_upload_names(&session_id)),
             last_session_update_at: Mutex::new(None),
             plan_mode: Mutex::new(initial_plan_mode),
             permission_mode: Mutex::new(initial_permission_mode),
@@ -836,7 +834,6 @@ fn new_probe_worker() -> AcpWorker {
         status_seq: AtomicU64::new(0),
         in_flight_prompt_ids: Mutex::new(HashSet::new()),
         pending_permission_ids: Mutex::new(HashMap::new()),
-        sent_upload_files: Mutex::new(HashSet::new()),
         last_session_update_at: Mutex::new(None),
         plan_mode: Mutex::new(false),
         permission_mode: Mutex::new(PermissionMode::Manual),
@@ -905,14 +902,14 @@ pub(crate) async fn ensure_acp_authenticated(rpc: &mut AcpRpcSession) -> Result<
         ));
     }
 
-    let method_id = pick_login_method_id(initialize.result.as_ref().unwrap_or(&Value::Null));
+    let method_id = pick_auth_method_id(initialize.result.as_ref().unwrap_or(&Value::Null));
     let authenticate = rpc
         .request("authenticate", json!({ "methodId": method_id }))
         .await?;
 
     if is_auth_required_response(&authenticate) || !is_authenticated_response(&authenticate) {
         return Err(
-            "ACP authentication required. Sign in from Settings (device code) or run `kimi login`, then retry."
+            "Kimi Code rejected the configured provider credentials. Check the selected provider in config.toml, then retry."
                 .to_string(),
         );
     }
@@ -1541,10 +1538,7 @@ async fn handle_prompt(
         .ok()
         .flatten();
     set_worker_status(app, worker, "busy", Some("prompt"), None);
-    let expand_result = {
-        let mut sent = worker.sent_upload_files.lock().unwrap();
-        session_files::expand_prompt_with_uploads(&worker.session_id, &params, &mut sent)
-    };
+    let expand_result = session_files::expand_prompt_with_uploads(&worker.session_id, &params);
     let expanded_params = match expand_result {
         Ok(expanded) => expanded,
         Err(err) => {

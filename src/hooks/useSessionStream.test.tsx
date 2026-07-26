@@ -598,6 +598,47 @@ describe("useSessionStream Tauri watchdog", () => {
 		).toHaveLength(1);
 	});
 
+	it("sends only selected file ids and supports an attachment-only prompt", async () => {
+		const { result } = renderHook(() =>
+			useSessionStream({
+				sessionId: "session-1",
+				baseUrl: "http://localhost:5173",
+				autoConnect: true,
+			}),
+		);
+
+		await flushPromises();
+		completeReplay();
+
+		await act(async () => {
+			await result.current.sendMessage("", [
+				{
+					path: "C:/pending/notes_123.txt",
+					filename: "notes_123.txt",
+					size: 4,
+				},
+			]);
+		});
+
+		const prompt = mocks.wireSend.mock.calls
+			.map(([, rawMessage]) => JSON.parse(rawMessage))
+			.reverse()
+			.find((message: { method?: string }) => message.method === "prompt");
+		expect(prompt.params).toEqual(
+			expect.objectContaining({
+				user_input: "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE",
+				attachment_ids: ["notes_123.txt"],
+			}),
+		);
+		expect(result.current.messages.at(-1)).toEqual(
+			expect.objectContaining({
+				role: "user",
+				content: "",
+				attachments: [{ kind: "nopreview", filename: "notes_123.txt" }],
+			}),
+		);
+	});
+
 	it("keeps user-authored system-like tags visible without an ACP echo", async () => {
 		const { result } = renderHook(() =>
 			useSessionStream({

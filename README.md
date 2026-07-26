@@ -52,14 +52,15 @@ React 19 + Vite
 
 ## 安装
 
-### 1. 安装并登录 Kimi Code CLI
+### 1. 安装并配置 Kimi Code CLI
 
-确保 `kimi` 命令位于 `PATH`：
+确保 `kimi` 命令位于 `PATH`，并在 `~/.kimi-code/config.toml` 中配置可用的模型与 provider：
 
 ```powershell
 uv tool install kimi-cli
-kimi login
 ```
+
+可以使用 provider API key、Kimi Code 账号凭据或 Kimi CLI 支持的其他配置来源；桌面端不要求执行 `kimi login`。
 
 从旧版 `~/.kimi` 迁移时，运行：
 
@@ -71,7 +72,7 @@ kimi migrate
 
 从 [GitHub Releases](https://github.com/P-A-N-52/kimi-code-desktop/releases) 下载最新 MSI。安装包只包含桌面外壳，不会复制、覆盖或删除你的 Kimi Code CLI 配置与会话数据。
 
-首次启动时，应用会检查 `kimi`、`kimi acp`、`~/.kimi-code/config.toml` 和登录状态，再加载本地会话。
+首次启动时，应用会检查 `kimi`、`kimi acp` 和 `~/.kimi-code/config.toml`，再加载本地会话；不会把 Kimi 账号登录状态作为启动条件。
 
 ## 本地开发
 
@@ -116,10 +117,10 @@ src-tauri\target\release\bundle\msi\Kimi Code_<version>_x64_en-US.msi
 ## 当前边界
 
 - 目前仅面向 Windows。
-- 运行时必须能够访问已安装且已登录的 Kimi Code CLI，不提供 legacy sidecar fallback。
+- 运行时必须能够访问已安装、已配置可用 provider 的 Kimi Code CLI，不要求 Kimi 账号登录，也不提供 legacy sidecar fallback。
 - 当前提供手动深色 / 浅色切换；跟随系统主题尚未接入。
 - ACP 尚不支持 fork-at-turn，因此桌面端不会伪造会话分叉能力。
-- 工作区中的新能力仍需经过真实 Tauri + 已认证 `kimi acp` 路径验收后，才会进入稳定发布说明。
+- 工作区中的新能力仍需经过真实 Tauri + 可用 `kimi acp` provider 路径验收后，才会进入稳定发布说明。
 
 ## License
 

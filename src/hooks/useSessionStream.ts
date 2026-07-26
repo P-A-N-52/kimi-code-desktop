@@ -115,7 +115,10 @@ import {
 } from "react";
 import type { ChatStatus, ToolUIPart } from "ai";
 import type { LiveMessage, MessageAttachmentPart, SubagentStep } from "./types";
-import type { SessionStatus } from "@/lib/api/models";
+import type {
+  SessionStatus,
+  UploadSessionFileResponse,
+} from "@/lib/api/models";
 import { getAuthToken } from "@/lib/auth";
 import {
   type ContentPart,
@@ -555,6 +558,11 @@ export type LocalInfoPanelResult = {
   content: string;
 };
 
+type PendingPrompt = {
+  text: string;
+  attachments: UploadSessionFileResponse[];
+};
+
 export type UseSessionStreamReturn = {
   /** Current messages */
   messages: LiveMessage[];
@@ -581,7 +589,10 @@ export type UseSessionStreamReturn = {
   /** Whether connected to the session stream */
   isConnected: boolean;
   /** Send a message to the session (will auto-connect if not connected) */
-  sendMessage: (text: string) => Promise<LocalInfoPanelResult | void>;
+  sendMessage: (
+    text: string,
+    attachments?: UploadSessionFileResponse[],
+  ) => Promise<LocalInfoPanelResult | void>;
   /** Resolve /usage or /status text without writing chat messages */
   runLocalInfoCommand: (command: "usage" | "status") => Promise<string>;
   /** Respond to an approval request */
@@ -750,7 +761,7 @@ export function useSessionStream(
   const handleMessageRef = useRef<(data: string) => void>(() => undefined);
   const historyCompleteTimeoutRef = useRef<number | null>(null);
   const isReplayingRef = useRef(true); // Track if we're still replaying history
-  const pendingMessageRef = useRef<string | null>(null); // Message to send after connection
+  const pendingMessageRef = useRef<PendingPrompt | null>(null); // Prompt to send after connection
   const pendingModeUpdatesRef = useRef<{
     planMode?: boolean;
     permissionMode?: PermissionMode;
@@ -1430,7 +1441,7 @@ export function useSessionStream(
   );
 
   const addOptimisticUserMessage = useCallback(
-    (input: string) => {
+    (input: string, explicitAttachments: UploadSessionFileResponse[] = []) => {
       const parsedUserInput = parseUserInput(input);
       const turnIndex = turnCounterRef.current;
       turnCounterRef.current += 1;
@@ -1442,6 +1453,13 @@ export function useSessionStream(
         content: parsedUserInput.text,
         ...(parsedUserInput.attachments.length > 0
           ? { attachments: parsedUserInput.attachments }
+          : explicitAttachments.length > 0
+            ? {
+                attachments: explicitAttachments.map((attachment) => ({
+                  kind: "nopreview" as const,
+                  filename: attachment.filename,
+                })),
+              }
           : {}),
       };
       optimisticUserMessagesRef.current.push({
@@ -3372,7 +3390,15 @@ export function useSessionStream(
         method: "prompt",
         id: messageId,
         params: {
-          user_input: pendingMessage,
+          user_input:
+            pendingMessage.text || "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE",
+          ...(pendingMessage.attachments.length > 0
+            ? {
+                attachment_ids: pendingMessage.attachments.map(
+                  (attachment) => attachment.filename,
+                ),
+              }
+            : {}),
           plan_mode: planModeRef.current,
           swarm_mode: swarmModeRef.current,
         },
@@ -3391,7 +3417,7 @@ export function useSessionStream(
         await Promise.resolve(ws.send(JSON.stringify(message)));
         console.log(
           "[SessionStream] Sent pending message after connect:",
-          pendingMessage,
+          pendingMessage.text,
         );
       } catch (err) {
         if (pendingMessageRef.current === null) {
@@ -4738,8 +4764,11 @@ export function useSessionStream(
 
   // Send message to session (auto-connects if not connected)
   const sendMessage = useCallback(
-    async (text: string): Promise<LocalInfoPanelResult | void> => {
-      if (!text.trim()) return;
+    async (
+      text: string,
+      attachments: UploadSessionFileResponse[] = [],
+    ): Promise<LocalInfoPanelResult | void> => {
+      if (!text.trim() && attachments.length === 0) return;
 
       const trimmedText = text.trim();
       const slashDecision = classifySlashDispatch(
@@ -4836,7 +4865,7 @@ export function useSessionStream(
       clearStepRetryStatus();
       resetStepState();
       setError(null);
-      addOptimisticUserMessage(trimmedText);
+      addOptimisticUserMessage(trimmedText, attachments);
       const startedAt = performance.now();
       promptTimingRef.current = {
         startedAt,
@@ -4853,7 +4882,10 @@ export function useSessionStream(
           throw new Error("No session selected");
         }
 
-        pendingMessageRef.current = trimmedText;
+        pendingMessageRef.current = {
+          text: trimmedText,
+          attachments,
+        };
         preserveMessagesOnConnectRef.current = true;
         if (wsRef.current?.readyState === STREAM_CONNECTING) {
           return;
@@ -4870,7 +4902,14 @@ export function useSessionStream(
         method: "prompt",
         id: messageId,
         params: {
-          user_input: trimmedText,
+          user_input: trimmedText || "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE",
+          ...(attachments.length > 0
+            ? {
+                attachment_ids: attachments.map(
+                  (attachment) => attachment.filename,
+                ),
+              }
+            : {}),
           plan_mode: planModeRef.current,
           swarm_mode: swarmModeRef.current,
         },

@@ -111,8 +111,7 @@ pub(crate) fn credentials_present() -> bool {
     })
 }
 
-/// Remove CLI credentials the same way `kimi logout` does (delete `kimi-code.json`).
-/// Idempotent when the file is already missing.
+/// Remove optional Kimi account credentials. Provider/API-key configuration is unaffected.
 pub(crate) fn clear_credentials() -> Result<(), String> {
     with_credentials_lock(|| {
         CREDENTIALS_GENERATION.fetch_add(1, Ordering::SeqCst);
@@ -179,10 +178,7 @@ fn ensure_fresh_access_token_locked(force: bool) -> Result<String, String> {
         return Ok(token.access_token);
     }
     if token.refresh_token.is_empty() {
-        return Err(
-            "Kimi Code login expired (no refresh token). Run `kimi login` in a terminal."
-                .to_string(),
-        );
+        return Err("Managed usage credentials have no refresh token.".to_string());
     }
 
     // Best-effort peer coordination (CLI skips cross-process lock on Windows too):
@@ -207,7 +203,8 @@ fn ensure_fresh_access_token_locked(force: bool) -> Result<String, String> {
 fn load_token_bundle(path: &Path) -> Result<TokenBundle, String> {
     if !path.is_file() {
         return Err(
-            "No Kimi Code credentials found. Sign in from Settings, then try again.".to_string(),
+            "Managed usage is unavailable without Kimi account credentials; configured providers remain usable."
+                .to_string(),
         );
     }
     let content =
@@ -221,9 +218,7 @@ fn load_token_bundle(path: &Path) -> Result<TokenBundle, String> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|token| !token.is_empty())
-        .ok_or_else(|| {
-            "Kimi Code credentials are missing an access token. Run `kimi login`.".to_string()
-        })?
+        .ok_or_else(|| "Managed usage credentials are missing an access token.".to_string())?
         .to_string();
     let refresh_token = value
         .get("refresh_token")
@@ -373,9 +368,9 @@ fn refresh_access_token(refresh_token: &str) -> Result<TokenBundle, String> {
             ureq::Error::Status(401 | 403, resp) => {
                 let hint = read_error_body(resp);
                 if hint.is_empty() {
-                    "Kimi Code login expired. Run `kimi login` in a terminal.".to_string()
+                    "Managed usage credentials were rejected.".to_string()
                 } else {
-                    format!("Kimi Code login expired ({hint}). Run `kimi login`.")
+                    format!("Managed usage credentials were rejected ({hint}).")
                 }
             }
             ureq::Error::Status(code, resp) => {
@@ -448,7 +443,7 @@ fn http_get_json(url: &str, access_token: &str) -> Result<Value, String> {
         .call()
         .map_err(|err| match err {
             ureq::Error::Status(401, _) => {
-                "Authorization failed. Run `kimi login` to refresh credentials.".to_string()
+                "Managed usage authorization failed.".to_string()
             }
             ureq::Error::Status(404, _) => {
                 "Usage endpoint not available for this account.".to_string()

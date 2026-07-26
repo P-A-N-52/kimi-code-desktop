@@ -52,6 +52,7 @@ pub fn run() {
             commands::fork_session,
             commands::generate_title,
             commands::upload_session_file,
+            commands::delete_uploaded_file,
             commands::list_session_directory,
             commands::list_work_dir_directory,
             commands::get_session_file,

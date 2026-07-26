@@ -460,6 +460,11 @@ export async function uploadSessionFile(
 	};
 }
 
+export async function deleteUploadedFile(fileId: string): Promise<void> {
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+	await invoke("delete_uploaded_file", { fileId });
+}
+
 export async function listSessionDirectory(
 	sessionId: string,
 	path?: string,

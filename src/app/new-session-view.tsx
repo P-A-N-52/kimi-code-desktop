@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useGlobalConfig } from "@/hooks/useGlobalConfig";
+import type { UploadSessionFileResponse } from "@/lib/api/models";
 import { notifyGlobalConfigApplied } from "@/lib/config-update-toast";
 import {
 	findConfigModel,
@@ -33,6 +34,8 @@ export function NewSessionView({
 	onWorkDirChange,
 	fetchWorkDirs,
 	onSendFirstMessage,
+	onUploadFile,
+	onRemoveFile,
 	onManageConfig,
 }: {
 	workDir: string;
@@ -42,7 +45,10 @@ export function NewSessionView({
 		workDir: string,
 		text: string,
 		modes: SessionModeDraft | null,
+		attachments: UploadSessionFileResponse[],
 	) => Promise<void>;
+	onUploadFile: (sessionId: string, file: File) => Promise<UploadSessionFileResponse>;
+	onRemoveFile: (fileId: string) => Promise<void>;
 	onManageConfig?: () => void;
 }) {
 	const [draft, setDraft] = useState("");
@@ -139,10 +145,13 @@ export function NewSessionView({
 	);
 
 	const send = useCallback(
-		async (textOverride?: string) => {
+		async (
+			textOverride?: string,
+			attachments: UploadSessionFileResponse[] = [],
+		) => {
 			const text = (textOverride ?? draft).trim();
 			// Ref guard: state `creating` is async and cannot stop double Enter/click.
-			if (!text || creatingRef.current) return;
+			if ((!text && attachments.length === 0) || creatingRef.current) return;
 
 			const dir = workDir.trim();
 			if (!dir) {
@@ -183,6 +192,7 @@ export function NewSessionView({
 					modesSeeded
 						? { permissionMode, planMode, swarmMode }
 						: null,
+					attachments,
 				);
 			} catch {
 				if (textOverride === undefined) setDraft(text);
@@ -241,10 +251,8 @@ export function NewSessionView({
 						queue={[]}
 						onRemoveQueued={() => {}}
 						onClearQueue={() => {}}
-						onUploadFile={async () => {
-							toast.message("请先发送消息创建会话");
-							throw new Error("No session");
-						}}
+						onUploadFile={(file) => onUploadFile(mentionSessionKey, file)}
+						onRemoveFile={onRemoveFile}
 						onOpenContext={() => {
 							toast.message("请先发送消息创建会话");
 						}}
