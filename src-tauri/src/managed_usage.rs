@@ -442,9 +442,7 @@ fn http_get_json(url: &str, access_token: &str) -> Result<Value, String> {
         .timeout(REQUEST_TIMEOUT)
         .call()
         .map_err(|err| match err {
-            ureq::Error::Status(401, _) => {
-                "Managed usage authorization failed.".to_string()
-            }
+            ureq::Error::Status(401, _) => "Managed usage authorization failed.".to_string(),
             ureq::Error::Status(404, _) => {
                 "Usage endpoint not available for this account.".to_string()
             }
