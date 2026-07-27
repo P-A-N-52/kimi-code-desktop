@@ -71,6 +71,8 @@ async function fetchGithubLatest(
     headers: {
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
+      // GitHub rejects anonymous requests without a UA in some environments.
+      "User-Agent": "kimi-code-desktop-update-check",
     },
   });
   if (!response.ok) {

@@ -9,6 +9,10 @@ import {
 import { openExternalHttpUrl, openKimiCodeWebsite } from "@/lib/kimi-code-link";
 import {
   checkAllUpdates,
+  checkCliUpdate,
+  checkDesktopUpdate,
+  CLI_DOWNLOAD_FALLBACK,
+  DESKTOP_DOWNLOAD_FALLBACK,
   type ComponentUpdateResult,
 } from "@/lib/check-updates";
 import {
@@ -58,42 +62,56 @@ function VersionRow({
   label,
   version,
   update,
+  checking,
+  onCheck,
   onOpenDownload,
 }: {
   label: string;
   version: string;
   update: ComponentUpdateResult | null;
+  checking: boolean;
+  onCheck: () => void;
   onOpenDownload: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex justify-between gap-3">
+    <div className="flex flex-col gap-1.5 rounded-r1 border border-line/70 bg-surface/40 px-2.5 py-2">
+      <div className="flex items-center justify-between gap-3">
         <span>{label}</span>
-        <span>{version}</span>
+        <span className="text-foreground">{version}</span>
       </div>
-      {update && (
-        <div className="flex items-center justify-between gap-2 text-[10.5px]">
-          <span
-            className={cn(
-              update.status === "update-available" && "text-bright",
-              update.status === "up-to-date" && "text-faint",
-              (update.status === "error" || update.status === "unknown") &&
-                "text-danger",
-            )}
-          >
-            {update.message}
-          </span>
-          {update.status === "update-available" && (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px]">
+        <button
+          type="button"
+          disabled={checking}
+          className="text-bright underline-offset-2 hover:underline disabled:opacity-50"
+          onClick={onCheck}
+        >
+          {checking ? "检查中…" : "检查更新"}
+        </button>
+        {update && (
+          <>
+            <span
+              className={cn(
+                update.status === "update-available" && "text-bright",
+                update.status === "up-to-date" && "text-faint",
+                (update.status === "error" || update.status === "unknown") &&
+                  "text-danger",
+              )}
+            >
+              {update.status === "up-to-date" && update.latest
+                ? `已是最新（${update.latest}）`
+                : update.message}
+            </span>
             <button
               type="button"
-              className="shrink-0 text-bright underline-offset-2 hover:underline"
+              className="text-muted underline-offset-2 hover:text-bright hover:underline"
               onClick={onOpenDownload}
             >
-              打开下载页
+              打开发布页
             </button>
-          )}
-        </div>
-      )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -232,6 +250,8 @@ export function SettingsDialog({
   const [cliVersion, setCliVersion] = useState("—");
   const [appVersion, setAppVersion] = useState(desktopVersion);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [checkingDesktop, setCheckingDesktop] = useState(false);
+  const [checkingCli, setCheckingCli] = useState(false);
   const [desktopUpdate, setDesktopUpdate] = useState<ComponentUpdateResult | null>(null);
   const [cliUpdate, setCliUpdate] = useState<ComponentUpdateResult | null>(null);
   const selectedModel = useMemo(
@@ -283,38 +303,91 @@ export function SettingsDialog({
     setCliUpdate(null);
   }, [open]);
 
-  const handleCheckUpdates = async () => {
-    setCheckingUpdates(true);
+  const refreshLocalVersions = async (): Promise<{
+    desktop: string;
+    cli: string;
+  }> => {
+    let nextApp = appVersion;
+    let nextCli = cliVersion;
     try {
-      let nextApp = appVersion;
-      let nextCli = cliVersion;
+      const live = (await getAppVersion()).trim();
+      if (live) {
+        nextApp = live;
+        setAppVersion(live);
+      }
+    } catch {
+      // Keep displayed fallback.
+    }
+    try {
+      const liveCli = (await getKimiCliVersion()).trim();
+      if (liveCli) {
+        nextCli = liveCli;
+        setCliVersion(liveCli);
+      }
+    } catch {
       try {
-        const live = (await getAppVersion()).trim();
-        if (live) {
-          nextApp = live;
-          setAppVersion(live);
-        }
+        nextCli = await resolveKimiCliVersion();
+        setCliVersion(nextCli);
       } catch {
         // Keep displayed fallback.
       }
-      try {
-        const liveCli = (await getKimiCliVersion()).trim();
-        if (liveCli) {
-          nextCli = liveCli;
-          setCliVersion(liveCli);
-        }
-      } catch {
-        try {
-          nextCli = await resolveKimiCliVersion();
-          setCliVersion(nextCli);
-        } catch {
-          // Keep displayed fallback.
-        }
-      }
+    }
+    return { desktop: nextApp, cli: nextCli };
+  };
 
+  const handleCheckDesktopUpdate = async () => {
+    setCheckingDesktop(true);
+    try {
+      const { desktop } = await refreshLocalVersions();
+      const result = await checkDesktopUpdate(desktop);
+      setDesktopUpdate(result);
+      if (result.status === "up-to-date") {
+        toast.success(`桌面版已是最新（${result.latest ?? desktop}）`);
+      } else if (result.status === "update-available") {
+        toast.message("桌面版有更新", { description: result.message });
+      } else {
+        toast.error("桌面版检查失败", { description: result.message });
+      }
+    } catch (error) {
+      toast.error("桌面版检查失败", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setCheckingDesktop(false);
+    }
+  };
+
+  const handleCheckCliUpdate = async () => {
+    setCheckingCli(true);
+    try {
+      const { cli } = await refreshLocalVersions();
+      const result = await checkCliUpdate(cli);
+      setCliUpdate(result);
+      if (result.status === "up-to-date") {
+        toast.success(`CLI 已是最新（${result.latest ?? cli}）`);
+      } else if (result.status === "update-available") {
+        toast.message("CLI 有更新", { description: result.message });
+      } else {
+        toast.error("CLI 检查失败", { description: result.message });
+      }
+    } catch (error) {
+      toast.error("CLI 检查失败", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setCheckingCli(false);
+    }
+  };
+
+  const handleCheckUpdates = async () => {
+    setCheckingUpdates(true);
+    setCheckingDesktop(true);
+    setCheckingCli(true);
+    try {
+      const { desktop, cli } = await refreshLocalVersions();
       const result = await checkAllUpdates({
-        desktopVersion: nextApp,
-        cliVersion: nextCli,
+        desktopVersion: desktop,
+        cliVersion: cli,
       });
       setDesktopUpdate(result.desktop);
       setCliUpdate(result.cli);
@@ -340,6 +413,8 @@ export function SettingsDialog({
       });
     } finally {
       setCheckingUpdates(false);
+      setCheckingDesktop(false);
+      setCheckingCli(false);
     }
   };
   const applyDefaultModel = async (name: string) => {
@@ -566,30 +641,34 @@ export function SettingsDialog({
                     label="桌面版"
                     version={appVersion}
                     update={desktopUpdate}
+                    checking={checkingDesktop || checkingUpdates}
+                    onCheck={() => void handleCheckDesktopUpdate()}
                     onOpenDownload={() => {
-                      if (desktopUpdate?.downloadUrl) {
-                        openExternalHttpUrl(desktopUpdate.downloadUrl);
-                      }
+                      openExternalHttpUrl(
+                        desktopUpdate?.downloadUrl || DESKTOP_DOWNLOAD_FALLBACK,
+                      );
                     }}
                   />
                   <VersionRow
                     label="Kimi Code CLI"
                     version={cliVersion}
                     update={cliUpdate}
+                    checking={checkingCli || checkingUpdates}
+                    onCheck={() => void handleCheckCliUpdate()}
                     onOpenDownload={() => {
-                      if (cliUpdate?.downloadUrl) {
-                        openExternalHttpUrl(cliUpdate.downloadUrl);
-                      }
+                      openExternalHttpUrl(
+                        cliUpdate?.downloadUrl || CLI_DOWNLOAD_FALLBACK,
+                      );
                     }}
                   />
                 </div>
                 <div className="mt-2.5 flex flex-wrap gap-2">
                   <Button
                     variant="ghost"
-                    disabled={checkingUpdates}
+                    disabled={checkingUpdates || checkingDesktop || checkingCli}
                     onClick={() => void handleCheckUpdates()}
                   >
-                    {checkingUpdates ? "检查中…" : "检查更新"}
+                    {checkingUpdates ? "检查中…" : "全部检查"}
                   </Button>
                   <Button
                     variant="ghost"
