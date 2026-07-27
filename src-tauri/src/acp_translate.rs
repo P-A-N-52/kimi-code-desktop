@@ -100,10 +100,15 @@ pub fn legacy_approval_result_to_acp_outcome(result: &Value) -> Value {
         .get("response")
         .and_then(Value::as_str)
         .unwrap_or("reject");
+    // Kimi Code ACP (0.29+) maps optionId → ApprovalResponse via:
+    //   approve_once | approve → approved
+    //   approve_always | approve_for_session → approved (session)
+    //   reject → rejected
+    //   anything else (incl. Zed-style allow-once / reject-once) → rejected
     let option_id = match response {
-        "approve" => "allow-once",
-        "approve_for_session" => "allow-always",
-        _ => "reject-once",
+        "approve" => "approve_once",
+        "approve_for_session" => "approve_always",
+        _ => "reject",
     };
     json!({
         "outcome": {
@@ -1190,8 +1195,15 @@ mod tests {
 
     #[test]
     fn approval_result_maps_to_acp_outcome() {
-        let outcome = legacy_approval_result_to_acp_outcome(&json!({ "response": "approve" }));
-        assert_eq!(outcome["outcome"]["optionId"], "allow-once");
+        let approve = legacy_approval_result_to_acp_outcome(&json!({ "response": "approve" }));
+        assert_eq!(approve["outcome"]["optionId"], "approve_once");
+
+        let always =
+            legacy_approval_result_to_acp_outcome(&json!({ "response": "approve_for_session" }));
+        assert_eq!(always["outcome"]["optionId"], "approve_always");
+
+        let reject = legacy_approval_result_to_acp_outcome(&json!({ "response": "reject" }));
+        assert_eq!(reject["outcome"]["optionId"], "reject");
     }
 
     #[test]

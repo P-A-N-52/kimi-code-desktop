@@ -91,4 +91,25 @@ describe("SwarmToolCard", () => {
     expect(screen.getByText("Docs")).toBeTruthy();
     expect(screen.getByText(/完成 1，失败 1/)).toBeTruthy();
   });
+
+  it("shows denial instead of waiting when approval was rejected", () => {
+    render(
+      <SwarmToolCard
+        toolCall={{
+          title: "AgentSwarm",
+          type: "tool-AgentSwarm" as never,
+          state: "output-denied",
+          toolCallId: "swarm-denied",
+          input: { description: "Explore", items: [{}, {}] },
+          errorText:
+            'Tool "AgentSwarm" was not run because the user rejected the approval request.',
+          isError: true,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("已拒绝 / 未执行")).toBeTruthy();
+    expect(screen.getByText(/rejected the approval request/)).toBeTruthy();
+    expect(screen.queryByText("等待子代理启动…")).toBeNull();
+  });
 });

@@ -1,41 +1,32 @@
-# Changelog Draft — since v0.1.10
+# Changelog Draft — since v0.1.11
 
-> 对比范围：`v0.1.10` → **v0.1.11**  
-> 正式版本：**0.1.11**  
+> 对比范围：`v0.1.11` → **v0.1.12**  
+> 正式版本：**0.1.12**（热修复；四段号 `0.1.11.1` 不符合 Cargo semver）  
 > 整理日期：2026-07-27
 
 ---
 
-## Kimi Code Desktop v0.1.11
+## Kimi Code Desktop v0.1.12
 
-相对 **v0.1.10** 的用户可见改动汇总。
+相对 **v0.1.11** 的用户可见改动汇总。
 
-### Composer / 文件
+### 严重修复
 
-- 附件改为 CLI 风格 `@路径` 文本插入（与 `@` 文件引用一致），不再走 `attachment_ids`
-- 剪贴板粘贴：上传到 pending 目录后插入绝对路径
-- 原生多选文件选择器（`pick_files` / rfd）插入真实路径
-- OS 拖放经 Tauri `tauri://drag-drop` 插入路径（`dragDropEnabled: true`）
-- 修复多文件粘贴时 `draftRef` 未同步、只保留最后一个路径
-- pending 上传目录与 `delete_pending_file`（含上一批提交）
+- 修复 ACP 审批 `optionId` 与 Kimi Code 0.29.1 不兼容：桌面 `allow-once` 会被 CLI 当成未知 ID 直接拒绝；现改为 `approve_once` / `approve_always` / `reject`
+- 修复 auto + Plan/Swarm 下权限模式被打回 manual、以及工具（含 AgentSwarm）假「用户拒绝」
 
-### Skills / Slash 命令
+### 稳定性
 
-- 后端 `list_available_skills`：扫描 `~/.agents/skills`、`$KIMI_CODE_HOME/skills`、managed plugins、`extra_skill_dirs`、daimon 插件目录
-- 前端 `useSkillSlashCommands` + `mergeSlashCommands`：新会话即可用 `skill:<name>`，ACP 优先
-- 扩充 `PRE_SESSION_SLASH_COMMANDS`；去掉 denylist 中的 `custom-theme`
-- Composer 斜杠菜单取消 `.slice(0, 10)` 截断
+- 权限 / Plan / Swarm 模式切换单飞、prompt 前落盘；避免 StatusUpdate 覆盖本地意图
+- ACP Plan/权限 `set_mode` 序列化，减少 wire 上 auto↔manual 抖动
 
-### 设置 / 就绪
+### UI
 
-- 设置页通过 `getAppVersion` 显示运行中桌面版本
-- 设置 → 关于「检查更新」：对比 GitHub latest（桌面 `P-A-N-52/kimi-code-desktop`、CLI `MoonshotAI/kimi-code`），有新版则打开下载页
-- optional-auth 就绪覆盖层与运行时检查调整（上一批提交）
+- Swarm 卡拒绝态显示「已拒绝 / 未执行」，不再假「等待子代理启动…」
 
 ### 其它 / 内部
 
-- 新增 `rfd` 依赖；`skills.rs` 与前端测试补充
-- README / package / Cargo / tauri 版本对齐 `0.1.11`
+- README / package / Cargo / tauri 版本对齐 `0.1.12`
 
 ---
 
@@ -43,5 +34,5 @@
 
 | 项 | 值 |
 |---|---|
-| 上一正式版 / tag | `v0.1.10` |
-| 发布版本 | `0.1.11` |
+| 上一正式版 / tag | `v0.1.11` |
+| 发布版本 | `0.1.12` |

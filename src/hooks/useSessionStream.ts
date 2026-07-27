@@ -790,6 +790,8 @@ export function useSessionStream(
     permissionMode?: PermissionMode;
     swarmMode?: boolean;
   }>({});
+  /** Serialize mode flushes so permission/plan/swarm setters cannot race. */
+  const modeFlushChainRef = useRef<Promise<void>>(Promise.resolve());
   const planModeRef = useRef(false);
   const permissionModeRef = useRef<PermissionMode>("manual");
   const swarmModeRef = useRef(false);
@@ -802,9 +804,18 @@ export function useSessionStream(
   const hasMessagesRef = useRef(false);
   const autoConnectRef = useRef(autoConnect);
   autoConnectRef.current = autoConnect;
-  planModeRef.current = planMode;
-  permissionModeRef.current = permissionMode;
-  swarmModeRef.current = swarmMode;
+  // Keep refs aligned with React state, but never clobber an in-flight local
+  // mode write (pendingModeUpdatesRef) — StatusUpdate / applyPersistedModes
+  // races were overwriting optimistic auto with manual before the first prompt.
+  if (typeof pendingModeUpdatesRef.current.planMode !== "boolean") {
+    planModeRef.current = planMode;
+  }
+  if (!pendingModeUpdatesRef.current.permissionMode) {
+    permissionModeRef.current = permissionMode;
+  }
+  if (typeof pendingModeUpdatesRef.current.swarmMode !== "boolean") {
+    swarmModeRef.current = swarmMode;
+  }
   const lastStatusSeqRef = useRef<number | null>(null);
   const lastWsMessageTimeRef = useRef<number>(0); // Last time a stream message was received
   const watchdogIntervalRef = useRef<number | null>(null); // Stale connection watchdog
@@ -2930,7 +2941,10 @@ export function useSessionStream(
           }
 
           const nextPlanMode = event.payload.plan_mode;
-          if (typeof nextPlanMode === "boolean") {
+          if (
+            typeof nextPlanMode === "boolean" &&
+            typeof pendingModeUpdatesRef.current.planMode !== "boolean"
+          ) {
             setPlanMode(nextPlanMode);
             planModeRef.current = nextPlanMode;
           }
@@ -2939,16 +2953,20 @@ export function useSessionStream(
           const nextPermissionMode =
             rawPermissionMode === "ask" ? "manual" : rawPermissionMode;
           if (
-            nextPermissionMode === "manual" ||
-            nextPermissionMode === "auto" ||
-            nextPermissionMode === "yolo"
+            (nextPermissionMode === "manual" ||
+              nextPermissionMode === "auto" ||
+              nextPermissionMode === "yolo") &&
+            !pendingModeUpdatesRef.current.permissionMode
           ) {
             setPermissionMode(nextPermissionMode);
             permissionModeRef.current = nextPermissionMode;
           }
 
           const nextSwarmMode = event.payload.swarm_mode;
-          if (typeof nextSwarmMode === "boolean") {
+          if (
+            typeof nextSwarmMode === "boolean" &&
+            typeof pendingModeUpdatesRef.current.swarmMode !== "boolean"
+          ) {
             setSwarmMode(nextSwarmMode);
             swarmModeRef.current = nextSwarmMode;
           }
@@ -3334,66 +3352,87 @@ export function useSessionStream(
 
   const flushPendingModeUpdates = useCallback(
     async (connection: StreamConnection) => {
-      const pending = pendingModeUpdatesRef.current;
-      const updates: Array<
-        | ["set_permission_mode", { mode: PermissionMode }]
-        | ["set_plan_mode" | "set_swarm_mode", { enabled: boolean }]
-      > = [];
-      if (pending.permissionMode) {
-        updates.push([
-          "set_permission_mode",
-          { mode: pending.permissionMode },
-        ]);
-      }
-      if (typeof pending.planMode === "boolean") {
-        updates.push(["set_plan_mode", { enabled: pending.planMode }]);
-      }
-      if (typeof pending.swarmMode === "boolean") {
-        updates.push(["set_swarm_mode", { enabled: pending.swarmMode }]);
-      }
-      if (updates.length === 0) {
-        return;
-      }
+      const runFlush = async () => {
+        // Drain until empty so updates queued while we were sending are not dropped.
+        for (;;) {
+          const pending = pendingModeUpdatesRef.current;
+          const updates: Array<
+            | ["set_permission_mode", { mode: PermissionMode }]
+            | ["set_plan_mode" | "set_swarm_mode", { enabled: boolean }]
+          > = [];
+          if (pending.permissionMode) {
+            updates.push([
+              "set_permission_mode",
+              { mode: pending.permissionMode },
+            ]);
+          }
+          if (typeof pending.planMode === "boolean") {
+            updates.push(["set_plan_mode", { enabled: pending.planMode }]);
+          }
+          if (typeof pending.swarmMode === "boolean") {
+            updates.push(["set_swarm_mode", { enabled: pending.swarmMode }]);
+          }
+          if (updates.length === 0) {
+            return;
+          }
 
-      if (typeof pending.planMode === "boolean") {
-        planModeRef.current = pending.planMode;
-        setPlanMode(pending.planMode);
-      }
-      if (pending.permissionMode) {
-        permissionModeRef.current = pending.permissionMode;
-        setPermissionMode(pending.permissionMode);
-      }
-      if (typeof pending.swarmMode === "boolean") {
-        swarmModeRef.current = pending.swarmMode;
-        setSwarmMode(pending.swarmMode);
-      }
+          // Clear only the keys we are about to send; concurrent setters may
+          // add newer values while we await wire_send.
+          const sentPermission = pending.permissionMode;
+          const sentPlan = pending.planMode;
+          const sentSwarm = pending.swarmMode;
+          if (sentPermission) {
+            delete pendingModeUpdatesRef.current.permissionMode;
+            permissionModeRef.current = sentPermission;
+            setPermissionMode(sentPermission);
+          }
+          if (typeof sentPlan === "boolean") {
+            delete pendingModeUpdatesRef.current.planMode;
+            planModeRef.current = sentPlan;
+            setPlanMode(sentPlan);
+          }
+          if (typeof sentSwarm === "boolean") {
+            delete pendingModeUpdatesRef.current.swarmMode;
+            swarmModeRef.current = sentSwarm;
+            setSwarmMode(sentSwarm);
+          }
 
-      pendingModeUpdatesRef.current = {};
-      try {
-        for (const [method, params] of updates) {
-          await Promise.resolve(
-            connection.send(
-              JSON.stringify({
-                jsonrpc: "2.0",
-                method,
-                id: uuidV4(),
-                params,
-              }),
-            ),
-          );
-        }
-      } catch (error) {
-        for (const [method, params] of updates) {
-          if (method === "set_permission_mode") {
-            pendingModeUpdatesRef.current.permissionMode = params.mode;
-          } else {
-            pendingModeUpdatesRef.current[
-              method === "set_plan_mode" ? "planMode" : "swarmMode"
-            ] = params.enabled;
+          try {
+            // Permission before plan: plan recovery uses the worker's permission
+            // snapshot; sending plan first with stale Manual writes `default`.
+            for (const [method, params] of updates) {
+              await Promise.resolve(
+                connection.send(
+                  JSON.stringify({
+                    jsonrpc: "2.0",
+                    method,
+                    id: uuidV4(),
+                    params,
+                  }),
+                ),
+              );
+            }
+          } catch (error) {
+            for (const [method, params] of updates) {
+              if (method === "set_permission_mode") {
+                pendingModeUpdatesRef.current.permissionMode = params.mode;
+              } else {
+                pendingModeUpdatesRef.current[
+                  method === "set_plan_mode" ? "planMode" : "swarmMode"
+                ] = params.enabled;
+              }
+            }
+            throw error;
           }
         }
-        throw error;
-      }
+      };
+
+      const next = modeFlushChainRef.current.then(runFlush, runFlush);
+      modeFlushChainRef.current = next.then(
+        () => undefined,
+        () => undefined,
+      );
+      await next;
     },
     [],
   );
@@ -3405,6 +3444,8 @@ export function useSessionStream(
       if (!pendingMessage) {
         return;
       }
+
+      await flushPendingModeUpdates(ws);
 
       const messageId = uuidV4();
       promptRequestIdsRef.current.add(messageId);
@@ -3450,7 +3491,7 @@ export function useSessionStream(
         throw error;
       }
     },
-    [onError, setAwaitingFirstResponse, setError],
+    [flushPendingModeUpdates, onError, setAwaitingFirstResponse, setError],
   );
 
   // Handle incoming stream message
@@ -4911,7 +4952,15 @@ export function useSessionStream(
         return;
       }
 
-      // Send as JSON-RPC prompt message
+      // Send as JSON-RPC prompt message — modes must land before the prompt so
+      // ACP is not still on `default`/manual when the first tool asks permission.
+      const connection = wsRef.current;
+      try {
+        await flushPendingModeUpdates(connection);
+      } catch (err) {
+        console.warn("[SessionStream] Failed to flush modes before prompt:", err);
+      }
+
       const messageId = uuidV4();
       promptRequestIdsRef.current.add(messageId);
       const message: WireMessage = {
@@ -4927,7 +4976,6 @@ export function useSessionStream(
         },
       };
 
-      const connection = wsRef.current;
       try {
         if (promptTimingRef.current) {
           promptTimingRef.current.promptSubmittedAt = performance.now();
@@ -4970,6 +5018,7 @@ export function useSessionStream(
       setError,
       getNextMessageId,
       setMessages,
+      flushPendingModeUpdates,
     ],
   );
 
@@ -5054,12 +5103,20 @@ export function useSessionStream(
       }
 
       const applyPersistedModes = () => {
-        setPlanMode(persistedModes.planMode);
-        planModeRef.current = persistedModes.planMode;
-        setPermissionMode(persistedModes.permissionMode);
-        permissionModeRef.current = persistedModes.permissionMode;
-        setSwarmMode(persistedModes.swarmMode);
-        swarmModeRef.current = persistedModes.swarmMode;
+        // Draft / in-flight UI writes win over the snapshot taken at session
+        // open (often still `manual` for a brand-new session).
+        if (typeof pendingModeUpdatesRef.current.planMode !== "boolean") {
+          setPlanMode(persistedModes.planMode);
+          planModeRef.current = persistedModes.planMode;
+        }
+        if (!pendingModeUpdatesRef.current.permissionMode) {
+          setPermissionMode(persistedModes.permissionMode);
+          permissionModeRef.current = persistedModes.permissionMode;
+        }
+        if (typeof pendingModeUpdatesRef.current.swarmMode !== "boolean") {
+          setSwarmMode(persistedModes.swarmMode);
+          swarmModeRef.current = persistedModes.swarmMode;
+        }
       };
 
       // In Tauri, opening a completed session should not pay the full worker

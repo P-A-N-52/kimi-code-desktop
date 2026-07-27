@@ -407,6 +407,9 @@ pub(crate) struct AcpWorker {
     plan_mode: Mutex<bool>,
     permission_mode: Mutex<PermissionMode>,
     swarm_mode: Mutex<bool>,
+    /// Serialize plan/permission ACP `session/set_mode` sequences so concurrent
+    /// wire_send handlers cannot interleave auto ↔ default and thrash wire.
+    mode_ops: tokio::sync::Mutex<()>,
 }
 
 pub(crate) struct AcpRpcSession {
@@ -521,6 +524,7 @@ impl AcpProcessManager {
             plan_mode: Mutex::new(initial_plan_mode),
             permission_mode: Mutex::new(initial_permission_mode),
             swarm_mode: Mutex::new(initial_swarm_mode),
+            mode_ops: tokio::sync::Mutex::new(()),
         });
 
         let mut rpc = spawn_acp_rpc_session(&program, app.clone(), Arc::clone(&worker))?;
@@ -838,6 +842,7 @@ fn new_probe_worker() -> AcpWorker {
         plan_mode: Mutex::new(false),
         permission_mode: Mutex::new(PermissionMode::Manual),
         swarm_mode: Mutex::new(false),
+        mode_ops: tokio::sync::Mutex::new(()),
     }
 }
 
@@ -1291,6 +1296,7 @@ async fn handle_set_plan_mode(
 ) -> Result<(), String> {
     let enabled = mode_enabled_from_params(&params)?;
     ensure_mode_change_idle(worker)?;
+    let _mode_guard = worker.mode_ops.lock().await;
     let permission_mode = *worker.permission_mode.lock().unwrap();
 
     let response = {
@@ -1363,13 +1369,18 @@ async fn handle_set_permission_mode(
 ) -> Result<(), String> {
     let next_mode = permission_mode_from_params(&params)?;
     ensure_mode_change_idle(worker)?;
+    let _mode_guard = worker.mode_ops.lock().await;
 
-    if *worker.permission_mode.lock().unwrap() == next_mode {
+    let previous_mode = *worker.permission_mode.lock().unwrap();
+    if previous_mode == next_mode {
         emit_mode_response(app, worker, id);
         emit_mode_status_wire(app, worker);
         return Ok(());
     }
 
+    // Commit desired permission before ACP RPCs so a concurrent plan enable
+    // (Already-in-plan recovery) snapshots Auto instead of stale Manual.
+    *worker.permission_mode.lock().unwrap() = next_mode;
     let plan_mode = *worker.plan_mode.lock().unwrap();
     let response = {
         let rpc = active_worker_rpc(worker)?;
@@ -1381,8 +1392,16 @@ async fn handle_set_permission_mode(
                     "modeId": next_mode.acp_mode_id(),
                 }),
             )
-            .await?;
+            .await;
+        let permission_response = match permission_response {
+            Ok(response) => response,
+            Err(err) => {
+                *worker.permission_mode.lock().unwrap() = previous_mode;
+                return Err(err);
+            }
+        };
         if permission_response.error.is_some() {
+            *worker.permission_mode.lock().unwrap() = previous_mode;
             return Err(format!(
                 "ACP session/set_mode failed: {}",
                 describe_rpc_error(&permission_response)
@@ -1390,27 +1409,35 @@ async fn handle_set_permission_mode(
         }
 
         if plan_mode {
-            rpc.request(
-                "session/set_mode",
-                json!({
-                    "sessionId": worker.session_id,
-                    "modeId": "plan",
-                }),
-            )
-            .await?
+            match rpc
+                .request(
+                    "session/set_mode",
+                    json!({
+                        "sessionId": worker.session_id,
+                        "modeId": "plan",
+                    }),
+                )
+                .await
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    *worker.permission_mode.lock().unwrap() = previous_mode;
+                    return Err(err);
+                }
+            }
         } else {
             permission_response
         }
     };
 
     if response.error.is_some() {
+        *worker.permission_mode.lock().unwrap() = previous_mode;
         return Err(format!(
             "ACP session/set_mode failed while restoring Plan: {}",
             describe_rpc_error(&response)
         ));
     }
 
-    *worker.permission_mode.lock().unwrap() = next_mode;
     emit_mode_response(app, worker, id);
     emit_mode_status_wire(app, worker);
     Ok(())
@@ -2009,13 +2036,13 @@ fn handle_acp_reverse_request(
                 emit_wire_message(app, &worker.session_id, wire_message);
             } else {
                 eprintln!(
-                    "[WARN] Unknown ACP permission request (id={request_id}); defaulting to reject-once"
+                    "[WARN] Unknown ACP permission request (id={request_id}); defaulting to reject"
                 );
                 write_acp_response(
                     stdin,
                     request_id,
                     json!({
-                        "outcome": { "outcome": "selected", "optionId": "reject-once" }
+                        "outcome": { "outcome": "selected", "optionId": "reject" }
                     }),
                 )?;
             }
@@ -2314,7 +2341,7 @@ mod tests {
         let reverse_rpc = active_worker_rpc(&worker).expect("reverse transport");
         assert!(Arc::ptr_eq(&prompt_rpc, &reverse_rpc));
         reverse_rpc
-            .respond(42, json!({ "outcome": "allow-once" }))
+            .respond(42, json!({ "outcome": { "outcome": "selected", "optionId": "approve_once" } }))
             .expect("write reverse response while prompt handle is alive");
         reverse_rpc
             .notify("session/cancel", json!({ "sessionId": "probe" }))

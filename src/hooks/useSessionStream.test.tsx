@@ -1306,8 +1306,9 @@ describe("useSessionStream Tauri watchdog", () => {
 		completeReplay();
 
 		let sendPromise: ReturnType<typeof result.current.sendMessage> | undefined;
-		act(() => {
+		await act(async () => {
 			sendPromise = result.current.sendMessage("Complete this prompt");
+			await flushPromises();
 		});
 
 		const prompt = mocks.wireSend.mock.calls
