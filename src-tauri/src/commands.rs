@@ -11,6 +11,7 @@ use crate::security::{
 };
 use crate::session_files;
 use crate::session_store;
+use crate::skills;
 use crate::wire_events::{RestartWorkersSummary, RuntimeStatus};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -477,6 +478,27 @@ fn resolve_startup_dir() -> Result<String, String> {
 #[tauri::command]
 pub fn get_global_config() -> Result<Value, String> {
     global_config::get_global_config()
+}
+
+#[tauri::command]
+pub fn list_available_skills() -> Result<Value, String> {
+    skills::list_available_skills()
+}
+
+/// Native multi-select file picker. Returns absolute paths so the composer can
+/// insert them as text tokens (browser file inputs do not expose real paths).
+#[tauri::command]
+pub fn pick_files() -> Result<Value, String> {
+    let paths = rfd::FileDialog::new()
+        .pick_files()
+        .map(|files| {
+            files
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(json!(paths))
 }
 
 #[tauri::command]

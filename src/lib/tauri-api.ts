@@ -519,6 +519,38 @@ export async function getStartupDir(): Promise<string> {
 	return String(await invoke<unknown>("get_startup_dir"));
 }
 
+export type AvailableSkill = {
+	name: string;
+	description: string;
+	source: string;
+};
+
+export async function listAvailableSkills(): Promise<AvailableSkill[]> {
+	if (!isTauri()) return Promise.resolve([]);
+	const raw = await invoke<unknown[]>("list_available_skills");
+	if (!Array.isArray(raw)) return [];
+	return raw
+		.map((entry) => {
+			const record = (entry ?? {}) as Record<string, unknown>;
+			const name = typeof record.name === "string" ? record.name.trim() : "";
+			if (!name) return null;
+			return {
+				name,
+				description:
+					typeof record.description === "string" ? record.description : "",
+				source: typeof record.source === "string" ? record.source : "",
+			};
+		})
+		.filter((skill): skill is AvailableSkill => skill !== null);
+}
+
+/** Native multi-select file picker; returns absolute paths (empty on cancel). */
+export async function pickFiles(): Promise<string[]> {
+	if (!isTauri()) return Promise.resolve([]);
+	const raw = await invoke<unknown>("pick_files");
+	return Array.isArray(raw) ? raw.map(String) : [];
+}
+
 export async function getGlobalConfig(): Promise<GlobalConfig> {
 	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("get_global_config");

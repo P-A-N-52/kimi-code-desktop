@@ -10,7 +10,11 @@ import {
   modelForcesThinking,
   modelHasThinkingCapability,
 } from "@/lib/model-capabilities";
-import { classifySlashDispatch } from "@/lib/slash-command-catalog";
+import {
+  classifySlashDispatch,
+  mergeSlashCommands,
+} from "@/lib/slash-command-catalog";
+import { useSkillSlashCommands } from "@/hooks/useSkillSlashCommands";
 import {
   CommandResultPanel,
   type CommandResultPanelState,
@@ -34,7 +38,6 @@ export function ConversationView({
   stream,
   onOpenWorkspace,
   onUploadFile,
-  onRemoveFile,
   onManageConfig,
   listDirectory,
   pendingFirstMessage,
@@ -48,7 +51,6 @@ export function ConversationView({
   stream: UseSessionStreamReturn;
   onOpenWorkspace: (tab?: WorkspaceTab) => void;
   onUploadFile: (sessionId: string, file: File) => Promise<UploadSessionFileResponse>;
-  onRemoveFile: (fileId: string) => Promise<void>;
   onManageConfig?: () => void;
   listDirectory?: (sessionId: string, path?: string) => Promise<SessionFileEntry[]>;
   pendingFirstMessage?: string | null;
@@ -83,6 +85,11 @@ export function ConversationView({
   const [commandResult, setCommandResult] = useState<CommandResultPanelState | null>(null);
   const { config, update, isUpdating } = useGlobalConfig();
   const busy = stream.status === "submitted" || stream.status === "streaming";
+  const skillCommands = useSkillSlashCommands();
+  const slashCommands = useMemo(
+    () => mergeSlashCommands(stream.slashCommands, skillCommands),
+    [stream.slashCommands, skillCommands],
+  );
 
   const setDraft = useCallback(
     (value: string) => {
@@ -190,7 +197,7 @@ export function ConversationView({
       if (!text && attachments.length === 0) return;
       if (stream.status === "error") return;
 
-      const slashDecision = classifySlashDispatch(text, stream.slashCommands);
+      const slashDecision = classifySlashDispatch(text, slashCommands);
       if (
         slashDecision.kind === "local" &&
         (slashDecision.name === "usage" || slashDecision.name === "status")
@@ -226,7 +233,7 @@ export function ConversationView({
           sendInFlightRef.current = false;
         });
     },
-    [busy, draft, setDraft, setQueue, showInfoPanel, stream],
+    [busy, draft, setDraft, setQueue, showInfoPanel, slashCommands, stream],
   );
 
   // Dedupe queue flushes: React StrictMode re-runs effects with the same
@@ -349,12 +356,11 @@ export function ConversationView({
             canCancel={stream.canCancel}
             sendDisabled={streamDead}
             planMode={stream.planMode}
-            slashCommands={stream.slashCommands}
+            slashCommands={slashCommands}
             queue={queue}
             onRemoveQueued={(id) => setQueue((current) => current.filter((item) => item.id !== id))}
             onClearQueue={() => setQueue([])}
             onUploadFile={(file) => onUploadFile(sessionId, file)}
-            onRemoveFile={onRemoveFile}
             onOpenContext={() => onOpenWorkspace("files")}
             listDirectory={listDirectory}
             models={models}

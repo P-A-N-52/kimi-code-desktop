@@ -3,6 +3,7 @@ import {
   classifySlashDispatch,
   filterDesktopSlashCommands,
   formatDesktopHelpReport,
+  mergeSlashCommands,
   shouldExecuteSlashCommandImmediately,
 } from "./slash-command-catalog";
 
@@ -137,5 +138,33 @@ describe("slash-command-catalog", () => {
     ]);
     expect(help).toContain("/usage");
     expect(help).toContain("/compact hint");
+  });
+
+  it("forwards runtime-advertised skill commands like custom-theme", () => {
+    const advertised = [
+      { name: "custom-theme", description: "Create a theme", aliases: [] },
+    ];
+    expect(classifySlashDispatch("/custom-theme", advertised)).toEqual({
+      kind: "passthrough",
+    });
+  });
+
+  it("merges command sources with earlier entries winning", () => {
+    const acp = [
+      { name: "skill:demo", description: "ACP description", aliases: [] },
+      { name: "compact", description: "Compact", aliases: [] },
+    ];
+    const disk = [
+      { name: "skill:demo", description: "Disk description", aliases: [] },
+      { name: "skill:extra", description: "Only on disk", aliases: [] },
+      { name: "swarm", description: "Denied locally", aliases: [] },
+    ];
+    const merged = mergeSlashCommands(acp, disk);
+    expect(merged.map((command) => command.name)).toEqual([
+      "skill:demo",
+      "compact",
+      "skill:extra",
+    ]);
+    expect(merged[0]?.description).toBe("ACP description");
   });
 });

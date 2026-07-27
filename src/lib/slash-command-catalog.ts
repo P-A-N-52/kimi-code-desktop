@@ -29,7 +29,6 @@ const DESKTOP_SLASH_DENYLIST = new Set([
   "provider",
   // Pure TUI / process exit
   "theme",
-  "custom-theme",
   "editor",
   "reload-tui",
   "exit",
@@ -316,4 +315,25 @@ export function shouldExecuteSlashCommandImmediately(
     return false;
   }
   return true;
+}
+
+/**
+ * Merge slash-command sources by normalized name. Earlier entries win, so
+ * ACP-advertised commands keep their authoritative descriptions while
+ * disk-discovered skills fill whatever the runtime has not advertised.
+ */
+export function mergeSlashCommands(
+  ...sources: readonly (readonly SlashCommandDef[])[]
+): SlashCommandDef[] {
+  const seen = new Set<string>();
+  const merged: SlashCommandDef[] = [];
+  for (const source of sources) {
+    for (const command of source) {
+      const key = normalizeCommandName(command.name);
+      if (!key || seen.has(key) || isDeniedDesktopSlashCommand(key)) continue;
+      seen.add(key);
+      merged.push(command);
+    }
+  }
+  return merged;
 }

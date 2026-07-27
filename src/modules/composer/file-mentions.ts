@@ -123,6 +123,24 @@ export function formatMentionToken(insertValue: string): string {
   return `@${insertValue}`;
 }
 
+/** Insert a mention/path token into `text` at `caret` with spacing. */
+export function insertTokenAtCaret(
+  text: string,
+  caret: number,
+  token: string,
+): { nextText: string; nextCaret: number } {
+  const safeCaret = Math.max(0, Math.min(text.length, caret));
+  const before = text.slice(0, safeCaret);
+  const after = text.slice(safeCaret);
+  const lead = before.length > 0 && !/\s$/.test(before) ? " " : "";
+  const trail = after.length === 0 ? " " : /^\s/.test(after) ? "" : " ";
+  const nextText = `${before}${lead}${token}${trail}${after}`;
+  return {
+    nextText,
+    nextCaret: before.length + lead.length + token.length + trail.length,
+  };
+}
+
 export function applyMentionSelection(args: {
   text: string;
   range: MentionRange;

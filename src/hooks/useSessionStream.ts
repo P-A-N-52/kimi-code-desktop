@@ -152,6 +152,29 @@ import {
   formatDesktopHelpReport,
   type SlashCommandDef,
 } from "@/lib/slash-command-catalog";
+import { formatMentionToken } from "@/modules/composer/file-mentions";
+
+/**
+ * Inline uploaded attachments into the prompt text as CLI-style `@path`
+ * mention tokens (absolute pending-upload paths, forward-slashed) instead of
+ * wire-level attachment_ids, so the runtime receives them in text form.
+ */
+function attachmentMentionTokens(
+  attachments: UploadSessionFileResponse[],
+): string[] {
+  return attachments.map((attachment) =>
+    formatMentionToken(attachment.path.replace(/\\/g, "/")),
+  );
+}
+
+function joinPromptText(
+  text: string,
+  attachments: UploadSessionFileResponse[],
+): string {
+  return [text, ...attachmentMentionTokens(attachments)]
+    .filter((part) => part.trim().length > 0)
+    .join("\n");
+}
 import {
   formatStatusReport,
   formatUsageReport,
@@ -3391,14 +3414,8 @@ export function useSessionStream(
         id: messageId,
         params: {
           user_input:
-            pendingMessage.text || "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE",
-          ...(pendingMessage.attachments.length > 0
-            ? {
-                attachment_ids: pendingMessage.attachments.map(
-                  (attachment) => attachment.filename,
-                ),
-              }
-            : {}),
+            joinPromptText(pendingMessage.text, pendingMessage.attachments) ||
+            "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE",
           plan_mode: planModeRef.current,
           swarm_mode: swarmModeRef.current,
         },
@@ -4902,14 +4919,9 @@ export function useSessionStream(
         method: "prompt",
         id: messageId,
         params: {
-          user_input: trimmedText || "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE",
-          ...(attachments.length > 0
-            ? {
-                attachment_ids: attachments.map(
-                  (attachment) => attachment.filename,
-                ),
-              }
-            : {}),
+          user_input:
+            joinPromptText(trimmedText, attachments) ||
+            "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE",
           plan_mode: planModeRef.current,
           swarm_mode: swarmModeRef.current,
         },

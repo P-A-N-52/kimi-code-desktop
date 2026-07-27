@@ -20,6 +20,7 @@ import {
   updateMcpConfigFile,
 } from "@/lib/settings-api";
 import type { UpdateTextConfigResponse } from "@/lib/tauri-api";
+import { getAppVersion } from "@/lib/tauri-api";
 import { cn } from "@/lib/utils";
 import { desktopVersion, resolveKimiCliVersion } from "@/lib/version";
 import { Button } from "@/ui/button";
@@ -181,6 +182,7 @@ export function SettingsDialog({
     mcp: false,
   });
   const [cliVersion, setCliVersion] = useState("—");
+  const [appVersion, setAppVersion] = useState(desktopVersion);
   const selectedModel = useMemo(
     () => findConfigModel(config?.models, config?.defaultModel),
     [config?.defaultModel, config?.models],
@@ -212,10 +214,20 @@ export function SettingsDialog({
   }, [open, initialTab]);
 
   useEffect(() => {
-    if (open)
-      resolveKimiCliVersion()
-        .then(setCliVersion)
-        .catch(() => setCliVersion("dev"));
+    if (!open) return;
+    // Live-detect both versions: the running binary (not just the build-time
+    // constant) and the currently resolvable Kimi Code CLI.
+    getAppVersion()
+      .then((version) => {
+        const trimmed = version.trim();
+        if (trimmed) setAppVersion(trimmed);
+      })
+      .catch(() => {
+        // Keep the build-time fallback.
+      });
+    resolveKimiCliVersion()
+      .then(setCliVersion)
+      .catch(() => setCliVersion("dev"));
   }, [open]);
 
   const applyDefaultModel = async (name: string) => {
@@ -440,7 +452,7 @@ export function SettingsDialog({
                 <div className="flex flex-col gap-1 font-mono text-[11.5px] text-muted">
                   <div className="flex justify-between">
                     <span>桌面版</span>
-                    <span>{desktopVersion}</span>
+                    <span>{appVersion}</span>
                   </div>
                   <div className="flex justify-between">
                     <span>Kimi Code CLI</span>

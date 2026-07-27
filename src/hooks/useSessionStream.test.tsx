@@ -598,7 +598,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		).toHaveLength(1);
 	});
 
-	it("sends only selected file ids and supports an attachment-only prompt", async () => {
+	it("inlines selected files as text tokens and supports an attachment-only prompt", async () => {
 		const { result } = renderHook(() =>
 			useSessionStream({
 				sessionId: "session-1",
@@ -626,10 +626,10 @@ describe("useSessionStream Tauri watchdog", () => {
 			.find((message: { method?: string }) => message.method === "prompt");
 		expect(prompt.params).toEqual(
 			expect.objectContaining({
-				user_input: "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE",
-				attachment_ids: ["notes_123.txt"],
+				user_input: "@C:/pending/notes_123.txt",
 			}),
 		);
+		expect(prompt.params).not.toHaveProperty("attachment_ids");
 		expect(result.current.messages.at(-1)).toEqual(
 			expect.objectContaining({
 				role: "user",

@@ -122,7 +122,6 @@ export default function App() {
     listSessionDirectory,
     getSessionFile,
     uploadSessionFile,
-    deleteUploadedFile,
     error: sessionsError,
   } = useSessions({ enabled: !shouldPauseRuntime });
 
@@ -415,7 +414,6 @@ export default function App() {
             stream={stream}
             onOpenWorkspace={handleOpenWorkspace}
             onUploadFile={uploadSessionFile}
-            onRemoveFile={deleteUploadedFile}
             listDirectory={listSessionDirectory}
             onManageConfig={() => openSettings("config")}
             pendingFirstMessage={pendingFirstMessage}
@@ -430,7 +428,6 @@ export default function App() {
             fetchWorkDirs={fetchWorkDirs}
             onSendFirstMessage={handleSendFirstMessage}
             onUploadFile={uploadSessionFile}
-            onRemoveFile={deleteUploadedFile}
             onManageConfig={() => openSettings("config")}
           />
         )}

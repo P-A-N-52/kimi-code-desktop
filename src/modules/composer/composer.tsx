@@ -3,7 +3,6 @@ import {
   FileText,
   Folder,
   LoaderCircle,
-  Paperclip,
   Plus,
   Square,
   SquareTerminal,
@@ -16,16 +15,21 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
-  type DragEvent,
 } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
 import type { ConfigModel, UploadSessionFileResponse } from "@/lib/api/models";
+import { isTauri, pickFiles } from "@/lib/tauri-api";
 import {
   type SlashCommandDef,
   shouldExecuteSlashCommandImmediately,
 } from "@/lib/slash-command-catalog";
 import { cn } from "@/lib/utils";
-import type { FileMentionEntry } from "./file-mentions";
+import {
+  type FileMentionEntry,
+  formatMentionToken,
+  insertTokenAtCaret,
+} from "./file-mentions";
 import { ModelPicker } from "./model-picker";
 import { useFileMentions } from "./use-file-mentions";
 
@@ -34,7 +38,6 @@ export type QueuedPrompt = {
   text: string;
   attachments?: UploadSessionFileResponse[];
 };
-const uploadedFilesBySession = new Map<string, UploadSessionFileResponse[]>();
 
 type ComposerProps = {
   sessionId: string;
@@ -52,7 +55,6 @@ type ComposerProps = {
   onRemoveQueued: (id: string) => void;
   onClearQueue: () => void;
   onUploadFile: (file: File) => Promise<UploadSessionFileResponse>;
-  onRemoveFile: (fileId: string) => Promise<void>;
   onOpenContext: () => void;
   listDirectory?: (sessionId: string, path?: string) => Promise<FileMentionEntry[]>;
   models: ConfigModel[];
@@ -82,7 +84,6 @@ export function Composer({
   onRemoveQueued,
   onClearQueue,
   onUploadFile,
-  onRemoveFile,
   onOpenContext,
   listDirectory,
   models,
@@ -97,16 +98,12 @@ export function Composer({
   onManageConfig,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const commandMenuRef = useRef<HTMLDivElement>(null);
   const mentionMenuRef = useRef<HTMLDivElement>(null);
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const [activeCommand, setActiveCommand] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
-  const [uploadedFiles, setUploadedFilesState] = useState<UploadSessionFileResponse[]>(
-    () => uploadedFilesBySession.get(sessionId) ?? [],
-  );
   const fileMentions = useFileMentions({
     text: draft,
     setText: onDraftChange,
@@ -116,30 +113,17 @@ export function Composer({
     disabled: commandMenuOpen,
   });
 
-  const setUploadedFiles = (
-    update:
-      | UploadSessionFileResponse[]
-      | ((current: UploadSessionFileResponse[]) => UploadSessionFileResponse[]),
-  ) => {
-    setUploadedFilesState((current) => {
-      const next = typeof update === "function" ? update(current) : update;
-      if (next.length === 0) uploadedFilesBySession.delete(sessionId);
-      else uploadedFilesBySession.set(sessionId, next);
-      return next;
-    });
-  };
-
   const commandQuery = draft.startsWith("/") ? draft.slice(1).split(/\s/, 1)[0].toLowerCase() : "";
+  // No result cap: the menu is scrollable, and a hard limit hid skill:* and
+  // other later entries until the query happened to narrow the list.
   const visibleCommands = useMemo(
     () =>
-      slashCommands
-        .filter((command) => {
-          if (!commandQuery) return true;
-          return [command.name, ...command.aliases].some((name) =>
-            name.toLowerCase().includes(commandQuery),
-          );
-        })
-        .slice(0, 10),
+      slashCommands.filter((command) => {
+        if (!commandQuery) return true;
+        return [command.name, ...command.aliases].some((name) =>
+          name.toLowerCase().includes(commandQuery),
+        );
+      }),
     [commandQuery, slashCommands],
   );
 
@@ -162,53 +146,34 @@ export function Composer({
   const submit = (text?: string) => {
     if (sendDisabled) return;
     const message = (text ?? draft).trim();
-    if (!message && uploadedFiles.length === 0) return;
-    onSend(text, uploadedFiles);
+    if (!message) return;
+    onSend(text, []);
     setCommandMenuOpen(false);
-    setUploadedFiles([]);
   };
 
-  const uploadFiles = async (files: Iterable<File> | ArrayLike<File> | null) => {
-    const selected = files ? Array.from(files) : [];
-    if (selected.length === 0) return;
-    setUploading(true);
-    const failures: string[] = [];
-    let uploadedCount = 0;
-    try {
-      for (const file of selected) {
-        try {
-          const uploaded = await onUploadFile(file);
-          uploadedCount += 1;
-          setUploadedFiles((current) => [...current, uploaded]);
-        } catch (error) {
-          failures.push(
-            `${file.name}: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-      }
-      if (uploadedCount > 0) {
-        toast.success(uploadedCount === 1 ? "文件已上传" : `${uploadedCount} 个文件已上传`);
-      }
-      if (failures.length > 0) {
-        toast.error(`${failures.length} 个文件上传失败`, {
-          description: failures.join("\n"),
-        });
-      }
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  };
+  // All file entries (paste / native picker / OS drag-drop) end up as
+  // CLI-style @path text tokens inserted into the draft at the caret.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
 
-  const removeUploadedFile = async (file: UploadSessionFileResponse) => {
-    try {
-      await onRemoveFile(file.filename);
-      setUploadedFiles((current) => current.filter((item) => item.filename !== file.filename));
-    } catch (error) {
-      toast.error("Failed to remove attachment", {
-        description: error instanceof Error ? error.message : String(error),
-      });
+  const insertPathTokens = (paths: string[]) => {
+    if (paths.length === 0) return;
+    let text = draftRef.current;
+    let caret = textareaRef.current?.selectionStart ?? text.length;
+    for (const rawPath of paths) {
+      const token = formatMentionToken(rawPath.replace(/\\/g, "/"));
+      const inserted = insertTokenAtCaret(text, caret, token);
+      text = inserted.nextText;
+      caret = inserted.nextCaret;
     }
+    // Sync immediately so sequential inserts (multi-file paste) see prior tokens
+    // before React re-renders and refreshes draftRef from props.
+    draftRef.current = text;
+    onDraftChange(text);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(caret, caret);
+    });
   };
 
   const onComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -218,31 +183,73 @@ export function Composer({
       .filter((file): file is File => file !== null);
     if (files.length === 0) return;
     event.preventDefault();
-    void uploadFiles(files);
+    // Clipboard files have no path: upload to the pending dir first, then
+    // insert the resulting absolute path as text.
+    void (async () => {
+      const failures: string[] = [];
+      setUploading(true);
+      try {
+        for (const file of files) {
+          try {
+            const uploaded = await onUploadFile(file);
+            insertPathTokens([uploaded.path]);
+          } catch (error) {
+            failures.push(
+              `${file.name}: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
+        if (failures.length > 0) {
+          toast.error(`${failures.length} 个文件上传失败`, {
+            description: failures.join("\n"),
+          });
+        }
+      } finally {
+        setUploading(false);
+      }
+    })();
   };
 
-  const onComposerDragOver = (event: DragEvent<HTMLDivElement>) => {
-    if (sendDisabled || uploading) return;
-    if (![...event.dataTransfer.types].includes("Files")) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = "copy";
-    setDragActive(true);
+  const onPickFiles = () => {
+    void (async () => {
+      setUploading(true);
+      try {
+        const paths = await pickFiles();
+        insertPathTokens(paths);
+      } catch (error) {
+        toast.error("打开文件选择器失败", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        setUploading(false);
+      }
+    })();
   };
 
-  const onComposerDragLeave = (event: DragEvent<HTMLDivElement>) => {
-    const nextTarget = event.relatedTarget as Node | null;
-    if (nextTarget && event.currentTarget.contains(nextTarget)) return;
-    setDragActive(false);
-  };
-
-  const onComposerDrop = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setDragActive(false);
-    if (sendDisabled || uploading) return;
-    void uploadFiles(event.dataTransfer.files);
-  };
+  // OS-level drag-drop comes through Tauri window events with real absolute
+  // paths (webview dragDropEnabled is on; HTML5 drop is intentionally unused).
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    const unlisteners: Array<() => void> = [];
+    void (async () => {
+      unlisteners.push(
+        await listen("tauri://drag-enter", () => setDragActive(true)),
+        await listen("tauri://drag-leave", () => setDragActive(false)),
+        await listen<{ paths?: string[] }>("tauri://drag-drop", (event) => {
+          setDragActive(false);
+          if (sendDisabled || uploading) return;
+          insertPathTokens(event.payload.paths ?? []);
+        }),
+      );
+      if (cancelled) unlisteners.forEach((unlisten) => unlisten());
+    })();
+    return () => {
+      cancelled = true;
+      unlisteners.forEach((unlisten) => unlisten());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sendDisabled, uploading]);
 
   useEffect(() => {
     if (!commandMenuOpen && !fileMentions.isOpen) return;
@@ -261,10 +268,6 @@ export function Composer({
 
   return (
     <div
-      onDragEnter={onComposerDragOver}
-      onDragOver={onComposerDragOver}
-      onDragLeave={onComposerDragLeave}
-      onDrop={onComposerDrop}
       className={cn(
         "relative rounded-r3 border bg-elevated px-3 pb-2 pt-3 shadow-pop transition-colors focus-within:border-line-strong",
         planMode ? "border-dashed border-bright/40" : "border-line-strong",
@@ -273,7 +276,7 @@ export function Composer({
     >
       {dragActive && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-r3 bg-elevated/80 text-[13px] text-bright">
-          松开以上传文件
+          松开以插入文件路径
         </div>
       )}
       {queue.length > 0 && (
@@ -309,27 +312,6 @@ export function Composer({
               </div>
             ))}
           </div>
-        </div>
-      )}
-
-      {uploadedFiles.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {uploadedFiles.map((file) => (
-            <span
-              key={file.path}
-              className="flex items-center gap-1 rounded-r1 border border-line bg-surface px-2 py-1 font-mono text-[9.5px] text-muted"
-            >
-              <Paperclip size={10} /> {file.filename}
-              <button
-                type="button"
-                aria-label={`Remove attachment ${file.filename}`}
-                onClick={() => void removeUploadedFile(file)}
-                className="ml-0.5 text-faint transition-colors hover:text-danger"
-              >
-                <X size={10} />
-              </button>
-            </span>
-          ))}
         </div>
       )}
 
@@ -498,19 +480,12 @@ export function Composer({
         }
         className="max-h-40 w-full resize-none bg-transparent px-1 text-[14px] leading-[1.55] text-foreground outline-none placeholder:text-faint disabled:cursor-not-allowed disabled:opacity-60"
       />
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        hidden
-        onChange={(event) => void uploadFiles(event.target.files)}
-      />
       <div className="mt-1.5 flex items-center gap-0.5">
         <button
           type="button"
           aria-label="上传附件"
           disabled={uploading || sendDisabled}
-          onClick={() => fileInputRef.current?.click()}
+          onClick={onPickFiles}
           className="flex h-7 w-7 items-center justify-center rounded-r1 text-muted transition-colors hover:bg-hover hover:text-foreground disabled:opacity-50"
         >
           {uploading ? (
@@ -570,7 +545,7 @@ export function Composer({
           type="button"
           aria-label={busy ? "加入发送队列" : "发送"}
           onClick={() => submit()}
-          disabled={(!draft.trim() && uploadedFiles.length === 0) || uploading || sendDisabled}
+          disabled={!draft.trim() || uploading || sendDisabled}
           className="flex size-7 items-center justify-center rounded-full bg-bright text-background transition-opacity hover:opacity-85 disabled:opacity-40"
         >
           <ArrowUp size={13} strokeWidth={2} />

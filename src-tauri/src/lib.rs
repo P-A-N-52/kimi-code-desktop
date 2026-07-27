@@ -13,6 +13,7 @@ pub mod runtime_check;
 pub mod security;
 pub mod session_files;
 pub mod session_store;
+pub mod skills;
 #[cfg(test)]
 pub mod test_env;
 pub mod tray;
@@ -59,6 +60,8 @@ pub fn run() {
             commands::get_session_upload_file,
             commands::list_work_dirs,
             commands::get_startup_dir,
+            commands::list_available_skills,
+            commands::pick_files,
             commands::get_global_config,
             commands::get_config_toml,
             commands::update_config_toml,

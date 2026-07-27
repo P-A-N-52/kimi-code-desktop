@@ -12,7 +12,9 @@ import { PRE_SESSION_SLASH_COMMANDS } from "@/lib/pre-session-slash-commands";
 import {
 	classifySlashDispatch,
 	formatDesktopHelpReport,
+	mergeSlashCommands,
 } from "@/lib/slash-command-catalog";
+import { useSkillSlashCommands } from "@/hooks/useSkillSlashCommands";
 import { listWorkDirDirectory } from "@/lib/work-dir-files";
 import {
 	CommandResultPanel,
@@ -35,7 +37,6 @@ export function NewSessionView({
 	fetchWorkDirs,
 	onSendFirstMessage,
 	onUploadFile,
-	onRemoveFile,
 	onManageConfig,
 }: {
 	workDir: string;
@@ -48,7 +49,6 @@ export function NewSessionView({
 		attachments: UploadSessionFileResponse[],
 	) => Promise<void>;
 	onUploadFile: (sessionId: string, file: File) => Promise<UploadSessionFileResponse>;
-	onRemoveFile: (fileId: string) => Promise<void>;
 	onManageConfig?: () => void;
 }) {
 	const [draft, setDraft] = useState("");
@@ -57,6 +57,11 @@ export function NewSessionView({
 	const creatingRef = useRef(false);
 	const [commandResult, setCommandResult] = useState<CommandResultPanelState | null>(null);
 	const { config, update, isUpdating } = useGlobalConfig();
+	const skillCommands = useSkillSlashCommands();
+	const slashCommands = useMemo(
+		() => mergeSlashCommands(PRE_SESSION_SLASH_COMMANDS, skillCommands),
+		[skillCommands],
+	);
 
 	const [permissionMode, setPermissionMode] = useState<SessionModeDraft["permissionMode"]>("manual");
 	const [planMode, setPlanMode] = useState(false);
@@ -159,13 +164,13 @@ export function NewSessionView({
 				return;
 			}
 
-			const slashDecision = classifySlashDispatch(text, PRE_SESSION_SLASH_COMMANDS);
+			const slashDecision = classifySlashDispatch(text, slashCommands);
 			if (slashDecision.kind === "local") {
 				if (slashDecision.name === "help") {
 					if (textOverride === undefined) setDraft("");
 					setCommandResult({
 						command: "help",
-						content: formatDesktopHelpReport(PRE_SESSION_SLASH_COMMANDS),
+						content: formatDesktopHelpReport(slashCommands),
 						loading: false,
 					});
 					return;
@@ -203,6 +208,7 @@ export function NewSessionView({
 		},
 		[
 			draft,
+			slashCommands,
 			modesSeeded,
 			onSendFirstMessage,
 			permissionMode,
@@ -247,12 +253,11 @@ export function NewSessionView({
 						canCancel={false}
 						sendDisabled={creating}
 						planMode={planMode}
-						slashCommands={PRE_SESSION_SLASH_COMMANDS}
+						slashCommands={slashCommands}
 						queue={[]}
 						onRemoveQueued={() => {}}
 						onClearQueue={() => {}}
 						onUploadFile={(file) => onUploadFile(mentionSessionKey, file)}
-						onRemoveFile={onRemoveFile}
 						onOpenContext={() => {
 							toast.message("请先发送消息创建会话");
 						}}
