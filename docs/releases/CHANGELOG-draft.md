@@ -29,6 +29,7 @@
 ### 设置 / 就绪
 
 - 设置页通过 `getAppVersion` 显示运行中桌面版本
+- 设置 → 关于「检查更新」：对比 GitHub latest（桌面 `P-A-N-52/kimi-code-desktop`、CLI `MoonshotAI/kimi-code`），有新版则打开下载页
 - optional-auth 就绪覆盖层与运行时检查调整（上一批提交）
 
 ### 其它 / 内部

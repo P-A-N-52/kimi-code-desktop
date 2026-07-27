@@ -6,7 +6,11 @@ import {
   notifyGlobalConfigApplied,
   notifyTextConfigSaved,
 } from "@/lib/config-update-toast";
-import { openKimiCodeWebsite } from "@/lib/kimi-code-link";
+import { openExternalHttpUrl, openKimiCodeWebsite } from "@/lib/kimi-code-link";
+import {
+  checkAllUpdates,
+  type ComponentUpdateResult,
+} from "@/lib/check-updates";
 import {
   findConfigModel,
   modelForcesThinking,
@@ -20,7 +24,7 @@ import {
   updateMcpConfigFile,
 } from "@/lib/settings-api";
 import type { UpdateTextConfigResponse } from "@/lib/tauri-api";
-import { getAppVersion } from "@/lib/tauri-api";
+import { getAppVersion, getKimiCliVersion } from "@/lib/tauri-api";
 import { cn } from "@/lib/utils";
 import { desktopVersion, resolveKimiCliVersion } from "@/lib/version";
 import { Button } from "@/ui/button";
@@ -46,6 +50,50 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
         {title}
       </div>
       {children}
+    </div>
+  );
+}
+
+function VersionRow({
+  label,
+  version,
+  update,
+  onOpenDownload,
+}: {
+  label: string;
+  version: string;
+  update: ComponentUpdateResult | null;
+  onOpenDownload: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex justify-between gap-3">
+        <span>{label}</span>
+        <span>{version}</span>
+      </div>
+      {update && (
+        <div className="flex items-center justify-between gap-2 text-[10.5px]">
+          <span
+            className={cn(
+              update.status === "update-available" && "text-bright",
+              update.status === "up-to-date" && "text-faint",
+              (update.status === "error" || update.status === "unknown") &&
+                "text-danger",
+            )}
+          >
+            {update.message}
+          </span>
+          {update.status === "update-available" && (
+            <button
+              type="button"
+              className="shrink-0 text-bright underline-offset-2 hover:underline"
+              onClick={onOpenDownload}
+            >
+              打开下载页
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -183,6 +231,9 @@ export function SettingsDialog({
   });
   const [cliVersion, setCliVersion] = useState("—");
   const [appVersion, setAppVersion] = useState(desktopVersion);
+  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [desktopUpdate, setDesktopUpdate] = useState<ComponentUpdateResult | null>(null);
+  const [cliUpdate, setCliUpdate] = useState<ComponentUpdateResult | null>(null);
   const selectedModel = useMemo(
     () => findConfigModel(config?.models, config?.defaultModel),
     [config?.defaultModel, config?.models],
@@ -228,8 +279,69 @@ export function SettingsDialog({
     resolveKimiCliVersion()
       .then(setCliVersion)
       .catch(() => setCliVersion("dev"));
+    setDesktopUpdate(null);
+    setCliUpdate(null);
   }, [open]);
 
+  const handleCheckUpdates = async () => {
+    setCheckingUpdates(true);
+    try {
+      let nextApp = appVersion;
+      let nextCli = cliVersion;
+      try {
+        const live = (await getAppVersion()).trim();
+        if (live) {
+          nextApp = live;
+          setAppVersion(live);
+        }
+      } catch {
+        // Keep displayed fallback.
+      }
+      try {
+        const liveCli = (await getKimiCliVersion()).trim();
+        if (liveCli) {
+          nextCli = liveCli;
+          setCliVersion(liveCli);
+        }
+      } catch {
+        try {
+          nextCli = await resolveKimiCliVersion();
+          setCliVersion(nextCli);
+        } catch {
+          // Keep displayed fallback.
+        }
+      }
+
+      const result = await checkAllUpdates({
+        desktopVersion: nextApp,
+        cliVersion: nextCli,
+      });
+      setDesktopUpdate(result.desktop);
+      setCliUpdate(result.cli);
+
+      const bothCurrent =
+        result.desktop.status === "up-to-date" && result.cli.status === "up-to-date";
+      const anyNew =
+        result.desktop.status === "update-available" ||
+        result.cli.status === "update-available";
+      if (bothCurrent) {
+        toast.success("桌面版与 CLI 均为最新");
+      } else if (anyNew) {
+        toast.message("发现可用更新", {
+          description: [result.desktop, result.cli]
+            .filter((item) => item.status === "update-available")
+            .map((item) => `${item.label}: ${item.message}`)
+            .join(" · "),
+        });
+      }
+    } catch (error) {
+      toast.error("检查更新失败", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setCheckingUpdates(false);
+    }
+  };
   const applyDefaultModel = async (name: string) => {
     try {
       const resp = await update({ defaultModel: name });
@@ -449,23 +561,43 @@ export function SettingsDialog({
             {tab === "usage" && <UsagePanel enabled={open && tab === "usage"} />}
             {tab === "about" && (
               <Section title="版本">
-                <div className="flex flex-col gap-1 font-mono text-[11.5px] text-muted">
-                  <div className="flex justify-between">
-                    <span>桌面版</span>
-                    <span>{appVersion}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Kimi Code CLI</span>
-                    <span>{cliVersion}</span>
-                  </div>
+                <div className="flex flex-col gap-2 font-mono text-[11.5px] text-muted">
+                  <VersionRow
+                    label="桌面版"
+                    version={appVersion}
+                    update={desktopUpdate}
+                    onOpenDownload={() => {
+                      if (desktopUpdate?.downloadUrl) {
+                        openExternalHttpUrl(desktopUpdate.downloadUrl);
+                      }
+                    }}
+                  />
+                  <VersionRow
+                    label="Kimi Code CLI"
+                    version={cliVersion}
+                    update={cliUpdate}
+                    onOpenDownload={() => {
+                      if (cliUpdate?.downloadUrl) {
+                        openExternalHttpUrl(cliUpdate.downloadUrl);
+                      }
+                    }}
+                  />
                 </div>
-                <Button
-                  variant="ghost"
-                  className="mt-2.5"
-                  onClick={() => void openKimiCodeWebsite()}
-                >
-                  访问 Kimi Code 官网
-                </Button>
+                <div className="mt-2.5 flex flex-wrap gap-2">
+                  <Button
+                    variant="ghost"
+                    disabled={checkingUpdates}
+                    onClick={() => void handleCheckUpdates()}
+                  >
+                    {checkingUpdates ? "检查中…" : "检查更新"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => void openKimiCodeWebsite()}
+                  >
+                    访问 Kimi Code 官网
+                  </Button>
+                </div>
               </Section>
             )}
           </div>
