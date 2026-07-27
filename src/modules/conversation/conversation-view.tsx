@@ -278,6 +278,7 @@ export function ConversationView({
       stream.sendSetPermissionMode(pendingFirstModes.permissionMode);
       stream.sendSetPlanMode(pendingFirstModes.planMode);
       stream.sendSetSwarmMode(pendingFirstModes.swarmMode);
+      stream.sendSetGoalMode(pendingFirstModes.goalMode);
     }
     // Clear parent pending immediately so a remount/re-run cannot retry.
     onPendingFirstMessageSent?.();
@@ -300,6 +301,7 @@ export function ConversationView({
     stream.sendSetPermissionMode,
     stream.sendSetPlanMode,
     stream.sendSetSwarmMode,
+    stream.sendSetGoalMode,
   ]);
 
   const streamDead = stream.status === "error";
@@ -379,8 +381,10 @@ export function ConversationView({
             onPermissionModeChange={stream.sendSetPermissionMode}
             planMode={stream.planMode}
             swarmMode={stream.swarmMode}
+            goalMode={stream.goalMode}
             onPlanModeChange={stream.sendSetPlanMode}
             onSwarmModeChange={stream.sendSetSwarmMode}
+            onGoalModeChange={stream.sendSetGoalMode}
             modeControlsDisabled={stream.status !== "ready"}
             contextUsage={stream.contextUsage}
             tokenUsage={stream.tokenUsage}

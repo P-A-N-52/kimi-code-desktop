@@ -104,6 +104,7 @@ describe("useSessionStream Tauri watchdog", () => {
 			planMode: false,
 			permissionMode: "manual",
 			swarmMode: false,
+			goalMode: false,
 		});
 		mocks.migrateSessionSwarmMode.mockResolvedValue(undefined);
 		mocks.wireConnect.mockResolvedValue(undefined);
@@ -222,11 +223,62 @@ describe("useSessionStream Tauri watchdog", () => {
 		expect(result.current.swarmMode).toBe(false);
 	});
 
-	it("loads permission / plan / swarm modes from the Kimi session state", async () => {
+	it("sends Goal mode updates and applies backend acknowledgements", async () => {
+		const { result } = renderHook(() =>
+			useSessionStream({
+				sessionId: "session-1",
+				baseUrl: "http://localhost:5173",
+				autoConnect: true,
+			}),
+		);
+
+		await flushPromises();
+		completeReplay();
+		await flushPromises();
+
+		act(() => {
+			expect(result.current.sendSetGoalMode(true)).toBe(true);
+		});
+		await flushPromises();
+
+		const sentMessages = mocks.wireSend.mock.calls.map(([, message]) =>
+			JSON.parse(message),
+		);
+		expect(sentMessages).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					method: "set_goal_mode",
+					params: { enabled: true },
+				}),
+			]),
+		);
+		expect(result.current.goalMode).toBe(true);
+
+		act(() => {
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					method: "event",
+					params: {
+						type: "StatusUpdate",
+						payload: {
+							context_usage: null,
+							goal_mode: false,
+						},
+					},
+				}),
+			);
+		});
+
+		expect(result.current.goalMode).toBe(false);
+	});
+
+	it("loads permission / plan / swarm / goal modes from the Kimi session state", async () => {
 		mocks.getSessionRuntimeModes.mockResolvedValue({
 			planMode: true,
 			permissionMode: "yolo",
 			swarmMode: true,
+			goalMode: true,
 		});
 		const { result } = renderHook(() =>
 			useSessionStream({
@@ -242,6 +294,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		expect(result.current.planMode).toBe(true);
 		expect(result.current.permissionMode).toBe("yolo");
 		expect(result.current.swarmMode).toBe(true);
+		expect(result.current.goalMode).toBe(true);
 		expect(
 			window.localStorage.getItem(
 				"kimi-code-desktop.swarm-mode-by-session.v1",
@@ -258,6 +311,7 @@ describe("useSessionStream Tauri watchdog", () => {
 			planMode: false,
 			permissionMode: "auto",
 			swarmMode: false,
+			goalMode: false,
 		});
 		const { result } = renderHook(() =>
 			useSessionStream({
@@ -556,6 +610,73 @@ describe("useSessionStream Tauri watchdog", () => {
 				JSON.parse(message).method === "prompt",
 			),
 		).toBe(false);
+	});
+
+	it("treats /compact as a command: no user bubble, suppresses stream, replaces history", async () => {
+		const { result } = renderHook(() =>
+			useSessionStream({
+				sessionId: "session-1",
+				baseUrl: "http://localhost:5173",
+				autoConnect: true,
+			}),
+		);
+
+		await flushPromises();
+		completeReplay();
+		await flushPromises();
+		mocks.wireSend.mockClear();
+
+		await act(async () => {
+			await result.current.sendMessage("/compact keep APIs");
+		});
+
+		expect(
+			result.current.messages.some(
+				(message) =>
+					message.role === "user" && message.content === "/compact keep APIs",
+			),
+		).toBe(false);
+		expect(result.current.messages.at(-1)).toEqual(
+			expect.objectContaining({
+				variant: "status",
+				content: "Compacting conversation history…",
+				isStreaming: true,
+			}),
+		);
+
+		const prompt = mocks.wireSend.mock.calls
+			.map(([, rawMessage]) => JSON.parse(rawMessage))
+			.reverse()
+			.find((message: { method?: string }) => message.method === "prompt");
+		expect(prompt).toBeDefined();
+		expect(prompt.params.user_input).toBe("/compact keep APIs");
+
+		act(() => {
+			emitVisibleText("this summarization should stay hidden");
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					id: prompt.id,
+					result: { status: "finished" },
+				}),
+			);
+		});
+		await flushPromises();
+
+		expect(
+			result.current.messages.some((message) =>
+				String(message.content ?? "").includes("summarization"),
+			),
+		).toBe(false);
+		expect(result.current.messages).toEqual([
+			expect.objectContaining({
+				variant: "status",
+				content: "Context compacted.",
+				isStreaming: false,
+			}),
+		]);
+		expect(result.current.status).toBe("ready");
+		expect(result.current.error).toBeNull();
 	});
 
 	it("shows a sent user message before ACP echoes the turn", async () => {

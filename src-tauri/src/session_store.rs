@@ -480,6 +480,7 @@ pub(crate) struct ResolvedRuntimeModes {
     pub plan_mode: bool,
     pub permission_mode: String,
     pub swarm_mode: bool,
+    pub goal_mode: bool,
 }
 
 /// Resolve Plan / permission / Swarm the same way ACP does at worker start:
@@ -502,10 +503,15 @@ pub(crate) fn resolved_runtime_modes(session_id: &str) -> Result<ResolvedRuntime
         eprintln!("[session_store] failed to read persisted swarm mode for {session_id}: {err}");
         false
     });
+    let goal_mode = session_goal_mode(session_id).unwrap_or_else(|err| {
+        eprintln!("[session_store] failed to read persisted goal mode for {session_id}: {err}");
+        false
+    });
     Ok(ResolvedRuntimeModes {
         plan_mode: persisted.plan_mode.unwrap_or(defaults.plan_mode),
         permission_mode,
         swarm_mode,
+        goal_mode,
     })
 }
 
@@ -520,6 +526,7 @@ fn push_runtime_mode_status(messages: &mut Vec<String>, session_id: &str) -> Res
             "plan_mode": modes.plan_mode,
             "permission_mode": modes.permission_mode,
             "swarm_mode": modes.swarm_mode,
+            "goal_mode": modes.goal_mode,
         }),
     )
 }
@@ -564,6 +571,22 @@ pub(crate) fn persisted_runtime_modes(session_id: &str) -> Result<PersistedRunti
 }
 
 pub fn session_swarm_mode(session_id: &str) -> Result<bool, String> {
+    session_desktop_mode_flag(session_id, "swarm_mode")
+}
+
+pub fn update_session_swarm_mode(session_id: &str, enabled: bool) -> Result<PathBuf, String> {
+    update_session_desktop_mode_flag(session_id, "swarm_mode", enabled)
+}
+
+pub fn session_goal_mode(session_id: &str) -> Result<bool, String> {
+    session_desktop_mode_flag(session_id, "goal_mode")
+}
+
+pub fn update_session_goal_mode(session_id: &str, enabled: bool) -> Result<PathBuf, String> {
+    update_session_desktop_mode_flag(session_id, "goal_mode", enabled)
+}
+
+fn session_desktop_mode_flag(session_id: &str, key: &str) -> Result<bool, String> {
     let session_dir = find_session_dir_by_id_or_err(session_id)?;
     let state_path = state_json_path(&session_dir);
     if !state_path.is_file() {
@@ -578,12 +601,16 @@ pub fn session_swarm_mode(session_id: &str) -> Result<bool, String> {
     Ok(state
         .get("custom")
         .and_then(|custom| custom.get("kimi_code_desktop"))
-        .and_then(|desktop| desktop.get("swarm_mode"))
+        .and_then(|desktop| desktop.get(key))
         .and_then(Value::as_bool)
         .unwrap_or(false))
 }
 
-pub fn update_session_swarm_mode(session_id: &str, enabled: bool) -> Result<PathBuf, String> {
+fn update_session_desktop_mode_flag(
+    session_id: &str,
+    key: &str,
+    enabled: bool,
+) -> Result<PathBuf, String> {
     let session_dir = find_session_dir_by_id_or_err(session_id)?;
     mutate_session_state(&session_dir, |state| {
         let root = state
@@ -599,7 +626,7 @@ pub fn update_session_swarm_mode(session_id: &str, enabled: bool) -> Result<Path
         let desktop = desktop
             .as_object_mut()
             .ok_or_else(|| "Session desktop state is not a JSON object".to_string())?;
-        desktop.insert("swarm_mode".to_string(), json!(enabled));
+        desktop.insert(key.to_string(), json!(enabled));
         Ok(())
     })?;
 
@@ -1337,6 +1364,7 @@ mod tests {
         )
         .expect("write wire");
         update_session_swarm_mode(session_id, true).expect("enable swarm");
+        update_session_goal_mode(session_id, true).expect("enable goal");
 
         let messages = replay_session_history(session_id).expect("replay");
         assert!(!messages.is_empty());
@@ -1357,6 +1385,7 @@ mod tests {
         assert_eq!(modes["params"]["payload"]["plan_mode"], true);
         assert_eq!(modes["params"]["payload"]["permission_mode"], "yolo");
         assert_eq!(modes["params"]["payload"]["swarm_mode"], true);
+        assert_eq!(modes["params"]["payload"]["goal_mode"], true);
     }
 
     #[test]
@@ -1523,6 +1552,39 @@ mod tests {
 
         update_session_swarm_mode(session_id, false).expect("disable swarm");
         assert!(!session_swarm_mode(session_id).expect("read disabled"));
+    }
+
+    #[test]
+    fn session_goal_mode_round_trips_through_desktop_custom_state() {
+        let (_guard, home) = temp_home("session-goal-mode");
+        let session_id = "session-goal-mode";
+        let session_dir = write_session_layout(&home, "work-key", session_id);
+        fs::write(
+            session_dir.join("state.json"),
+            r#"{
+                "title":"Keep me",
+                "custom":{
+                    "existing":"value"
+                }
+            }"#,
+        )
+        .expect("write state");
+        let _lock = set_kimi_code_home(&home);
+
+        assert!(!session_goal_mode(session_id).expect("read default"));
+
+        update_session_goal_mode(session_id, true).expect("enable goal");
+        assert!(session_goal_mode(session_id).expect("read enabled"));
+
+        let enabled: Value =
+            serde_json::from_str(&fs::read_to_string(session_dir.join("state.json")).unwrap())
+                .unwrap();
+        assert_eq!(enabled["title"], "Keep me");
+        assert_eq!(enabled["custom"]["existing"], "value");
+        assert_eq!(enabled["custom"]["kimi_code_desktop"]["goal_mode"], true);
+
+        update_session_goal_mode(session_id, false).expect("disable goal");
+        assert!(!session_goal_mode(session_id).expect("read disabled"));
     }
 
     #[test]

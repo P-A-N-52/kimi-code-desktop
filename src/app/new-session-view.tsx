@@ -66,6 +66,7 @@ export function NewSessionView({
 	const [permissionMode, setPermissionMode] = useState<SessionModeDraft["permissionMode"]>("manual");
 	const [planMode, setPlanMode] = useState(false);
 	const [swarmMode, setSwarmMode] = useState(false);
+	const [goalMode, setGoalMode] = useState(false);
 	const [modesSeeded, setModesSeeded] = useState(false);
 
 	// Seed toggles once from global defaults so the strip matches what a new
@@ -195,7 +196,7 @@ export function NewSessionView({
 					dir,
 					text,
 					modesSeeded
-						? { permissionMode, planMode, swarmMode }
+						? { permissionMode, planMode, swarmMode, goalMode }
 						: null,
 					attachments,
 				);
@@ -214,6 +215,7 @@ export function NewSessionView({
 			permissionMode,
 			planMode,
 			swarmMode,
+			goalMode,
 			workDir,
 		],
 	);
@@ -281,6 +283,7 @@ export function NewSessionView({
 						}}
 						planMode={planMode}
 						swarmMode={swarmMode}
+						goalMode={goalMode}
 						onPlanModeChange={(enabled) => {
 							setModesSeeded(true);
 							setPlanMode(enabled);
@@ -288,6 +291,10 @@ export function NewSessionView({
 						onSwarmModeChange={(enabled) => {
 							setModesSeeded(true);
 							setSwarmMode(enabled);
+						}}
+						onGoalModeChange={(enabled) => {
+							setModesSeeded(true);
+							setGoalMode(enabled);
 						}}
 						modeControlsDisabled={creating}
 						contextUsage={0}

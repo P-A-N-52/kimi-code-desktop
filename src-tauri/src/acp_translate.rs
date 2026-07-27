@@ -68,29 +68,83 @@ pub fn legacy_user_input_to_acp_prompt(params: &Value) -> Value {
     }
 }
 
-/// Kimi Code 0.23.3 exposes plan mode through ACP `session/set_mode`, but its
-/// ACP adapter has no swarm mode or generic config option for swarm. Keep the
-/// standard `session/prompt` schema and append a model-visible compatibility
-/// instruction instead of sending an unsupported top-level field. Appending
-/// also preserves ACP's leading slash-command detection on the user block.
-pub fn legacy_user_input_to_acp_prompt_with_swarm(params: &Value, swarm_mode: bool) -> Value {
+/// If `user_input` is an ACP slash command (`/compact`, `/mcp`, …), return a
+/// **single-block** prompt containing only that command text.
+///
+/// Kimi Code's ACP adapter (`detectLeadingSlashIntent`) inspects **only**
+/// `blocks[0]`. Anything prepended (e.g. `<uploaded_files>` from upload
+/// expansion) makes `/compact` fall through to a normal model turn — the
+/// exact failure mode of "slash sent as plain text".
+pub fn acp_slash_command_prompt(params: &Value) -> Option<Value> {
+    let text = slash_command_text_from_user_input(params.get("user_input"))?;
+    Some(json!([{ "type": "text", "text": text }]))
+}
+
+fn slash_command_text_from_user_input(user_input: Option<&Value>) -> Option<String> {
+    match user_input {
+        Some(Value::String(s)) => {
+            let trimmed = s.trim();
+            if trimmed.starts_with('/') {
+                Some(trimmed.to_string())
+            } else {
+                None
+            }
+        }
+        Some(Value::Array(parts)) => parts.iter().find_map(|part| {
+            let trimmed = part.get("text")?.as_str()?.trim();
+            if trimmed.starts_with('/') {
+                Some(trimmed.to_string())
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    }
+}
+
+/// Kimi Code ACP has no swarm/goal session mode fields; append model-visible
+/// reminders for normal prompts. Never append onto slash commands — ACP slash
+/// routing keys off the first text block, and trailing junk also pollutes
+/// `/compact` custom instructions.
+pub fn legacy_user_input_to_acp_prompt_with_swarm(
+    params: &Value,
+    swarm_mode: bool,
+    goal_mode: bool,
+) -> Value {
+    if let Some(slash) = acp_slash_command_prompt(params) {
+        return slash;
+    }
     let mut prompt = legacy_user_input_to_acp_prompt(params);
-    if !swarm_mode {
+    if !swarm_mode && !goal_mode {
         return prompt;
     }
 
     if let Some(blocks) = prompt.as_array_mut() {
-        blocks.push(json!({
-            "type": "text",
-            "text": concat!(
-                "<system-reminder>\n",
-                "Swarm mode is enabled for this turn. When the request can be split into two ",
-                "or more independent items, use AgentSwarm. AgentSwarm must be the only tool ",
-                "call in that model response. If parallel delegation would not help, continue ",
-                "normally.\n",
-                "</system-reminder>"
-            ),
-        }));
+        if swarm_mode {
+            blocks.push(json!({
+                "type": "text",
+                "text": concat!(
+                    "<system-reminder>\n",
+                    "Swarm mode is enabled for this turn. When the request can be split into two ",
+                    "or more independent items, use AgentSwarm. AgentSwarm must be the only tool ",
+                    "call in that model response. If parallel delegation would not help, continue ",
+                    "normally.\n",
+                    "</system-reminder>"
+                ),
+            }));
+        }
+        if goal_mode {
+            blocks.push(json!({
+                "type": "text",
+                "text": concat!(
+                    "<system-reminder>\n",
+                    "Goal mode is enabled for this turn. Use CreateGoal, UpdateGoal, and GetGoal ",
+                    "to track the active goal and stay aligned with it. Before expanding scope, ",
+                    "confirm the work serves the current goal.\n",
+                    "</system-reminder>"
+                ),
+            }));
+        }
     }
     prompt
 }
@@ -1013,13 +1067,46 @@ mod tests {
     #[test]
     fn swarm_compat_prompt_preserves_user_block_and_appends_instruction() {
         let prompt =
-            legacy_user_input_to_acp_prompt_with_swarm(&json!({ "user_input": "/help" }), true);
+            legacy_user_input_to_acp_prompt_with_swarm(&json!({ "user_input": "split this" }), true, false);
         assert_eq!(prompt.as_array().unwrap().len(), 2);
-        assert_eq!(prompt[0]["text"], "/help");
+        assert_eq!(prompt[0]["text"], "split this");
         assert!(prompt[1]["text"]
             .as_str()
             .unwrap()
             .contains("Swarm mode is enabled"));
+    }
+
+    #[test]
+    fn goal_compat_prompt_preserves_user_block_and_appends_instruction() {
+        let prompt =
+            legacy_user_input_to_acp_prompt_with_swarm(&json!({ "user_input": "ship it" }), false, true);
+        assert_eq!(prompt.as_array().unwrap().len(), 2);
+        assert_eq!(prompt[0]["text"], "ship it");
+        assert!(prompt[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Goal mode is enabled"));
+    }
+
+    #[test]
+    fn swarm_compat_prompt_skips_slash_commands() {
+        let prompt =
+            legacy_user_input_to_acp_prompt_with_swarm(&json!({ "user_input": "/compact" }), true, true);
+        assert_eq!(prompt.as_array().unwrap().len(), 1);
+        assert_eq!(prompt[0]["text"], "/compact");
+    }
+
+    #[test]
+    fn slash_command_prompt_strips_prepended_upload_blocks() {
+        let prompt = acp_slash_command_prompt(&json!({
+            "user_input": [
+                { "type": "text", "text": "<uploaded_files>\n1. x\n</uploaded_files>\n\n" },
+                { "type": "text", "text": "/compact keep APIs" }
+            ]
+        }))
+        .expect("slash");
+        assert_eq!(prompt.as_array().unwrap().len(), 1);
+        assert_eq!(prompt[0]["text"], "/compact keep APIs");
     }
 
     #[test]

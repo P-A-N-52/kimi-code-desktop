@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ClipboardList, Flame, ShieldCheck, Zap } from "lucide-react";
+import { Check, ChevronDown, ClipboardList, Flame, ShieldCheck, Target, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { TokenUsage } from "@/hooks/wireTypes";
 import { cn } from "@/lib/utils";
@@ -32,8 +32,10 @@ export function StatusStrip({
 	onPermissionModeChange,
 	planMode,
 	swarmMode,
+	goalMode,
 	onPlanModeChange,
 	onSwarmModeChange,
+	onGoalModeChange,
 	modeControlsDisabled,
 	contextUsage,
 	tokenUsage,
@@ -44,8 +46,10 @@ export function StatusStrip({
 	onPermissionModeChange: (mode: PermissionMode) => void;
 	planMode: boolean;
 	swarmMode: boolean;
+	goalMode: boolean;
 	onPlanModeChange: (enabled: boolean) => void;
 	onSwarmModeChange: (enabled: boolean) => void;
+	onGoalModeChange: (enabled: boolean) => void;
 	modeControlsDisabled: boolean;
 	contextUsage: number;
 	tokenUsage: TokenUsage | null;
@@ -117,6 +121,14 @@ export function StatusStrip({
 				)}
 			</div>
 			<StatusPill
+				on={planMode}
+				disabled={modeControlsDisabled}
+				onClick={() => onPlanModeChange(!planMode)}
+			>
+				<ClipboardList size={12} strokeWidth={1.5} />
+				plan
+			</StatusPill>
+			<StatusPill
 				on={swarmMode}
 				disabled={modeControlsDisabled}
 				onClick={() => onSwarmModeChange(!swarmMode)}
@@ -125,12 +137,12 @@ export function StatusStrip({
 				swarm
 			</StatusPill>
 			<StatusPill
-				on={planMode}
+				on={goalMode}
 				disabled={modeControlsDisabled}
-				onClick={() => onPlanModeChange(!planMode)}
+				onClick={() => onGoalModeChange(!goalMode)}
 			>
-				<ClipboardList size={12} strokeWidth={1.5} />
-				plan
+				<Target size={12} strokeWidth={1.5} />
+				goal
 			</StatusPill>
 			<div className="flex-1" />
 			<ContextRing

@@ -361,6 +361,7 @@ export type SessionRuntimeModes = {
 	planMode: boolean;
 	permissionMode: "manual" | "yolo" | "auto";
 	swarmMode: boolean;
+	goalMode: boolean;
 };
 
 export async function getSessionRuntimeModes(
@@ -381,7 +382,21 @@ export async function getSessionRuntimeModes(
 		planMode: Boolean(raw.plan_mode),
 		permissionMode,
 		swarmMode: Boolean(raw.swarm_mode),
+		goalMode: Boolean(raw.goal_mode),
 	};
+}
+
+export async function getSessionGoalMode(sessionId: string): Promise<boolean> {
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+	return Boolean(await invoke<unknown>("get_session_goal_mode", { sessionId }));
+}
+
+export async function migrateSessionGoalMode(
+	sessionId: string,
+	enabled: boolean,
+): Promise<void> {
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+	return invoke<void>("migrate_session_goal_mode", { sessionId, enabled });
 }
 
 export async function migrateSessionSwarmMode(

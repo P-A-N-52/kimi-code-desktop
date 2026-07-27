@@ -224,18 +224,30 @@ pub fn get_session_swarm_mode(session_id: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
+pub fn get_session_goal_mode(session_id: String) -> Result<bool, String> {
+    session_store::session_goal_mode(&session_id)
+}
+
+#[tauri::command]
 pub fn get_session_runtime_modes(session_id: String) -> Result<Value, String> {
     let modes = session_store::resolved_runtime_modes(&session_id)?;
     Ok(json!({
         "plan_mode": modes.plan_mode,
         "permission_mode": modes.permission_mode,
         "swarm_mode": modes.swarm_mode,
+        "goal_mode": modes.goal_mode,
     }))
 }
 
 #[tauri::command]
 pub fn migrate_session_swarm_mode(session_id: String, enabled: bool) -> Result<(), String> {
     session_store::update_session_swarm_mode(&session_id, enabled)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn migrate_session_goal_mode(session_id: String, enabled: bool) -> Result<(), String> {
+    session_store::update_session_goal_mode(&session_id, enabled)?;
     Ok(())
 }
 
