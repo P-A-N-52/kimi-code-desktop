@@ -2341,7 +2341,10 @@ mod tests {
         let reverse_rpc = active_worker_rpc(&worker).expect("reverse transport");
         assert!(Arc::ptr_eq(&prompt_rpc, &reverse_rpc));
         reverse_rpc
-            .respond(42, json!({ "outcome": { "outcome": "selected", "optionId": "approve_once" } }))
+            .respond(
+                42,
+                json!({ "outcome": { "outcome": "selected", "optionId": "approve_once" } }),
+            )
             .expect("write reverse response while prompt handle is alive");
         reverse_rpc
             .notify("session/cancel", json!({ "sessionId": "probe" }))
