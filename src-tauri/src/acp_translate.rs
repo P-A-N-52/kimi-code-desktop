@@ -1066,8 +1066,11 @@ mod tests {
 
     #[test]
     fn swarm_compat_prompt_preserves_user_block_and_appends_instruction() {
-        let prompt =
-            legacy_user_input_to_acp_prompt_with_swarm(&json!({ "user_input": "split this" }), true, false);
+        let prompt = legacy_user_input_to_acp_prompt_with_swarm(
+            &json!({ "user_input": "split this" }),
+            true,
+            false,
+        );
         assert_eq!(prompt.as_array().unwrap().len(), 2);
         assert_eq!(prompt[0]["text"], "split this");
         assert!(prompt[1]["text"]
@@ -1078,8 +1081,11 @@ mod tests {
 
     #[test]
     fn goal_compat_prompt_preserves_user_block_and_appends_instruction() {
-        let prompt =
-            legacy_user_input_to_acp_prompt_with_swarm(&json!({ "user_input": "ship it" }), false, true);
+        let prompt = legacy_user_input_to_acp_prompt_with_swarm(
+            &json!({ "user_input": "ship it" }),
+            false,
+            true,
+        );
         assert_eq!(prompt.as_array().unwrap().len(), 2);
         assert_eq!(prompt[0]["text"], "ship it");
         assert!(prompt[1]["text"]
@@ -1090,8 +1096,11 @@ mod tests {
 
     #[test]
     fn swarm_compat_prompt_skips_slash_commands() {
-        let prompt =
-            legacy_user_input_to_acp_prompt_with_swarm(&json!({ "user_input": "/compact" }), true, true);
+        let prompt = legacy_user_input_to_acp_prompt_with_swarm(
+            &json!({ "user_input": "/compact" }),
+            true,
+            true,
+        );
         assert_eq!(prompt.as_array().unwrap().len(), 1);
         assert_eq!(prompt[0]["text"], "/compact");
     }
