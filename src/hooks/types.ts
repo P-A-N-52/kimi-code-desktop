@@ -183,7 +183,10 @@ export type SessionOperations = {
 export type ChatOperations = {
   messages: LiveMessage[];
   status: ChatStatus;
-  sendMessage: (text: string, attachments?: FileUIPart[]) => Promise<void>;
+  sendMessage: (
+    text: string,
+    attachments?: import("../lib/api/models").UploadSessionFileResponse[],
+  ) => Promise<void>;
   cancelStream: () => void;
   clearMessages: () => void;
 };

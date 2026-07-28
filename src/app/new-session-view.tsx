@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useGlobalConfig } from "@/hooks/useGlobalConfig";
+import type { UploadSessionFileResponse } from "@/lib/api/models";
 import { notifyGlobalConfigApplied } from "@/lib/config-update-toast";
 import {
 	findConfigModel,
@@ -11,7 +12,9 @@ import { PRE_SESSION_SLASH_COMMANDS } from "@/lib/pre-session-slash-commands";
 import {
 	classifySlashDispatch,
 	formatDesktopHelpReport,
+	mergeSlashCommands,
 } from "@/lib/slash-command-catalog";
+import { useSkillSlashCommands } from "@/hooks/useSkillSlashCommands";
 import { listWorkDirDirectory } from "@/lib/work-dir-files";
 import {
 	CommandResultPanel,
@@ -33,6 +36,7 @@ export function NewSessionView({
 	onWorkDirChange,
 	fetchWorkDirs,
 	onSendFirstMessage,
+	onUploadFile,
 	onManageConfig,
 }: {
 	workDir: string;
@@ -42,7 +46,9 @@ export function NewSessionView({
 		workDir: string,
 		text: string,
 		modes: SessionModeDraft | null,
+		attachments: UploadSessionFileResponse[],
 	) => Promise<void>;
+	onUploadFile: (sessionId: string, file: File) => Promise<UploadSessionFileResponse>;
 	onManageConfig?: () => void;
 }) {
 	const [draft, setDraft] = useState("");
@@ -51,10 +57,16 @@ export function NewSessionView({
 	const creatingRef = useRef(false);
 	const [commandResult, setCommandResult] = useState<CommandResultPanelState | null>(null);
 	const { config, update, isUpdating } = useGlobalConfig();
+	const skillCommands = useSkillSlashCommands();
+	const slashCommands = useMemo(
+		() => mergeSlashCommands(PRE_SESSION_SLASH_COMMANDS, skillCommands),
+		[skillCommands],
+	);
 
 	const [permissionMode, setPermissionMode] = useState<SessionModeDraft["permissionMode"]>("manual");
 	const [planMode, setPlanMode] = useState(false);
 	const [swarmMode, setSwarmMode] = useState(false);
+	const [goalMode, setGoalMode] = useState(false);
 	const [modesSeeded, setModesSeeded] = useState(false);
 
 	// Seed toggles once from global defaults so the strip matches what a new
@@ -139,10 +151,13 @@ export function NewSessionView({
 	);
 
 	const send = useCallback(
-		async (textOverride?: string) => {
+		async (
+			textOverride?: string,
+			attachments: UploadSessionFileResponse[] = [],
+		) => {
 			const text = (textOverride ?? draft).trim();
 			// Ref guard: state `creating` is async and cannot stop double Enter/click.
-			if (!text || creatingRef.current) return;
+			if ((!text && attachments.length === 0) || creatingRef.current) return;
 
 			const dir = workDir.trim();
 			if (!dir) {
@@ -150,13 +165,13 @@ export function NewSessionView({
 				return;
 			}
 
-			const slashDecision = classifySlashDispatch(text, PRE_SESSION_SLASH_COMMANDS);
+			const slashDecision = classifySlashDispatch(text, slashCommands);
 			if (slashDecision.kind === "local") {
 				if (slashDecision.name === "help") {
 					if (textOverride === undefined) setDraft("");
 					setCommandResult({
 						command: "help",
-						content: formatDesktopHelpReport(PRE_SESSION_SLASH_COMMANDS),
+						content: formatDesktopHelpReport(slashCommands),
 						loading: false,
 					});
 					return;
@@ -181,8 +196,9 @@ export function NewSessionView({
 					dir,
 					text,
 					modesSeeded
-						? { permissionMode, planMode, swarmMode }
+						? { permissionMode, planMode, swarmMode, goalMode }
 						: null,
+					attachments,
 				);
 			} catch {
 				if (textOverride === undefined) setDraft(text);
@@ -193,11 +209,13 @@ export function NewSessionView({
 		},
 		[
 			draft,
+			slashCommands,
 			modesSeeded,
 			onSendFirstMessage,
 			permissionMode,
 			planMode,
 			swarmMode,
+			goalMode,
 			workDir,
 		],
 	);
@@ -237,14 +255,11 @@ export function NewSessionView({
 						canCancel={false}
 						sendDisabled={creating}
 						planMode={planMode}
-						slashCommands={PRE_SESSION_SLASH_COMMANDS}
+						slashCommands={slashCommands}
 						queue={[]}
 						onRemoveQueued={() => {}}
 						onClearQueue={() => {}}
-						onUploadFile={async () => {
-							toast.message("请先发送消息创建会话");
-							throw new Error("No session");
-						}}
+						onUploadFile={(file) => onUploadFile(mentionSessionKey, file)}
 						onOpenContext={() => {
 							toast.message("请先发送消息创建会话");
 						}}
@@ -268,6 +283,7 @@ export function NewSessionView({
 						}}
 						planMode={planMode}
 						swarmMode={swarmMode}
+						goalMode={goalMode}
 						onPlanModeChange={(enabled) => {
 							setModesSeeded(true);
 							setPlanMode(enabled);
@@ -275,6 +291,10 @@ export function NewSessionView({
 						onSwarmModeChange={(enabled) => {
 							setModesSeeded(true);
 							setSwarmMode(enabled);
+						}}
+						onGoalModeChange={(enabled) => {
+							setModesSeeded(true);
+							setGoalMode(enabled);
 						}}
 						modeControlsDisabled={creating}
 						contextUsage={0}

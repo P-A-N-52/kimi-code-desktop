@@ -115,7 +115,10 @@ import {
 } from "react";
 import type { ChatStatus, ToolUIPart } from "ai";
 import type { LiveMessage, MessageAttachmentPart, SubagentStep } from "./types";
-import type { SessionStatus } from "@/lib/api/models";
+import type {
+  SessionStatus,
+  UploadSessionFileResponse,
+} from "@/lib/api/models";
 import { getAuthToken } from "@/lib/auth";
 import {
   type ContentPart,
@@ -147,8 +150,32 @@ import {
   classifySlashDispatch,
   filterDesktopSlashCommands,
   formatDesktopHelpReport,
+  parseSlashCommandInput,
   type SlashCommandDef,
 } from "@/lib/slash-command-catalog";
+import { formatMentionToken } from "@/modules/composer/file-mentions";
+
+/**
+ * Inline uploaded attachments into the prompt text as CLI-style `@path`
+ * mention tokens (absolute pending-upload paths, forward-slashed) instead of
+ * wire-level attachment_ids, so the runtime receives them in text form.
+ */
+function attachmentMentionTokens(
+  attachments: UploadSessionFileResponse[],
+): string[] {
+  return attachments.map((attachment) =>
+    formatMentionToken(attachment.path.replace(/\\/g, "/")),
+  );
+}
+
+function joinPromptText(
+  text: string,
+  attachments: UploadSessionFileResponse[],
+): string {
+  return [text, ...attachmentMentionTokens(attachments)]
+    .filter((part) => part.trim().length > 0)
+    .join("\n");
+}
 import {
   formatStatusReport,
   formatUsageReport,
@@ -272,6 +299,7 @@ type PersistedSessionModes = {
   planMode: boolean;
   permissionMode: PermissionMode;
   swarmMode: boolean;
+  goalMode: boolean;
 };
 
 async function loadSessionRuntimeModes(
@@ -284,12 +312,14 @@ async function loadSessionRuntimeModes(
       planMode: modes.planMode,
       permissionMode: modes.permissionMode,
       swarmMode: migrated.get(sessionId) ?? false,
+      goalMode: modes.goalMode,
     };
   }
   return {
     planMode: modes.planMode,
     permissionMode: modes.permissionMode,
     swarmMode: modes.swarmMode,
+    goalMode: modes.goalMode,
   };
 }
 
@@ -555,6 +585,11 @@ export type LocalInfoPanelResult = {
   content: string;
 };
 
+type PendingPrompt = {
+  text: string;
+  attachments: UploadSessionFileResponse[];
+};
+
 export type UseSessionStreamReturn = {
   /** Current messages */
   messages: LiveMessage[];
@@ -581,7 +616,10 @@ export type UseSessionStreamReturn = {
   /** Whether connected to the session stream */
   isConnected: boolean;
   /** Send a message to the session (will auto-connect if not connected) */
-  sendMessage: (text: string) => Promise<LocalInfoPanelResult | void>;
+  sendMessage: (
+    text: string,
+    attachments?: UploadSessionFileResponse[],
+  ) => Promise<LocalInfoPanelResult | void>;
   /** Resolve /usage or /status text without writing chat messages */
   runLocalInfoCommand: (command: "usage" | "status") => Promise<string>;
   /** Respond to an approval request */
@@ -621,6 +659,10 @@ export type UseSessionStreamReturn = {
   swarmMode: boolean;
   /** Set Swarm mode via silent RPC */
   sendSetSwarmMode: (enabled: boolean) => boolean;
+  /** Whether goal-tracking mode is active */
+  goalMode: boolean;
+  /** Set Goal mode via silent RPC */
+  sendSetGoalMode: (enabled: boolean) => boolean;
   /** Available slash commands from the server */
   slashCommands: SlashCommandDef[];
 };
@@ -712,6 +754,7 @@ export function useSessionStream(
   const [planMode, setPlanMode] = useState(false);
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("manual");
   const [swarmMode, setSwarmMode] = useState(false);
+  const [goalMode, setGoalMode] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setErrorState] = useState<Error | null>(null);
@@ -750,15 +793,19 @@ export function useSessionStream(
   const handleMessageRef = useRef<(data: string) => void>(() => undefined);
   const historyCompleteTimeoutRef = useRef<number | null>(null);
   const isReplayingRef = useRef(true); // Track if we're still replaying history
-  const pendingMessageRef = useRef<string | null>(null); // Message to send after connection
+  const pendingMessageRef = useRef<PendingPrompt | null>(null); // Prompt to send after connection
   const pendingModeUpdatesRef = useRef<{
     planMode?: boolean;
     permissionMode?: PermissionMode;
     swarmMode?: boolean;
+    goalMode?: boolean;
   }>({});
+  /** Serialize mode flushes so permission/plan/swarm/goal setters cannot race. */
+  const modeFlushChainRef = useRef<Promise<void>>(Promise.resolve());
   const planModeRef = useRef(false);
   const permissionModeRef = useRef<PermissionMode>("manual");
   const swarmModeRef = useRef(false);
+  const goalModeRef = useRef(false);
   const awaitingIdleRef = useRef(false); // Track pending idle after cancel
   const awaitingFirstResponseRef = useRef(false); // Track if waiting for first event of a turn
   const errorRef = useRef<Error | null>(null); // Synchronous guard against later idle snapshots
@@ -768,9 +815,21 @@ export function useSessionStream(
   const hasMessagesRef = useRef(false);
   const autoConnectRef = useRef(autoConnect);
   autoConnectRef.current = autoConnect;
-  planModeRef.current = planMode;
-  permissionModeRef.current = permissionMode;
-  swarmModeRef.current = swarmMode;
+  // Keep refs aligned with React state, but never clobber an in-flight local
+  // mode write (pendingModeUpdatesRef) — StatusUpdate / applyPersistedModes
+  // races were overwriting optimistic auto with manual before the first prompt.
+  if (typeof pendingModeUpdatesRef.current.planMode !== "boolean") {
+    planModeRef.current = planMode;
+  }
+  if (!pendingModeUpdatesRef.current.permissionMode) {
+    permissionModeRef.current = permissionMode;
+  }
+  if (typeof pendingModeUpdatesRef.current.swarmMode !== "boolean") {
+    swarmModeRef.current = swarmMode;
+  }
+  if (typeof pendingModeUpdatesRef.current.goalMode !== "boolean") {
+    goalModeRef.current = goalMode;
+  }
   const lastStatusSeqRef = useRef<number | null>(null);
   const lastWsMessageTimeRef = useRef<number>(0); // Last time a stream message was received
   const watchdogIntervalRef = useRef<number | null>(null); // Stale connection watchdog
@@ -821,6 +880,10 @@ export function useSessionStream(
 
   // Track if current turn is a /clear command (needs UI clear on turn end)
   const pendingClearRef = useRef(false);
+  // /compact is an ACP slash command (not a chat turn). Suppress model stream
+  // UI and clear history when the prompt RPC finishes — ACP currently drops
+  // CompactionBegin/End session updates.
+  const pendingCompactRef = useRef(false);
 
   // Turn counter for fork feature
   const turnCounterRef = useRef(0);
@@ -1430,7 +1493,7 @@ export function useSessionStream(
   );
 
   const addOptimisticUserMessage = useCallback(
-    (input: string) => {
+    (input: string, explicitAttachments: UploadSessionFileResponse[] = []) => {
       const parsedUserInput = parseUserInput(input);
       const turnIndex = turnCounterRef.current;
       turnCounterRef.current += 1;
@@ -1442,6 +1505,13 @@ export function useSessionStream(
         content: parsedUserInput.text,
         ...(parsedUserInput.attachments.length > 0
           ? { attachments: parsedUserInput.attachments }
+          : explicitAttachments.length > 0
+            ? {
+                attachments: explicitAttachments.map((attachment) => ({
+                  kind: "nopreview" as const,
+                  filename: attachment.filename,
+                })),
+              }
           : {}),
       };
       optimisticUserMessagesRef.current.push({
@@ -1770,6 +1840,8 @@ export function useSessionStream(
     promptRequestIdsRef.current.clear();
     cancelRequestIdsRef.current.clear();
     pendingClearRef.current = false;
+    pendingCompactRef.current = false;
+    compactionMessageIdRef.current = null;
     setCurrentStep(0);
     setContextUsage(0);
     setContextTokens(null);
@@ -1781,6 +1853,8 @@ export function useSessionStream(
     permissionModeRef.current = "manual";
     setSwarmMode(false);
     swarmModeRef.current = false;
+    setGoalMode(false);
+    goalModeRef.current = false;
     setError(null);
     setSessionStatus(null);
     lastStatusSeqRef.current = null;
@@ -2031,6 +2105,13 @@ export function useSessionStream(
           const userText = parsedUserInput.text.trim();
           pendingClearRef.current =
             userText === "/clear" || userText === "/reset";
+          const slash = parseSlashCommandInput(userText);
+          if (slash?.name === "compact") {
+            // Slash compaction is a command, not a chat turn — keep the
+            // Compacting… status row and skip the user bubble.
+            pendingCompactRef.current = true;
+            break;
+          }
 
           // Add user message
           const userMessageId = getNextMessageId("user");
@@ -2104,6 +2185,15 @@ export function useSessionStream(
         }
 
         case "ContentPart": {
+          // /compact streams summarization tokens over ACP as normal chunks;
+          // keep the command UI (Compacting…) instead of a chat reply.
+          if (pendingCompactRef.current) {
+            if (!isReplay) {
+              clearAwaitingFirstResponse();
+              setStatus("streaming");
+            }
+            break;
+          }
           clearStepRetryStatus();
           // Live ACP does not emit StepBegin; promote status on the first
           // content chunk so the composer/status strip leave "submitted".
@@ -2889,7 +2979,10 @@ export function useSessionStream(
           }
 
           const nextPlanMode = event.payload.plan_mode;
-          if (typeof nextPlanMode === "boolean") {
+          if (
+            typeof nextPlanMode === "boolean" &&
+            typeof pendingModeUpdatesRef.current.planMode !== "boolean"
+          ) {
             setPlanMode(nextPlanMode);
             planModeRef.current = nextPlanMode;
           }
@@ -2898,18 +2991,31 @@ export function useSessionStream(
           const nextPermissionMode =
             rawPermissionMode === "ask" ? "manual" : rawPermissionMode;
           if (
-            nextPermissionMode === "manual" ||
-            nextPermissionMode === "auto" ||
-            nextPermissionMode === "yolo"
+            (nextPermissionMode === "manual" ||
+              nextPermissionMode === "auto" ||
+              nextPermissionMode === "yolo") &&
+            !pendingModeUpdatesRef.current.permissionMode
           ) {
             setPermissionMode(nextPermissionMode);
             permissionModeRef.current = nextPermissionMode;
           }
 
           const nextSwarmMode = event.payload.swarm_mode;
-          if (typeof nextSwarmMode === "boolean") {
+          if (
+            typeof nextSwarmMode === "boolean" &&
+            typeof pendingModeUpdatesRef.current.swarmMode !== "boolean"
+          ) {
             setSwarmMode(nextSwarmMode);
             swarmModeRef.current = nextSwarmMode;
+          }
+
+          const nextGoalMode = event.payload.goal_mode;
+          if (
+            typeof nextGoalMode === "boolean" &&
+            typeof pendingModeUpdatesRef.current.goalMode !== "boolean"
+          ) {
+            setGoalMode(nextGoalMode);
+            goalModeRef.current = nextGoalMode;
           }
 
           // If we have a message_id, create a special message to display it
@@ -3055,6 +3161,7 @@ export function useSessionStream(
         }
 
         case "CompactionBegin": {
+          pendingCompactRef.current = true;
           const compactionMsgId = getNextMessageId("assistant");
           compactionMessageIdRef.current = compactionMsgId;
           setMessages((prev) => [
@@ -3073,6 +3180,7 @@ export function useSessionStream(
         case "CompactionEnd": {
           const compactMsgId = compactionMessageIdRef.current;
           compactionMessageIdRef.current = null;
+          pendingCompactRef.current = false;
           // Clear old messages after compaction, only keep the current turn
           // Also remove the compaction indicator message
           setMessages((prev) => {
@@ -3084,7 +3192,19 @@ export function useSessionStream(
               }
             }
             const kept = lastUserMsgIndex >= 0 ? prev.slice(lastUserMsgIndex) : [];
-            return compactMsgId ? kept.filter((m) => m.id !== compactMsgId) : kept;
+            const withoutIndicator = compactMsgId
+              ? kept.filter((m) => m.id !== compactMsgId)
+              : kept;
+            if (withoutIndicator.length > 0) return withoutIndicator;
+            return [
+              {
+                id: getNextMessageId("assistant"),
+                role: "assistant",
+                variant: "status",
+                content: "Context compacted.",
+                isStreaming: false,
+              },
+            ];
           });
           break;
         }
@@ -3276,6 +3396,7 @@ export function useSessionStream(
           supports_question: true,
           supports_plan_mode: true,
           supports_swarm_mode: true,
+          supports_goal_mode: true,
         },
       },
     };
@@ -3293,66 +3414,100 @@ export function useSessionStream(
 
   const flushPendingModeUpdates = useCallback(
     async (connection: StreamConnection) => {
-      const pending = pendingModeUpdatesRef.current;
-      const updates: Array<
-        | ["set_permission_mode", { mode: PermissionMode }]
-        | ["set_plan_mode" | "set_swarm_mode", { enabled: boolean }]
-      > = [];
-      if (pending.permissionMode) {
-        updates.push([
-          "set_permission_mode",
-          { mode: pending.permissionMode },
-        ]);
-      }
-      if (typeof pending.planMode === "boolean") {
-        updates.push(["set_plan_mode", { enabled: pending.planMode }]);
-      }
-      if (typeof pending.swarmMode === "boolean") {
-        updates.push(["set_swarm_mode", { enabled: pending.swarmMode }]);
-      }
-      if (updates.length === 0) {
-        return;
-      }
+      const runFlush = async () => {
+        // Drain until empty so updates queued while we were sending are not dropped.
+        for (;;) {
+          const pending = pendingModeUpdatesRef.current;
+          const updates: Array<
+            | ["set_permission_mode", { mode: PermissionMode }]
+            | ["set_plan_mode" | "set_swarm_mode" | "set_goal_mode", { enabled: boolean }]
+          > = [];
+          if (pending.permissionMode) {
+            updates.push([
+              "set_permission_mode",
+              { mode: pending.permissionMode },
+            ]);
+          }
+          if (typeof pending.planMode === "boolean") {
+            updates.push(["set_plan_mode", { enabled: pending.planMode }]);
+          }
+          if (typeof pending.swarmMode === "boolean") {
+            updates.push(["set_swarm_mode", { enabled: pending.swarmMode }]);
+          }
+          if (typeof pending.goalMode === "boolean") {
+            updates.push(["set_goal_mode", { enabled: pending.goalMode }]);
+          }
+          if (updates.length === 0) {
+            return;
+          }
 
-      if (typeof pending.planMode === "boolean") {
-        planModeRef.current = pending.planMode;
-        setPlanMode(pending.planMode);
-      }
-      if (pending.permissionMode) {
-        permissionModeRef.current = pending.permissionMode;
-        setPermissionMode(pending.permissionMode);
-      }
-      if (typeof pending.swarmMode === "boolean") {
-        swarmModeRef.current = pending.swarmMode;
-        setSwarmMode(pending.swarmMode);
-      }
+          // Clear only the keys we are about to send; concurrent setters may
+          // add newer values while we await wire_send.
+          const sentPermission = pending.permissionMode;
+          const sentPlan = pending.planMode;
+          const sentSwarm = pending.swarmMode;
+          const sentGoal = pending.goalMode;
+          if (sentPermission) {
+            delete pendingModeUpdatesRef.current.permissionMode;
+            permissionModeRef.current = sentPermission;
+            setPermissionMode(sentPermission);
+          }
+          if (typeof sentPlan === "boolean") {
+            delete pendingModeUpdatesRef.current.planMode;
+            planModeRef.current = sentPlan;
+            setPlanMode(sentPlan);
+          }
+          if (typeof sentSwarm === "boolean") {
+            delete pendingModeUpdatesRef.current.swarmMode;
+            swarmModeRef.current = sentSwarm;
+            setSwarmMode(sentSwarm);
+          }
+          if (typeof sentGoal === "boolean") {
+            delete pendingModeUpdatesRef.current.goalMode;
+            goalModeRef.current = sentGoal;
+            setGoalMode(sentGoal);
+          }
 
-      pendingModeUpdatesRef.current = {};
-      try {
-        for (const [method, params] of updates) {
-          await Promise.resolve(
-            connection.send(
-              JSON.stringify({
-                jsonrpc: "2.0",
-                method,
-                id: uuidV4(),
-                params,
-              }),
-            ),
-          );
-        }
-      } catch (error) {
-        for (const [method, params] of updates) {
-          if (method === "set_permission_mode") {
-            pendingModeUpdatesRef.current.permissionMode = params.mode;
-          } else {
-            pendingModeUpdatesRef.current[
-              method === "set_plan_mode" ? "planMode" : "swarmMode"
-            ] = params.enabled;
+          try {
+            // Permission before plan: plan recovery uses the worker's permission
+            // snapshot; sending plan first with stale Manual writes `default`.
+            for (const [method, params] of updates) {
+              await Promise.resolve(
+                connection.send(
+                  JSON.stringify({
+                    jsonrpc: "2.0",
+                    method,
+                    id: uuidV4(),
+                    params,
+                  }),
+                ),
+              );
+            }
+          } catch (error) {
+            for (const [method, params] of updates) {
+              if (method === "set_permission_mode") {
+                pendingModeUpdatesRef.current.permissionMode = params.mode;
+              } else {
+                pendingModeUpdatesRef.current[
+                  method === "set_plan_mode"
+                    ? "planMode"
+                    : method === "set_swarm_mode"
+                      ? "swarmMode"
+                      : "goalMode"
+                ] = params.enabled;
+              }
+            }
+            throw error;
           }
         }
-        throw error;
-      }
+      };
+
+      const next = modeFlushChainRef.current.then(runFlush, runFlush);
+      modeFlushChainRef.current = next.then(
+        () => undefined,
+        () => undefined,
+      );
+      await next;
     },
     [],
   );
@@ -3365,6 +3520,8 @@ export function useSessionStream(
         return;
       }
 
+      await flushPendingModeUpdates(ws);
+
       const messageId = uuidV4();
       promptRequestIdsRef.current.add(messageId);
       const message: WireMessage = {
@@ -3372,9 +3529,12 @@ export function useSessionStream(
         method: "prompt",
         id: messageId,
         params: {
-          user_input: pendingMessage,
+          user_input:
+            joinPromptText(pendingMessage.text, pendingMessage.attachments) ||
+            "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE",
           plan_mode: planModeRef.current,
           swarm_mode: swarmModeRef.current,
+          goal_mode: goalModeRef.current,
         },
       };
 
@@ -3391,7 +3551,7 @@ export function useSessionStream(
         await Promise.resolve(ws.send(JSON.stringify(message)));
         console.log(
           "[SessionStream] Sent pending message after connect:",
-          pendingMessage,
+          pendingMessage.text,
         );
       } catch (err) {
         if (pendingMessageRef.current === null) {
@@ -3407,7 +3567,7 @@ export function useSessionStream(
         throw error;
       }
     },
-    [onError, setAwaitingFirstResponse, setError],
+    [flushPendingModeUpdates, onError, setAwaitingFirstResponse, setError],
   );
 
   // Handle incoming stream message
@@ -3542,6 +3702,25 @@ export function useSessionStream(
           isReplayingRef.current = false;
           setIsReplayingHistory(false);
           completeStreamingMessages();
+          if (pendingCompactRef.current) {
+            pendingCompactRef.current = false;
+            compactionMessageIdRef.current = null;
+            setMessages([
+              {
+                id: getNextMessageId("assistant"),
+                role: "assistant",
+                variant: "status",
+                content:
+                  result?.status === "cancelled"
+                    ? "Compaction cancelled."
+                    : "Context compacted.",
+                isStreaming: false,
+              },
+            ]);
+            setStatus("ready");
+            setError(null);
+            return;
+          }
           if (finishedWithoutVisibleResponse) {
             const emptyResponseError = new Error("模型未返回可显示内容");
             setError(emptyResponseError);
@@ -4547,7 +4726,7 @@ export function useSessionStream(
 
   const sendModeUpdate = useCallback(
     (
-      key: "planMode" | "swarmMode",
+      key: "planMode" | "swarmMode" | "goalMode",
       enabled: boolean,
     ): boolean => {
       if (!sessionId) {
@@ -4558,9 +4737,12 @@ export function useSessionStream(
       if (key === "planMode") {
         planModeRef.current = enabled;
         setPlanMode(enabled);
-      } else {
+      } else if (key === "swarmMode") {
         swarmModeRef.current = enabled;
         setSwarmMode(enabled);
+      } else {
+        goalModeRef.current = enabled;
+        setGoalMode(enabled);
       }
 
       const connection = wsRef.current;
@@ -4631,7 +4813,8 @@ export function useSessionStream(
     if (
       typeof pendingModeUpdatesRef.current.planMode !== "boolean" &&
       !pendingModeUpdatesRef.current.permissionMode &&
-      typeof pendingModeUpdatesRef.current.swarmMode !== "boolean"
+      typeof pendingModeUpdatesRef.current.swarmMode !== "boolean" &&
+      typeof pendingModeUpdatesRef.current.goalMode !== "boolean"
     ) {
       return;
     }
@@ -4655,6 +4838,11 @@ export function useSessionStream(
 
   const sendSetSwarmMode = useCallback(
     (enabled: boolean) => sendModeUpdate("swarmMode", enabled),
+    [sendModeUpdate],
+  );
+
+  const sendSetGoalMode = useCallback(
+    (enabled: boolean) => sendModeUpdate("goalMode", enabled),
     [sendModeUpdate],
   );
 
@@ -4738,8 +4926,11 @@ export function useSessionStream(
 
   // Send message to session (auto-connects if not connected)
   const sendMessage = useCallback(
-    async (text: string): Promise<LocalInfoPanelResult | void> => {
-      if (!text.trim()) return;
+    async (
+      text: string,
+      attachments: UploadSessionFileResponse[] = [],
+    ): Promise<LocalInfoPanelResult | void> => {
+      if (!text.trim() && attachments.length === 0) return;
 
       const trimmedText = text.trim();
       const slashDecision = classifySlashDispatch(
@@ -4818,6 +5009,9 @@ export function useSessionStream(
         return;
       }
 
+      const compactSlash = parseSlashCommandInput(trimmedText);
+      const isCompactCommand = compactSlash?.name === "compact";
+
       // Defense against double-fire from StrictMode effects, unstable effect
       // deps, or rapid double Enter/click before React re-renders `busy`.
       if (
@@ -4836,7 +5030,23 @@ export function useSessionStream(
       clearStepRetryStatus();
       resetStepState();
       setError(null);
-      addOptimisticUserMessage(trimmedText);
+      if (isCompactCommand) {
+        pendingCompactRef.current = true;
+        const compactionMsgId = getNextMessageId("assistant");
+        compactionMessageIdRef.current = compactionMsgId;
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: compactionMsgId,
+            role: "assistant",
+            variant: "status",
+            content: "Compacting conversation history…",
+            isStreaming: true,
+          },
+        ]);
+      } else {
+        addOptimisticUserMessage(trimmedText, attachments);
+      }
       const startedAt = performance.now();
       promptTimingRef.current = {
         startedAt,
@@ -4853,7 +5063,10 @@ export function useSessionStream(
           throw new Error("No session selected");
         }
 
-        pendingMessageRef.current = trimmedText;
+        pendingMessageRef.current = {
+          text: trimmedText,
+          attachments,
+        };
         preserveMessagesOnConnectRef.current = true;
         if (wsRef.current?.readyState === STREAM_CONNECTING) {
           return;
@@ -4862,7 +5075,15 @@ export function useSessionStream(
         return;
       }
 
-      // Send as JSON-RPC prompt message
+      // Send as JSON-RPC prompt message — modes must land before the prompt so
+      // ACP is not still on `default`/manual when the first tool asks permission.
+      const connection = wsRef.current;
+      try {
+        await flushPendingModeUpdates(connection);
+      } catch (err) {
+        console.warn("[SessionStream] Failed to flush modes before prompt:", err);
+      }
+
       const messageId = uuidV4();
       promptRequestIdsRef.current.add(messageId);
       const message: WireMessage = {
@@ -4870,13 +5091,15 @@ export function useSessionStream(
         method: "prompt",
         id: messageId,
         params: {
-          user_input: trimmedText,
+          user_input:
+            joinPromptText(trimmedText, attachments) ||
+            "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE",
           plan_mode: planModeRef.current,
           swarm_mode: swarmModeRef.current,
+          goal_mode: goalModeRef.current,
         },
       };
 
-      const connection = wsRef.current;
       try {
         if (promptTimingRef.current) {
           promptTimingRef.current.promptSubmittedAt = performance.now();
@@ -4888,7 +5111,18 @@ export function useSessionStream(
           })
           .catch((err) => {
             promptRequestIdsRef.current.delete(messageId);
-            optimisticUserMessagesRef.current.shift();
+            if (pendingCompactRef.current) {
+              pendingCompactRef.current = false;
+              const compactMsgId = compactionMessageIdRef.current;
+              compactionMessageIdRef.current = null;
+              if (compactMsgId) {
+                setMessages((prev) =>
+                  prev.filter((m) => m.id !== compactMsgId),
+                );
+              }
+            } else {
+              optimisticUserMessagesRef.current.shift();
+            }
             const error = err instanceof Error ? err : new Error(String(err));
             setError(error);
             onError?.(error);
@@ -4897,7 +5131,16 @@ export function useSessionStream(
           });
       } catch (err) {
         promptRequestIdsRef.current.delete(messageId);
-        optimisticUserMessagesRef.current.shift();
+        if (pendingCompactRef.current) {
+          pendingCompactRef.current = false;
+          const compactMsgId = compactionMessageIdRef.current;
+          compactionMessageIdRef.current = null;
+          if (compactMsgId) {
+            setMessages((prev) => prev.filter((m) => m.id !== compactMsgId));
+          }
+        } else {
+          optimisticUserMessagesRef.current.shift();
+        }
         const error = err instanceof Error ? err : new Error(String(err));
         setError(error);
         onError?.(error);
@@ -4919,6 +5162,7 @@ export function useSessionStream(
       setError,
       getNextMessageId,
       setMessages,
+      flushPendingModeUpdates,
     ],
   );
 
@@ -4961,6 +5205,8 @@ export function useSessionStream(
     resetStateRef.current(true);
     setSwarmMode(false);
     swarmModeRef.current = false;
+    setGoalMode(false);
+    goalModeRef.current = false;
     setMessages([]);
     useToolEventsStore.getState().clearNewFiles();
     useToolEventsStore.getState().clearTodoItems();
@@ -4977,6 +5223,7 @@ export function useSessionStream(
         planMode: false,
         permissionMode: "manual",
         swarmMode: false,
+        goalMode: false,
       };
       if (isTauri()) {
         try {
@@ -4990,6 +5237,8 @@ export function useSessionStream(
           permissionModeRef.current = persistedModes.permissionMode;
           setSwarmMode(persistedModes.swarmMode);
           swarmModeRef.current = persistedModes.swarmMode;
+          setGoalMode(persistedModes.goalMode);
+          goalModeRef.current = persistedModes.goalMode;
         } catch (error) {
           console.warn(
             "[SessionStream] Failed to load session runtime modes:",
@@ -5003,12 +5252,24 @@ export function useSessionStream(
       }
 
       const applyPersistedModes = () => {
-        setPlanMode(persistedModes.planMode);
-        planModeRef.current = persistedModes.planMode;
-        setPermissionMode(persistedModes.permissionMode);
-        permissionModeRef.current = persistedModes.permissionMode;
-        setSwarmMode(persistedModes.swarmMode);
-        swarmModeRef.current = persistedModes.swarmMode;
+        // Draft / in-flight UI writes win over the snapshot taken at session
+        // open (often still `manual` for a brand-new session).
+        if (typeof pendingModeUpdatesRef.current.planMode !== "boolean") {
+          setPlanMode(persistedModes.planMode);
+          planModeRef.current = persistedModes.planMode;
+        }
+        if (!pendingModeUpdatesRef.current.permissionMode) {
+          setPermissionMode(persistedModes.permissionMode);
+          permissionModeRef.current = persistedModes.permissionMode;
+        }
+        if (typeof pendingModeUpdatesRef.current.swarmMode !== "boolean") {
+          setSwarmMode(persistedModes.swarmMode);
+          swarmModeRef.current = persistedModes.swarmMode;
+        }
+        if (typeof pendingModeUpdatesRef.current.goalMode !== "boolean") {
+          setGoalMode(persistedModes.goalMode);
+          goalModeRef.current = persistedModes.goalMode;
+        }
       };
 
       // In Tauri, opening a completed session should not pay the full worker
@@ -5131,6 +5392,8 @@ export function useSessionStream(
     sendSetPermissionMode,
     swarmMode,
     sendSetSwarmMode,
+    goalMode,
+    sendSetGoalMode,
     slashCommands,
   };
 }

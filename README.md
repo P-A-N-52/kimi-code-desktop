@@ -18,7 +18,7 @@
 
 Kimi Code Desktop 将 Kimi Code 的终端智能体能力带进一个专注、可视、可管理的桌面界面。它不是另一套 AI 运行时：会话、模型、工具调用与智能体能力仍由用户安装的 Kimi Code CLI 提供，桌面端通过 ACP（`kimi acp`）连接，并负责交互、工作区呈现与 Windows 集成。
 
-> 项目仍在快速迭代中。当前源码版本为 `0.1.10`，面向 Windows。
+> 项目仍在快速迭代中。当前源码版本为 `0.1.12`，面向 Windows。
 
 ## 你可以用它做什么
 
@@ -26,7 +26,7 @@ Kimi Code Desktop 将 Kimi Code 的终端智能体能力带进一个专注、可
 - **真实还原会话进度**：统一处理实时事件与本地历史回放，保留附件、工具结果、任务状态和子智能体步骤。
 - **掌握整个工作区**：在 Changes、Files、Agents 和 Tasks 面板之间切换，不离开对话即可查看改动和执行进度。
 - **控制智能体行为**：支持权限模式、Plan、Swarm、模型状态、文件上传、Slash Commands，以及忙碌时的消息队列。
-- **管理大量会话**：搜索、重命名、归档、恢复、批量处理，并可按 7 / 14 / 30 / 60 / 90 天一键归档长期未活跃会话。
+- **管理大量会话**：搜索、重命名、归档、恢复、批量处理，并可按 30 / 60 / 90 天一键归档长期未活跃会话。
 - **查看用量与上下文**：展示当前上下文窗口、Token 明细、平台额度，以及今日 / 7 天 / 30 天本地用量趋势；`/usage` 与 `/status` 会在 Composer 上方即时呈现结果。
 - **融入 Windows**：提供系统托盘、任务完成与审批通知、全局快捷键，并确保重复启动时聚焦已有窗口。
 - **直接管理运行时配置**：在设置中切换深浅主题、编辑全局配置与原始 `config.toml`、管理 MCP Server，并查看桌面端与 CLI 版本。
@@ -52,14 +52,15 @@ React 19 + Vite
 
 ## 安装
 
-### 1. 安装并登录 Kimi Code CLI
+### 1. 安装并配置 Kimi Code CLI
 
-确保 `kimi` 命令位于 `PATH`：
+确保 `kimi` 命令位于 `PATH`，并在 `~/.kimi-code/config.toml` 中配置可用的模型与 provider：
 
 ```powershell
-uv tool install kimi-cli
-kimi login
+irm https://code.kimi.com/kimi-code/install.ps1 | iex
 ```
+
+可以使用 provider API key、Kimi Code 账号凭据或 Kimi Code CLI 支持的其他配置来源；桌面端不要求执行 `kimi login`。
 
 从旧版 `~/.kimi` 迁移时，运行：
 
@@ -71,7 +72,7 @@ kimi migrate
 
 从 [GitHub Releases](https://github.com/P-A-N-52/kimi-code-desktop/releases) 下载最新 MSI。安装包只包含桌面外壳，不会复制、覆盖或删除你的 Kimi Code CLI 配置与会话数据。
 
-首次启动时，应用会检查 `kimi`、`kimi acp`、`~/.kimi-code/config.toml` 和登录状态，再加载本地会话。
+首次启动时，应用会检查 `kimi`、`kimi acp` 和 `~/.kimi-code/config.toml`，再加载本地会话；不会把 Kimi 账号登录状态作为启动条件。
 
 ## 本地开发
 
@@ -140,10 +141,10 @@ src-tauri\target\release\bundle\msi\Kimi Code_<version>_x64_en-US.msi
 ## 当前边界
 
 - 目前仅面向 Windows。
-- 运行时必须能够访问已安装且已登录的 Kimi Code CLI，不提供 legacy sidecar fallback。
+- 运行时必须能够访问已安装、已配置可用 provider 的 Kimi Code CLI，不要求 Kimi 账号登录，也不提供 legacy sidecar fallback。
 - 当前提供手动深色 / 浅色切换；跟随系统主题尚未接入。
 - ACP 尚不支持 fork-at-turn，因此桌面端不会伪造会话分叉能力。
-- 工作区中的新能力仍需经过真实 Tauri + 已认证 `kimi acp` 路径验收后，才会进入稳定发布说明。
+- 工作区中的新能力仍需经过真实 Tauri + 可用 `kimi acp` provider 路径验收后，才会进入稳定发布说明。
 
 ## License
 

@@ -210,7 +210,7 @@ fn check_kimi_code_runtime_readiness() -> RuntimeReadiness {
             ..
         } => {
             let detail = format!(
-                "Kimi Code config path resolved but file is not present yet: {path}. Run `kimi login` or `kimi migrate` if migrating from legacy."
+                "Kimi Code config path resolved but file is not present yet: {path}. Configure a provider or run `kimi migrate` if migrating from legacy."
             );
             warnings.push(detail.clone());
             checks.push(RuntimeReadinessCheck {
@@ -232,24 +232,6 @@ fn check_kimi_code_runtime_readiness() -> RuntimeReadiness {
             });
         }
         _ => {}
-    }
-
-    if crate::managed_usage::credentials_present() {
-        checks.push(RuntimeReadinessCheck {
-            id: "credentials",
-            label: "Kimi Code login",
-            status: CheckStatus::Ok,
-            detail: "Kimi Code credentials found under ~/.kimi-code/credentials/.".to_string(),
-        });
-    } else {
-        let detail = "No Kimi Code credentials found. Sign in from Settings or this screen (device code), or run `kimi login`.".to_string();
-        warnings.push(detail.clone());
-        checks.push(RuntimeReadinessCheck {
-            id: "credentials",
-            label: "Kimi Code login",
-            status: CheckStatus::Warning,
-            detail,
-        });
     }
 
     if let Some(hint) = legacy_migration_hint() {

@@ -6,7 +6,7 @@ export type SlashCommandDef = {
 };
 
 /**
- * Desktop already exposes these via UI, or they are TUI/login-only.
+ * Desktop already exposes these via UI, or they are TUI-only.
  * Skills and other ACP-advertised commands stay available.
  */
 const DESKTOP_SLASH_DENYLIST = new Set([
@@ -29,7 +29,6 @@ const DESKTOP_SLASH_DENYLIST = new Set([
   "provider",
   // Pure TUI / process exit
   "theme",
-  "custom-theme",
   "editor",
   "reload-tui",
   "exit",
@@ -126,9 +125,9 @@ const DENIED_COMMAND_HINTS: Record<string, string> = {
   rename: "Rename the session from the sidebar.",
   settings: "Open Settings from the app menu.",
   config: "Open Settings from the app menu.",
-  login: "Sign in from Settings (device code), then reconnect.",
-  logout: "Sign out from Settings, then reconnect.",
-  provider: "Manage providers with `kimi` CLI / Settings.",
+  login: "Manage account credentials with the `kimi` CLI when needed.",
+  logout: "Manage account credentials with the `kimi` CLI when needed.",
+  provider: "Manage providers with the `kimi` CLI or config.toml.",
   yolo: "Use the permission mode control (YOLO) in the status bar.",
   yes: "Use the permission mode control (YOLO) in the status bar.",
   auto: "Use the permission mode control (Auto) in the status bar.",
@@ -316,4 +315,25 @@ export function shouldExecuteSlashCommandImmediately(
     return false;
   }
   return true;
+}
+
+/**
+ * Merge slash-command sources by normalized name. Earlier entries win, so
+ * ACP-advertised commands keep their authoritative descriptions while
+ * disk-discovered skills fill whatever the runtime has not advertised.
+ */
+export function mergeSlashCommands(
+  ...sources: readonly (readonly SlashCommandDef[])[]
+): SlashCommandDef[] {
+  const seen = new Set<string>();
+  const merged: SlashCommandDef[] = [];
+  for (const source of sources) {
+    for (const command of source) {
+      const key = normalizeCommandName(command.name);
+      if (!key || seen.has(key) || isDeniedDesktopSlashCommand(key)) continue;
+      seen.add(key);
+      merged.push(command);
+    }
+  }
+  return merged;
 }

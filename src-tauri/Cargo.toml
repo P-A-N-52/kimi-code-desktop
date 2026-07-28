@@ -1,6 +1,6 @@
 [package]
 name = "kimi-code-desktop"
-version = "0.1.10"
+version = "0.1.13"
 description = "Kimi Code 桌面应用 / Kimi Code Desktop App"
 authors = [ "Kimi Team" ]
 license = "Apache-2.0"
@@ -41,6 +41,9 @@ features = [ "rt-multi-thread", "time", "macros", "net", "sync" ]
 [dependencies.open]
 version = "5"
 features = [ "shellexecute-on-windows" ]
+
+[dependencies.rfd]
+version = "0.15"
 
 [dependencies.ureq]
 version = "2"

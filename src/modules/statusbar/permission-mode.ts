@@ -7,6 +7,7 @@ export type SessionModeDraft = {
 	permissionMode: PermissionMode;
 	planMode: boolean;
 	swarmMode: boolean;
+	goalMode: boolean;
 };
 
 export function parsePermissionMode(value: string | null | undefined): PermissionMode {

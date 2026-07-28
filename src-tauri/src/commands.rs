@@ -11,6 +11,7 @@ use crate::security::{
 };
 use crate::session_files;
 use crate::session_store;
+use crate::skills;
 use crate::wire_events::{RestartWorkersSummary, RuntimeStatus};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -223,18 +224,30 @@ pub fn get_session_swarm_mode(session_id: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
+pub fn get_session_goal_mode(session_id: String) -> Result<bool, String> {
+    session_store::session_goal_mode(&session_id)
+}
+
+#[tauri::command]
 pub fn get_session_runtime_modes(session_id: String) -> Result<Value, String> {
     let modes = session_store::resolved_runtime_modes(&session_id)?;
     Ok(json!({
         "plan_mode": modes.plan_mode,
         "permission_mode": modes.permission_mode,
         "swarm_mode": modes.swarm_mode,
+        "goal_mode": modes.goal_mode,
     }))
 }
 
 #[tauri::command]
 pub fn migrate_session_swarm_mode(session_id: String, enabled: bool) -> Result<(), String> {
     session_store::update_session_swarm_mode(&session_id, enabled)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn migrate_session_goal_mode(session_id: String, enabled: bool) -> Result<(), String> {
+    session_store::update_session_goal_mode(&session_id, enabled)?;
     Ok(())
 }
 
@@ -343,14 +356,17 @@ pub async fn generate_title(session_id: String) -> Result<Value, String> {
 #[tauri::command]
 pub async fn upload_session_file(
     _app: tauri::AppHandle,
-    state: tauri::State<'_, AcpProcessManager>,
-    session_id: String,
+    _state: tauri::State<'_, AcpProcessManager>,
+    _session_id: String,
     filename: String,
     data: Vec<u8>,
 ) -> Result<Value, String> {
-    state.ensure_editable(&session_id)?;
-    let session_dir = session_store::find_session_dir_by_id_or_err(&session_id)?;
-    session_files::upload_session_file_to_dir(&session_dir, &filename, &data)
+    session_files::upload_pending_file(&filename, &data)
+}
+
+#[tauri::command]
+pub async fn delete_uploaded_file(file_id: String) -> Result<(), String> {
+    session_files::delete_pending_file(&file_id)
 }
 
 #[tauri::command]
@@ -474,6 +490,27 @@ fn resolve_startup_dir() -> Result<String, String> {
 #[tauri::command]
 pub fn get_global_config() -> Result<Value, String> {
     global_config::get_global_config()
+}
+
+#[tauri::command]
+pub fn list_available_skills() -> Result<Value, String> {
+    skills::list_available_skills()
+}
+
+/// Native multi-select file picker. Returns absolute paths so the composer can
+/// insert them as text tokens (browser file inputs do not expose real paths).
+#[tauri::command]
+pub fn pick_files() -> Result<Value, String> {
+    let paths = rfd::FileDialog::new()
+        .pick_files()
+        .map(|files| {
+            files
+                .iter()
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(json!(paths))
 }
 
 #[tauri::command]

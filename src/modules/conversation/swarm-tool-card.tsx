@@ -107,6 +107,7 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
   const rows = useMemo(() => buildSwarmCardRows(members, result), [members, result]);
 
   const running = isToolRunning(toolCall.state);
+  const denied = toolCall.state === "output-denied";
   const counts = useMemo(() => {
     const c: Record<SwarmPhase, number> = {
       completed: 0,
@@ -123,10 +124,14 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
   const done = counts.completed + counts.failed;
   const inProgress = counts.working + counts.suspended + counts.queued;
   const aggregateError =
-    !running && (toolCall.isError || (result?.failed ?? 0) > 0 || (result?.aborted ?? 0) > 0);
-  const aggregateOk = !running && !aggregateError;
+    !running &&
+    (denied ||
+      toolCall.isError ||
+      (result?.failed ?? 0) > 0 ||
+      (result?.aborted ?? 0) > 0);
+  const aggregateOk = !running && !aggregateError && !denied;
 
-  const [open, setOpen] = useState(running || inProgress > 0);
+  const [open, setOpen] = useState(running || inProgress > 0 || denied);
 
   const segments = PHASE_ORDER.map(({ phase, barClass, legendClass }) => ({
     phase,
@@ -135,8 +140,17 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
     legendClass,
   })).filter((s) => s.count > 0);
 
+  const denialText =
+    denied || toolCall.isError
+      ? (toolCall.errorText ?? (Array.isArray(toolCall.output) ? toolCall.output.join("\n") : toolCall.output) ?? "")
+          .toString()
+          .trim()
+      : "";
+
   const fallbackOutput =
-    rows.length === 0 && !result && !running ? (toolCall.output ?? "").trim() : "";
+    rows.length === 0 && !result && !running && !denied
+      ? (toolCall.output ?? "").trim()
+      : "";
 
   return (
     <div
@@ -199,15 +213,17 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
                 {done} / {total}
               </span>
               <span className="font-mono text-[10.5px] text-muted">
-                {running || inProgress > 0
-                  ? inProgress > 0
-                    ? `${inProgress} 个进行中`
-                    : "进行中"
-                  : result
-                    ? `完成 ${result.completed}，失败 ${result.failed + result.aborted}`
-                    : rows.length === 0
-                      ? "等待子代理启动…"
-                      : "已完成"}
+                {denied
+                  ? "已拒绝 / 未执行"
+                  : running || inProgress > 0
+                    ? inProgress > 0
+                      ? `${inProgress} 个进行中`
+                      : "进行中"
+                    : result
+                      ? `完成 ${result.completed}，失败 ${result.failed + result.aborted}`
+                      : rows.length === 0
+                        ? "等待子代理启动…"
+                        : "已完成"}
               </span>
             </div>
             {segments.length > 0 ? (
@@ -242,6 +258,10 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
                 <MemberRow key={row.id} row={row} />
               ))}
             </div>
+          ) : denialText ? (
+            <pre className="whitespace-pre-wrap break-words px-2.5 py-2.5 font-mono text-[11px] leading-relaxed text-danger">
+              {denialText}
+            </pre>
           ) : fallbackOutput ? (
             <pre className="whitespace-pre-wrap break-words px-2.5 py-2.5 font-mono text-[11px] leading-relaxed text-foreground">
               {fallbackOutput}

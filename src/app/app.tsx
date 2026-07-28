@@ -6,7 +6,7 @@ import { useSessionStream } from "@/hooks/useSessionStream";
 import { DirectoryNotFoundError, useSessions } from "@/hooks/useSessions";
 import { getApiBaseUrl, hasPlatformModifier } from "@/hooks/utils";
 import { useDomTranslations, useI18n } from "@/lib/i18n";
-import type { SessionStatus } from "@/lib/api/models";
+import type { SessionStatus, UploadSessionFileResponse } from "@/lib/api/models";
 import { classifyIdleReason } from "@/lib/idle-turn";
 import { openKimiCodeWebsite } from "@/lib/kimi-code-link";
 import { shouldPauseForRuntimeReadiness } from "@/lib/runtime-readiness";
@@ -55,6 +55,9 @@ export default function App() {
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>("changes");
   const [newSessionWorkDir, setNewSessionWorkDir] = useState("");
   const [pendingFirstMessage, setPendingFirstMessage] = useState<string | null>(null);
+  const [pendingFirstAttachments, setPendingFirstAttachments] = useState<
+    UploadSessionFileResponse[]
+  >([]);
   const [pendingFirstModes, setPendingFirstModes] = useState<SessionModeDraft | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTab | undefined>();
@@ -301,13 +304,20 @@ export default function App() {
   }, [handleNewSession, openSettings]);
 
   const handleSendFirstMessage = useCallback(
-    async (workDir: string, text: string, modes: SessionModeDraft | null) => {
+    async (
+      workDir: string,
+      text: string,
+      modes: SessionModeDraft | null,
+      attachments: UploadSessionFileResponse[],
+    ) => {
       setPendingFirstMessage(text);
+      setPendingFirstAttachments(attachments);
       setPendingFirstModes(modes);
       try {
         await createSession(workDir);
       } catch (err) {
         setPendingFirstMessage(null);
+        setPendingFirstAttachments([]);
         setPendingFirstModes(null);
         if (err instanceof DirectoryNotFoundError) {
           toast.error(t("工作目录不存在"), { description: workDir });
@@ -320,6 +330,7 @@ export default function App() {
 
   const handlePendingFirstMessageSent = useCallback(() => {
     setPendingFirstMessage(null);
+    setPendingFirstAttachments([]);
     setPendingFirstModes(null);
   }, []);
 
@@ -428,6 +439,7 @@ export default function App() {
             listDirectory={listSessionDirectory}
             onManageConfig={() => openSettings("config")}
             pendingFirstMessage={pendingFirstMessage}
+            pendingFirstAttachments={pendingFirstAttachments}
             pendingFirstModes={pendingFirstModes}
             onPendingFirstMessageSent={handlePendingFirstMessageSent}
           />
@@ -437,6 +449,7 @@ export default function App() {
             onWorkDirChange={setNewSessionWorkDir}
             fetchWorkDirs={fetchWorkDirs}
             onSendFirstMessage={handleSendFirstMessage}
+            onUploadFile={uploadSessionFile}
             onManageConfig={() => openSettings("config")}
           />
         )}

@@ -856,15 +856,20 @@
                 </button>
               </div>
             </div>
+            <button class="status-pill" id="planBtn" title="Plan 模式：只研究不改动">
+              <span class="pdot"></span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 12h6"/><path d="M9 16h6"/></svg>
+              plan
+            </button>
             <button class="status-pill" id="swarmBtn" title="Swarm 多智能体模式">
               <span class="pdot"></span>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M7.5 4.21 12 6.81l4.5-2.6"/><path d="m7.5 19.79.02-4.03L3 13.14"/><path d="m21 13.14-4.52 2.62.02 4.03"/><path d="m12 22.08.02-4.07L12 18l-.02.01z"/><path d="m12 11.99.01-.01L12 12l-.01-.01z"/><path d="M12 12v.01"/></svg>
               swarm
             </button>
-            <button class="status-pill" id="planBtn" title="Plan 模式：只研究不改动">
+            <button class="status-pill" id="goalBtn" title="Goal 模式：目标驱动执行">
               <span class="pdot"></span>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M9 12h6"/><path d="M9 16h6"/></svg>
-              plan
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+              goal
             </button>
             <div class="status-spacer"></div>
             <button class="status-pill num" title="上下文用量：66.3K / 200K tokens">
@@ -1014,12 +1019,15 @@
   document.addEventListener('click', () => permMenu.classList.remove('open'));
 
   const composer = document.getElementById('composer');
-  document.getElementById('swarmBtn').addEventListener('click', function() {
-    this.classList.toggle('on');
-  });
   document.getElementById('planBtn').addEventListener('click', function() {
     this.classList.toggle('on');
     composer.classList.toggle('plan', this.classList.contains('on'));
+  });
+  document.getElementById('swarmBtn').addEventListener('click', function() {
+    this.classList.toggle('on');
+  });
+  document.getElementById('goalBtn').addEventListener('click', function() {
+    this.classList.toggle('on');
   });
 </script>
 </body>

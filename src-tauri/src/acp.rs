@@ -1,7 +1,7 @@
 //! Kimi Code ACP process manager (Milestone 1 shell + Milestone 2 translation).
 
 use crate::acp_translate::{
-    acp_permission_to_legacy_request, acp_update_to_wire_event,
+    acp_permission_to_legacy_request, acp_slash_command_prompt, acp_update_to_wire_event,
     legacy_approval_result_to_acp_outcome, legacy_prompt_status_from_stop_reason,
     legacy_user_input_to_acp_prompt_with_swarm, normalize_workspace_path,
     translate_acp_lifecycle_notification, translate_session_update, wire_event_message,
@@ -306,7 +306,7 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn pick_login_method_id(initialize_result: &Value) -> String {
+fn pick_auth_method_id(initialize_result: &Value) -> String {
     let methods = initialize_result
         .get("authMethods")
         .or_else(|| initialize_result.get("authenticationMethods"))
@@ -403,11 +403,14 @@ pub(crate) struct AcpWorker {
     status_seq: AtomicU64,
     in_flight_prompt_ids: Mutex<HashSet<String>>,
     pending_permission_ids: Mutex<HashMap<String, u64>>,
-    sent_upload_files: Mutex<HashSet<String>>,
     last_session_update_at: Mutex<Option<Instant>>,
     plan_mode: Mutex<bool>,
     permission_mode: Mutex<PermissionMode>,
     swarm_mode: Mutex<bool>,
+    goal_mode: Mutex<bool>,
+    /// Serialize plan/permission ACP `session/set_mode` sequences so concurrent
+    /// wire_send handlers cannot interleave auto ↔ default and thrash wire.
+    mode_ops: tokio::sync::Mutex<()>,
 }
 
 pub(crate) struct AcpRpcSession {
@@ -498,7 +501,7 @@ impl AcpProcessManager {
         let program = resolve_acp_command_validated()?;
         validate_kimi_acp_command(&program)?;
         let cwd = resolve_session_cwd(app, &session_id).await?;
-        let (initial_plan_mode, initial_permission_mode, initial_swarm_mode) =
+        let (initial_plan_mode, initial_permission_mode, initial_swarm_mode, initial_goal_mode) =
             resolve_initial_runtime_modes(&session_id);
 
         let worker = Arc::new(AcpWorker {
@@ -518,11 +521,12 @@ impl AcpProcessManager {
             status_seq: AtomicU64::new(0),
             in_flight_prompt_ids: Mutex::new(HashSet::new()),
             pending_permission_ids: Mutex::new(HashMap::new()),
-            sent_upload_files: Mutex::new(session_files::load_sent_upload_names(&session_id)),
             last_session_update_at: Mutex::new(None),
             plan_mode: Mutex::new(initial_plan_mode),
             permission_mode: Mutex::new(initial_permission_mode),
             swarm_mode: Mutex::new(initial_swarm_mode),
+            goal_mode: Mutex::new(initial_goal_mode),
+            mode_ops: tokio::sync::Mutex::new(()),
         });
 
         let mut rpc = spawn_acp_rpc_session(&program, app.clone(), Arc::clone(&worker))?;
@@ -729,6 +733,12 @@ impl AcpProcessManager {
                 id,
                 parsed.get("params").cloned().unwrap_or(Value::Null),
             ),
+            Some("set_goal_mode") => handle_set_goal_mode(
+                app,
+                &worker,
+                id,
+                parsed.get("params").cloned().unwrap_or(Value::Null),
+            ),
             None if parsed.get("result").is_some() => {
                 handle_permission_response(&worker, id, parsed.get("result")).await
             }
@@ -836,11 +846,12 @@ fn new_probe_worker() -> AcpWorker {
         status_seq: AtomicU64::new(0),
         in_flight_prompt_ids: Mutex::new(HashSet::new()),
         pending_permission_ids: Mutex::new(HashMap::new()),
-        sent_upload_files: Mutex::new(HashSet::new()),
         last_session_update_at: Mutex::new(None),
         plan_mode: Mutex::new(false),
         permission_mode: Mutex::new(PermissionMode::Manual),
         swarm_mode: Mutex::new(false),
+        goal_mode: Mutex::new(false),
+        mode_ops: tokio::sync::Mutex::new(()),
     }
 }
 
@@ -905,14 +916,14 @@ pub(crate) async fn ensure_acp_authenticated(rpc: &mut AcpRpcSession) -> Result<
         ));
     }
 
-    let method_id = pick_login_method_id(initialize.result.as_ref().unwrap_or(&Value::Null));
+    let method_id = pick_auth_method_id(initialize.result.as_ref().unwrap_or(&Value::Null));
     let authenticate = rpc
         .request("authenticate", json!({ "methodId": method_id }))
         .await?;
 
     if is_auth_required_response(&authenticate) || !is_authenticated_response(&authenticate) {
         return Err(
-            "ACP authentication required. Sign in from Settings (device code) or run `kimi login`, then retry."
+            "Kimi Code rejected the configured provider credentials. Check the selected provider in config.toml, then retry."
                 .to_string(),
         );
     }
@@ -1067,7 +1078,7 @@ fn sync_plan_mode_exit_from_tool_result(worker: &AcpWorker, update: &Value) -> b
     true
 }
 
-fn resolve_initial_runtime_modes(session_id: &str) -> (bool, PermissionMode, bool) {
+fn resolve_initial_runtime_modes(session_id: &str) -> (bool, PermissionMode, bool, bool) {
     let defaults = global_config::runtime_mode_defaults().unwrap_or_else(|err| {
         eprintln!("[acp] failed to read global runtime mode defaults: {err}");
         global_config::RuntimeModeDefaults::default()
@@ -1086,11 +1097,16 @@ fn resolve_initial_runtime_modes(session_id: &str) -> (bool, PermissionMode, boo
         eprintln!("[acp] failed to read persisted swarm mode for {session_id}: {err}");
         false
     });
+    let goal_mode = session_store::session_goal_mode(session_id).unwrap_or_else(|err| {
+        eprintln!("[acp] failed to read persisted goal mode for {session_id}: {err}");
+        false
+    });
 
     (
         persisted.plan_mode.unwrap_or(defaults.plan_mode),
         permission_mode,
         swarm_mode,
+        goal_mode,
     )
 }
 
@@ -1098,13 +1114,15 @@ fn mode_status_payload(worker: &AcpWorker) -> Value {
     let plan_mode = *worker.plan_mode.lock().unwrap();
     let permission_mode = *worker.permission_mode.lock().unwrap();
     let swarm_mode = *worker.swarm_mode.lock().unwrap();
-    mode_status_payload_for(plan_mode, permission_mode, swarm_mode)
+    let goal_mode = *worker.goal_mode.lock().unwrap();
+    mode_status_payload_for(plan_mode, permission_mode, swarm_mode, goal_mode)
 }
 
 fn mode_status_payload_for(
     plan_mode: bool,
     permission_mode: PermissionMode,
     swarm_mode: bool,
+    goal_mode: bool,
 ) -> Value {
     json!({
         "context_usage": null,
@@ -1112,6 +1130,7 @@ fn mode_status_payload_for(
         "plan_mode": plan_mode,
         "permission_mode": permission_mode.as_wire(),
         "swarm_mode": swarm_mode,
+        "goal_mode": goal_mode,
     })
 }
 
@@ -1294,6 +1313,7 @@ async fn handle_set_plan_mode(
 ) -> Result<(), String> {
     let enabled = mode_enabled_from_params(&params)?;
     ensure_mode_change_idle(worker)?;
+    let _mode_guard = worker.mode_ops.lock().await;
     let permission_mode = *worker.permission_mode.lock().unwrap();
 
     let response = {
@@ -1366,13 +1386,18 @@ async fn handle_set_permission_mode(
 ) -> Result<(), String> {
     let next_mode = permission_mode_from_params(&params)?;
     ensure_mode_change_idle(worker)?;
+    let _mode_guard = worker.mode_ops.lock().await;
 
-    if *worker.permission_mode.lock().unwrap() == next_mode {
+    let previous_mode = *worker.permission_mode.lock().unwrap();
+    if previous_mode == next_mode {
         emit_mode_response(app, worker, id);
         emit_mode_status_wire(app, worker);
         return Ok(());
     }
 
+    // Commit desired permission before ACP RPCs so a concurrent plan enable
+    // (Already-in-plan recovery) snapshots Auto instead of stale Manual.
+    *worker.permission_mode.lock().unwrap() = next_mode;
     let plan_mode = *worker.plan_mode.lock().unwrap();
     let response = {
         let rpc = active_worker_rpc(worker)?;
@@ -1384,8 +1409,16 @@ async fn handle_set_permission_mode(
                     "modeId": next_mode.acp_mode_id(),
                 }),
             )
-            .await?;
+            .await;
+        let permission_response = match permission_response {
+            Ok(response) => response,
+            Err(err) => {
+                *worker.permission_mode.lock().unwrap() = previous_mode;
+                return Err(err);
+            }
+        };
         if permission_response.error.is_some() {
+            *worker.permission_mode.lock().unwrap() = previous_mode;
             return Err(format!(
                 "ACP session/set_mode failed: {}",
                 describe_rpc_error(&permission_response)
@@ -1393,27 +1426,35 @@ async fn handle_set_permission_mode(
         }
 
         if plan_mode {
-            rpc.request(
-                "session/set_mode",
-                json!({
-                    "sessionId": worker.session_id,
-                    "modeId": "plan",
-                }),
-            )
-            .await?
+            match rpc
+                .request(
+                    "session/set_mode",
+                    json!({
+                        "sessionId": worker.session_id,
+                        "modeId": "plan",
+                    }),
+                )
+                .await
+            {
+                Ok(response) => response,
+                Err(err) => {
+                    *worker.permission_mode.lock().unwrap() = previous_mode;
+                    return Err(err);
+                }
+            }
         } else {
             permission_response
         }
     };
 
     if response.error.is_some() {
+        *worker.permission_mode.lock().unwrap() = previous_mode;
         return Err(format!(
             "ACP session/set_mode failed while restoring Plan: {}",
             describe_rpc_error(&response)
         ));
     }
 
-    *worker.permission_mode.lock().unwrap() = next_mode;
     emit_mode_response(app, worker, id);
     emit_mode_status_wire(app, worker);
     Ok(())
@@ -1433,6 +1474,25 @@ fn handle_set_swarm_mode(
     // it follows this conversation across desktop restarts.
     session_store::update_session_swarm_mode(&worker.session_id, enabled)?;
     *worker.swarm_mode.lock().unwrap() = enabled;
+    emit_mode_response(app, worker, id);
+    emit_mode_status_wire(app, worker);
+    Ok(())
+}
+
+fn handle_set_goal_mode(
+    app: &AppHandle,
+    worker: &Arc<AcpWorker>,
+    id: Option<Value>,
+    params: Value,
+) -> Result<(), String> {
+    let enabled = mode_enabled_from_params(&params)?;
+    ensure_mode_change_idle(worker)?;
+
+    // Kimi ACP has no native goal mode option. Keep the compatibility behavior
+    // in the worker, but persist the user's choice in the Kimi session state so
+    // it follows this conversation across desktop restarts.
+    session_store::update_session_goal_mode(&worker.session_id, enabled)?;
+    *worker.goal_mode.lock().unwrap() = enabled;
     emit_mode_response(app, worker, id);
     emit_mode_status_wire(app, worker);
     Ok(())
@@ -1541,10 +1601,7 @@ async fn handle_prompt(
         .ok()
         .flatten();
     set_worker_status(app, worker, "busy", Some("prompt"), None);
-    let expand_result = {
-        let mut sent = worker.sent_upload_files.lock().unwrap();
-        session_files::expand_prompt_with_uploads(&worker.session_id, &params, &mut sent)
-    };
+    let expand_result = session_files::expand_prompt_with_uploads(&worker.session_id, &params);
     let expanded_params = match expand_result {
         Ok(expanded) => expanded,
         Err(err) => {
@@ -1553,7 +1610,15 @@ async fn handle_prompt(
         }
     };
     let swarm_mode = *worker.swarm_mode.lock().unwrap();
-    let prompt = legacy_user_input_to_acp_prompt_with_swarm(&expanded_params, swarm_mode);
+    let goal_mode = *worker.goal_mode.lock().unwrap();
+    // Prefer slash-only prompt so ACP `detectLeadingSlashIntent` sees `/compact`
+    // as blocks[0]. Upload expansion otherwise prepends `<uploaded_files>` and
+    // the CLI treats the slash as ordinary model text.
+    let prompt = if let Some(slash) = acp_slash_command_prompt(&expanded_params) {
+        slash
+    } else {
+        legacy_user_input_to_acp_prompt_with_swarm(&expanded_params, swarm_mode, goal_mode)
+    };
     let response = {
         let rpc = match active_worker_rpc(worker) {
             Ok(rpc) => rpc,
@@ -2015,13 +2080,13 @@ fn handle_acp_reverse_request(
                 emit_wire_message(app, &worker.session_id, wire_message);
             } else {
                 eprintln!(
-                    "[WARN] Unknown ACP permission request (id={request_id}); defaulting to reject-once"
+                    "[WARN] Unknown ACP permission request (id={request_id}); defaulting to reject"
                 );
                 write_acp_response(
                     stdin,
                     request_id,
                     json!({
-                        "outcome": { "outcome": "selected", "optionId": "reject-once" }
+                        "outcome": { "outcome": "selected", "optionId": "reject" }
                     }),
                 )?;
             }
@@ -2320,7 +2385,10 @@ mod tests {
         let reverse_rpc = active_worker_rpc(&worker).expect("reverse transport");
         assert!(Arc::ptr_eq(&prompt_rpc, &reverse_rpc));
         reverse_rpc
-            .respond(42, json!({ "outcome": "allow-once" }))
+            .respond(
+                42,
+                json!({ "outcome": { "outcome": "selected", "optionId": "approve_once" } }),
+            )
             .expect("write reverse response while prompt handle is alive");
         reverse_rpc
             .notify("session/cancel", json!({ "sessionId": "probe" }))
@@ -2540,10 +2608,11 @@ mod tests {
 
         assert_eq!(
             resolve_initial_runtime_modes(session_id),
-            (true, PermissionMode::Auto, false)
+            (true, PermissionMode::Auto, false, false)
         );
 
         session_store::update_session_swarm_mode(session_id, true).expect("persist swarm mode");
+        session_store::update_session_goal_mode(session_id, true).expect("persist goal mode");
 
         std::fs::write(
             wire_dir.join("wire.jsonl"),
@@ -2556,7 +2625,7 @@ mod tests {
 
         assert_eq!(
             resolve_initial_runtime_modes(session_id),
-            (false, PermissionMode::Manual, true)
+            (false, PermissionMode::Manual, true, true)
         );
     }
 
@@ -2670,10 +2739,11 @@ mod tests {
 
     #[test]
     fn mode_status_acknowledges_all_backend_modes() {
-        let payload = mode_status_payload_for(true, PermissionMode::Auto, false);
+        let payload = mode_status_payload_for(true, PermissionMode::Auto, false, true);
         assert_eq!(payload["plan_mode"], true);
         assert_eq!(payload["permission_mode"], "auto");
         assert_eq!(payload["swarm_mode"], false);
+        assert_eq!(payload["goal_mode"], true);
         assert!(payload["context_usage"].is_null());
     }
 }

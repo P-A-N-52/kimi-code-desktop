@@ -151,6 +151,7 @@ export type StatusUpdateEvent = {
     plan_mode?: boolean | null;
     permission_mode?: PermissionMode | "ask" | null;
     swarm_mode?: boolean | null;
+    goal_mode?: boolean | null;
   };
 };
 
@@ -412,6 +413,7 @@ export type WireMessage = {
       user_input?: string;
       plan_mode?: boolean;
       swarm_mode?: boolean;
+      goal_mode?: boolean;
     }
     | SessionStatusPayload;
   result?: {

@@ -366,6 +366,7 @@ export type SessionRuntimeModes = {
 	planMode: boolean;
 	permissionMode: "manual" | "yolo" | "auto";
 	swarmMode: boolean;
+	goalMode: boolean;
 };
 
 export async function getSessionRuntimeModes(
@@ -386,7 +387,21 @@ export async function getSessionRuntimeModes(
 		planMode: Boolean(raw.plan_mode),
 		permissionMode,
 		swarmMode: Boolean(raw.swarm_mode),
+		goalMode: Boolean(raw.goal_mode),
 	};
+}
+
+export async function getSessionGoalMode(sessionId: string): Promise<boolean> {
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+	return Boolean(await invoke<unknown>("get_session_goal_mode", { sessionId }));
+}
+
+export async function migrateSessionGoalMode(
+	sessionId: string,
+	enabled: boolean,
+): Promise<void> {
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+	return invoke<void>("migrate_session_goal_mode", { sessionId, enabled });
 }
 
 export async function migrateSessionSwarmMode(
@@ -465,6 +480,11 @@ export async function uploadSessionFile(
 	};
 }
 
+export async function deleteUploadedFile(fileId: string): Promise<void> {
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+	await invoke("delete_uploaded_file", { fileId });
+}
+
 export async function listSessionDirectory(
 	sessionId: string,
 	path?: string,
@@ -517,6 +537,38 @@ export async function listWorkDirs(): Promise<string[]> {
 export async function getStartupDir(): Promise<string> {
 	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	return String(await invoke<unknown>("get_startup_dir"));
+}
+
+export type AvailableSkill = {
+	name: string;
+	description: string;
+	source: string;
+};
+
+export async function listAvailableSkills(): Promise<AvailableSkill[]> {
+	if (!isTauri()) return Promise.resolve([]);
+	const raw = await invoke<unknown[]>("list_available_skills");
+	if (!Array.isArray(raw)) return [];
+	return raw
+		.map((entry) => {
+			const record = (entry ?? {}) as Record<string, unknown>;
+			const name = typeof record.name === "string" ? record.name.trim() : "";
+			if (!name) return null;
+			return {
+				name,
+				description:
+					typeof record.description === "string" ? record.description : "",
+				source: typeof record.source === "string" ? record.source : "",
+			};
+		})
+		.filter((skill): skill is AvailableSkill => skill !== null);
+}
+
+/** Native multi-select file picker; returns absolute paths (empty on cancel). */
+export async function pickFiles(): Promise<string[]> {
+	if (!isTauri()) return Promise.resolve([]);
+	const raw = await invoke<unknown>("pick_files");
+	return Array.isArray(raw) ? raw.map(String) : [];
 }
 
 export async function getGlobalConfig(): Promise<GlobalConfig> {

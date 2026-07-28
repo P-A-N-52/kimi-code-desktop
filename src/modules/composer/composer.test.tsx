@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { ModelCapability, type ConfigModel } from "@/lib/api/models";
 import { UiLanguageProvider } from "@/lib/i18n";
@@ -101,15 +102,8 @@ describe("Composer integrations", () => {
     expect(screen.queryByRole("button", { name: "停止生成" })).toBeNull();
   });
 
-  it("uploads files and switches models from the inline picker", async () => {
-    const { container, props } = renderComposer();
-    const input = container.querySelector<HTMLInputElement>('input[type="file"]');
-    if (!input) throw new Error("Expected the composer file input");
-    fireEvent.change(input, {
-      target: { files: [new File(["test"], "notes.txt", { type: "text/plain" })] },
-    });
-    await waitFor(() => expect(props.onUploadFile).toHaveBeenCalledOnce());
-    expect(await screen.findByText("notes.txt")).toBeTruthy();
+  it("switches models from the inline picker and opens the context panel", async () => {
+    const { props } = renderComposer();
     fireEvent.click(screen.getByRole("button", { name: /文件/ }));
     fireEvent.click(screen.getByRole("button", { name: /当前模型 kimi-k2.5/ }));
     expect(screen.getByRole("listbox", { name: "模型列表" })).toBeTruthy();
@@ -118,27 +112,122 @@ describe("Composer integrations", () => {
     expect(props.onSelectModel).toHaveBeenCalledWith("plain");
   });
 
-  it("keeps successful uploads visible when another selected file fails", async () => {
+  it("keeps every successful pasted path in a controlled draft", async () => {
     const onUploadFile = vi
       .fn()
-      .mockResolvedValueOnce({ path: "uploads/good.txt", filename: "good.txt", size: 4 })
-      .mockRejectedValueOnce(new Error("too large"));
-    const { container } = renderComposer({ sessionId: "partial-upload", onUploadFile });
-    const input = container.querySelector<HTMLInputElement>('input[type="file"]');
-    if (!input) throw new Error("Expected the composer file input");
+      .mockResolvedValueOnce({ path: "uploads/a.txt", filename: "a.txt", size: 1 })
+      .mockResolvedValueOnce({ path: "uploads/b.txt", filename: "b.txt", size: 1 });
 
-    fireEvent.change(input, {
-      target: {
-        files: [
-          new File(["good"], "good.txt", { type: "text/plain" }),
-          new File(["bad"], "bad.txt", { type: "text/plain" }),
+    function Controlled() {
+      const [draft, setDraft] = useState("");
+      return (
+        <Composer
+          sessionId="multi-paste"
+          draft={draft}
+          onDraftChange={setDraft}
+          onSend={vi.fn()}
+          onCancel={vi.fn()}
+          busy={false}
+          canCancel={false}
+          planMode={false}
+          slashCommands={[]}
+          queue={[]}
+          onRemoveQueued={vi.fn()}
+          onClearQueue={vi.fn()}
+          onUploadFile={onUploadFile}
+          onOpenContext={vi.fn()}
+          models={sampleModels}
+          selectedModel="kimi-k2.5"
+          thinkingEnabled={false}
+          thinkingEffort="high"
+          onSelectModel={vi.fn()}
+          onToggleThinking={vi.fn()}
+          onSelectThinkingEffort={vi.fn()}
+        />
+      );
+    }
+
+    const { container } = render(
+      <UiLanguageProvider>
+        <Controlled />
+      </UiLanguageProvider>,
+    );
+    const textarea = container.querySelector("textarea");
+    if (!textarea) throw new Error("Expected the composer textarea");
+
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        items: [
+          { kind: "file", getAsFile: () => new File(["a"], "a.txt") },
+          { kind: "file", getAsFile: () => new File(["b"], "b.txt") },
         ],
       },
     });
 
-    expect(await screen.findByText("good.txt")).toBeTruthy();
     await waitFor(() => expect(onUploadFile).toHaveBeenCalledTimes(2));
-    expect(screen.queryByText("bad.txt")).toBeNull();
+    await waitFor(() => {
+      expect(textarea.value).toContain("@uploads/a.txt");
+      expect(textarea.value).toContain("@uploads/b.txt");
+    });
+  });
+
+  it("inserts successful pasted paths even when another pasted file fails", async () => {
+    const onUploadFile = vi
+      .fn()
+      .mockResolvedValueOnce({ path: "uploads/good.txt", filename: "good.txt", size: 4 })
+      .mockRejectedValueOnce(new Error("too large"));
+    const onDraftChange = vi.fn();
+    const { container } = renderComposer({
+      sessionId: "partial-upload",
+      onUploadFile,
+      onDraftChange,
+    });
+    const textarea = container.querySelector("textarea");
+    if (!textarea) throw new Error("Expected the composer textarea");
+
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        items: [
+          { kind: "file", getAsFile: () => new File(["good"], "good.txt") },
+          { kind: "file", getAsFile: () => new File(["bad"], "bad.txt") },
+        ],
+      },
+    });
+
+    await waitFor(() => expect(onUploadFile).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(onDraftChange).toHaveBeenCalledWith("@uploads/good.txt "),
+    );
+  });
+
+  it("pastes clipboard files as @path text into the draft", async () => {
+    const { container, props } = renderComposer({ sessionId: "paste-files" });
+    const textarea = container.querySelector("textarea");
+    if (!textarea) throw new Error("Expected the composer textarea");
+    const file = new File(["image"], "paste.png", { type: "image/png" });
+
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        items: [{ kind: "file", getAsFile: () => file }],
+      },
+    });
+
+    await waitFor(() => expect(props.onUploadFile).toHaveBeenCalledWith(file));
+    await waitFor(() =>
+      expect(props.onDraftChange).toHaveBeenLastCalledWith("@uploads/notes.txt "),
+    );
+    expect(screen.queryByRole("button", { name: /Remove attachment/ })).toBeNull();
+  });
+
+  it("keeps the send button disabled while the draft is empty", async () => {
+    const { container, props } = renderComposer({ sessionId: "file-only" });
+    const sendButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.querySelector(".lucide-arrow-up"),
+    );
+    if (!sendButton) throw new Error("Expected the composer send button");
+    expect(sendButton.disabled).toBe(true);
+    fireEvent.click(sendButton);
+    expect(props.onSend).not.toHaveBeenCalled();
   });
 
   it("shows a thinking toggle only for models that support it", () => {
@@ -226,21 +315,6 @@ describe("Composer integrations", () => {
     expect(props.onSend).not.toHaveBeenCalled();
   });
 
-  it("uploads files dropped onto the composer", async () => {
-    const { props, container } = renderComposer({ sessionId: "drop-files" });
-    const composer = container.firstElementChild as HTMLElement;
-    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
-    fireEvent.drop(composer, {
-      dataTransfer: {
-        files: [file],
-        types: ["Files"],
-      },
-    });
-    await waitFor(() => {
-      expect(props.onUploadFile).toHaveBeenCalledWith(file);
-    });
-  });
-
   it("opens @ file mention menu and inserts a workspace path", async () => {
     const listDirectory = vi.fn().mockResolvedValue([
       { name: "src", type: "directory" },
@@ -257,5 +331,17 @@ describe("Composer integrations", () => {
     const option = await screen.findByRole("option", { name: /readme\.md/ });
     fireEvent.click(option);
     expect(onDraftChange).toHaveBeenCalledWith(expect.stringMatching(/^@readme\.md ?$/));
+  });
+
+  it("shows every slash command without a display cap", () => {
+    const many = Array.from({ length: 15 }, (_, index) => ({
+      name: `cmd-${index}`,
+      description: "",
+      aliases: [],
+    }));
+    renderComposer({ sessionId: "many-commands", slashCommands: many });
+    fireEvent.click(screen.getByRole("button", { name: /命令/ }));
+    expect(screen.getByText("/cmd-0")).toBeTruthy();
+    expect(screen.getByText("/cmd-14")).toBeTruthy();
   });
 });

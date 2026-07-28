@@ -10,7 +10,11 @@ import {
   modelForcesThinking,
   modelHasThinkingCapability,
 } from "@/lib/model-capabilities";
-import { classifySlashDispatch } from "@/lib/slash-command-catalog";
+import {
+  classifySlashDispatch,
+  mergeSlashCommands,
+} from "@/lib/slash-command-catalog";
+import { useSkillSlashCommands } from "@/hooks/useSkillSlashCommands";
 import {
   CommandResultPanel,
   type CommandResultPanelState,
@@ -37,6 +41,7 @@ export function ConversationView({
   onManageConfig,
   listDirectory,
   pendingFirstMessage,
+  pendingFirstAttachments,
   pendingFirstModes,
   onPendingFirstMessageSent,
 }: {
@@ -49,6 +54,7 @@ export function ConversationView({
   onManageConfig?: () => void;
   listDirectory?: (sessionId: string, path?: string) => Promise<SessionFileEntry[]>;
   pendingFirstMessage?: string | null;
+  pendingFirstAttachments?: UploadSessionFileResponse[];
   pendingFirstModes?: SessionModeDraft | null;
   onPendingFirstMessageSent?: () => void;
 }) {
@@ -79,6 +85,11 @@ export function ConversationView({
   const [commandResult, setCommandResult] = useState<CommandResultPanelState | null>(null);
   const { config, update, isUpdating } = useGlobalConfig();
   const busy = stream.status === "submitted" || stream.status === "streaming";
+  const skillCommands = useSkillSlashCommands();
+  const slashCommands = useMemo(
+    () => mergeSlashCommands(stream.slashCommands, skillCommands),
+    [stream.slashCommands, skillCommands],
+  );
 
   const setDraft = useCallback(
     (value: string) => {
@@ -178,12 +189,15 @@ export function ConversationView({
 
   const sendInFlightRef = useRef(false);
   const send = useCallback(
-    (textOverride?: string) => {
+    (
+      textOverride?: string,
+      attachments: UploadSessionFileResponse[] = [],
+    ) => {
       const text = (textOverride ?? draft).trim();
-      if (!text) return;
+      if (!text && attachments.length === 0) return;
       if (stream.status === "error") return;
 
-      const slashDecision = classifySlashDispatch(text, stream.slashCommands);
+      const slashDecision = classifySlashDispatch(text, slashCommands);
       if (
         slashDecision.kind === "local" &&
         (slashDecision.name === "usage" || slashDecision.name === "status")
@@ -195,14 +209,17 @@ export function ConversationView({
 
       if (textOverride === undefined) setDraft("");
       if (busy) {
-        setQueue((current) => [...current, { id: crypto.randomUUID(), text }]);
+        setQueue((current) => [
+          ...current,
+          { id: crypto.randomUUID(), text, attachments },
+        ]);
         return;
       }
       // Sync guard: `busy` lags one render behind the first sendMessage call.
       if (sendInFlightRef.current) return;
       sendInFlightRef.current = true;
       void stream
-        .sendMessage(text)
+        .sendMessage(text, attachments)
         .then((outcome) => {
           if (outcome?.kind === "info-panel") {
             setCommandResult({
@@ -216,7 +233,7 @@ export function ConversationView({
           sendInFlightRef.current = false;
         });
     },
-    [busy, draft, setDraft, setQueue, showInfoPanel, stream],
+    [busy, draft, setDraft, setQueue, showInfoPanel, slashCommands, stream],
   );
 
   // Dedupe queue flushes: React StrictMode re-runs effects with the same
@@ -232,7 +249,7 @@ export function ConversationView({
     if (!next) return;
     flushedQueueIdsRef.current.add(next.id);
     setQueue((current) => current.filter((item) => item.id !== next.id));
-    void stream.sendMessage(next.text).then((outcome) => {
+    void stream.sendMessage(next.text, next.attachments).then((outcome) => {
       if (outcome?.kind === "info-panel") {
         setCommandResult({
           command: outcome.command,
@@ -247,9 +264,12 @@ export function ConversationView({
   // guard (the old sessionId effect reset sentPendingRef to false mid-cycle).
   const sentPendingKeyRef = useRef<string | null>(null);
   useEffect(() => {
-    const text = pendingFirstMessage?.trim();
-    if (!text) return;
-    const sendKey = `${sessionId}\0${text}`;
+    const text = pendingFirstMessage?.trim() ?? "";
+    const attachments = pendingFirstAttachments ?? [];
+    if (!text && attachments.length === 0) return;
+    const sendKey = `${sessionId}\0${text}\0${attachments
+      .map((attachment) => attachment.filename)
+      .join("\0")}`;
     if (sentPendingKeyRef.current === sendKey) return;
     sentPendingKeyRef.current = sendKey;
     // Apply new-session draft modes before the first prompt so ACP / prompt
@@ -258,10 +278,11 @@ export function ConversationView({
       stream.sendSetPermissionMode(pendingFirstModes.permissionMode);
       stream.sendSetPlanMode(pendingFirstModes.planMode);
       stream.sendSetSwarmMode(pendingFirstModes.swarmMode);
+      stream.sendSetGoalMode(pendingFirstModes.goalMode);
     }
     // Clear parent pending immediately so a remount/re-run cannot retry.
     onPendingFirstMessageSent?.();
-    void stream.sendMessage(text).then((outcome) => {
+    void stream.sendMessage(text, attachments).then((outcome) => {
       if (outcome?.kind === "info-panel") {
         setCommandResult({
           command: outcome.command,
@@ -273,12 +294,14 @@ export function ConversationView({
   }, [
     onPendingFirstMessageSent,
     pendingFirstMessage,
+    pendingFirstAttachments,
     pendingFirstModes,
     sessionId,
     stream.sendMessage,
     stream.sendSetPermissionMode,
     stream.sendSetPlanMode,
     stream.sendSetSwarmMode,
+    stream.sendSetGoalMode,
   ]);
 
   const streamDead = stream.status === "error";
@@ -335,7 +358,7 @@ export function ConversationView({
             canCancel={stream.canCancel}
             sendDisabled={streamDead}
             planMode={stream.planMode}
-            slashCommands={stream.slashCommands}
+            slashCommands={slashCommands}
             queue={queue}
             onRemoveQueued={(id) => setQueue((current) => current.filter((item) => item.id !== id))}
             onClearQueue={() => setQueue([])}
@@ -358,8 +381,10 @@ export function ConversationView({
             onPermissionModeChange={stream.sendSetPermissionMode}
             planMode={stream.planMode}
             swarmMode={stream.swarmMode}
+            goalMode={stream.goalMode}
             onPlanModeChange={stream.sendSetPlanMode}
             onSwarmModeChange={stream.sendSetSwarmMode}
+            onGoalModeChange={stream.sendSetGoalMode}
             modeControlsDisabled={stream.status !== "ready"}
             contextUsage={stream.contextUsage}
             tokenUsage={stream.tokenUsage}

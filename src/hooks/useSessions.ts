@@ -22,6 +22,7 @@ import {
 	listWorkDirs as tauriListWorkDirs,
 	updateSession as tauriUpdateSession,
 	uploadSessionFile as tauriUploadSessionFile,
+	deleteUploadedFile as tauriDeleteUploadedFile,
 } from "../lib/tauri-api";
 import {
 	selectSessionsOlderThan,
@@ -92,6 +93,7 @@ type UseSessionsReturn = {
 		sessionId: string,
 		file: File,
 	) => Promise<UploadSessionFileResponse>;
+	deleteUploadedFile: (fileId: string) => Promise<void>;
 	/** List files in a session's work_dir path */
 	listSessionDirectory: (
 		sessionId: string,
@@ -673,6 +675,12 @@ export function useSessions(
 		},
 		[],
 	);
+
+	const deleteUploadedFile = useCallback(async (fileId: string): Promise<void> => {
+		if (isTauri()) {
+			await tauriDeleteUploadedFile(fileId);
+		}
+	}, []);
 
 	/**
 	 * List files/directories under a path within the session work_dir
@@ -1289,6 +1297,7 @@ export function useSessions(
 		applySessionStatus,
 		getRelativeTime,
 		uploadSessionFile,
+		deleteUploadedFile,
 		listSessionDirectory,
 		getSessionFile,
 		getSessionFileUrl,

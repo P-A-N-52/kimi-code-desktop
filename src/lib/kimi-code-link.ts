@@ -22,3 +22,8 @@ function openExternalWebsite(url: string): void {
 export function openKimiCodeWebsite(): void {
   openExternalWebsite(KIMI_CODE_URL);
 }
+
+/** Open an arbitrary https URL in the system browser (Tauri) or a new tab. */
+export function openExternalHttpUrl(url: string): void {
+  openExternalWebsite(url);
+}

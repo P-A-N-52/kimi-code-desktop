@@ -14,6 +14,7 @@ pub mod runtime_check;
 pub mod security;
 pub mod session_files;
 pub mod session_store;
+pub mod skills;
 #[cfg(test)]
 pub mod test_env;
 pub mod tray;
@@ -48,20 +49,25 @@ pub fn run() {
             commands::get_session,
             commands::replay_session_history,
             commands::get_session_swarm_mode,
+            commands::get_session_goal_mode,
             commands::get_session_runtime_modes,
             commands::migrate_session_swarm_mode,
+            commands::migrate_session_goal_mode,
             commands::create_session,
             commands::delete_session,
             commands::update_session,
             commands::fork_session,
             commands::generate_title,
             commands::upload_session_file,
+            commands::delete_uploaded_file,
             commands::list_session_directory,
             commands::list_work_dir_directory,
             commands::get_session_file,
             commands::get_session_upload_file,
             commands::list_work_dirs,
             commands::get_startup_dir,
+            commands::list_available_skills,
+            commands::pick_files,
             commands::get_global_config,
             commands::get_config_toml,
             commands::update_config_toml,
