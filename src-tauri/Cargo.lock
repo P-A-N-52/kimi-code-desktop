@@ -1952,7 +1952,7 @@ dependencies = [
 
 [[package]]
 name = "kimi-code-desktop"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "base64 0.22.1",
  "chrono",
