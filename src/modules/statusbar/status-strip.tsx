@@ -70,7 +70,7 @@ export function StatusStrip({
 	}, [menuOpen]);
 
 	return (
-		<div className="relative mt-2 flex items-center gap-1 px-0.5">
+		<div className="relative mt-2 flex min-w-0 flex-wrap items-center gap-1 px-0.5">
 			<div ref={menuRef} className="relative">
 				<StatusPill
 					tone={permissionMode === "auto" ? "amber" : permissionMode === "yolo" ? "red" : "neutral"}
@@ -144,16 +144,17 @@ export function StatusStrip({
 				<Target size={12} strokeWidth={1.5} />
 				goal
 			</StatusPill>
-			<div className="flex-1" />
-			<ContextRing
-				usage={contextUsage}
-				tokenUsage={tokenUsage}
-				contextTokens={contextTokens}
-				maxContextTokens={maxContextTokens}
-			/>
-			<span className="hidden font-mono text-[10.5px] text-faint sm:inline">
-				Enter 发送 · ⇧⏎ 换行
-			</span>
+			<div className="ml-auto flex items-center gap-1">
+				<ContextRing
+					usage={contextUsage}
+					tokenUsage={tokenUsage}
+					contextTokens={contextTokens}
+					maxContextTokens={maxContextTokens}
+				/>
+				<span className="hidden font-mono text-[10.5px] text-faint sm:inline">
+					Enter 发送 · ⇧⏎ 换行
+				</span>
+			</div>
 		</div>
 	);
 }

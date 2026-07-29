@@ -144,29 +144,50 @@ describe("useSessions archived preload", () => {
 		expect(result.current.archivedSessions).toHaveLength(1);
 	});
 
-	it("keeps the newest search result when older requests finish later", async () => {
+	it("filters search client-side without refetching on each keystroke", async () => {
+		mocks.listSessions.mockResolvedValue([session("initial")]);
+
+		const { result } = renderHook(() => useSessions());
+		await waitFor(() => expect(result.current.sessions[0]?.sessionId).toBe("initial"));
+		const callsAfterLoad = mocks.listSessions.mock.calls.length;
+
+		act(() => result.current.setSearchQuery("first"));
+		act(() => result.current.setSearchQuery("second"));
+
+		// Search is sidebar-local; typing must not re-hit list_sessions under high latency.
+		expect(mocks.listSessions.mock.calls.length).toBe(callsAfterLoad);
+		expect(result.current.searchQuery).toBe("second");
+	});
+
+	it("ignores stale refresh results after a newer refresh completes", async () => {
 		let resolveFirst: ((value: Session[]) => void) | undefined;
 		let resolveSecond: ((value: Session[]) => void) | undefined;
-		mocks.listSessions.mockImplementation((args?: { q?: string }) => {
-			if (args?.q === "first") {
+		let call = 0;
+		mocks.listSessions.mockImplementation(() => {
+			call += 1;
+			if (call === 1) {
+				return Promise.resolve([session("initial")]);
+			}
+			if (call === 2) {
 				return new Promise<Session[]>((resolve) => {
 					resolveFirst = resolve;
 				});
 			}
-			if (args?.q === "second") {
-				return new Promise<Session[]>((resolve) => {
-					resolveSecond = resolve;
-				});
-			}
-			return Promise.resolve([session("initial")]);
+			return new Promise<Session[]>((resolve) => {
+				resolveSecond = resolve;
+			});
 		});
 
 		const { result } = renderHook(() => useSessions());
 		await waitFor(() => expect(result.current.sessions[0]?.sessionId).toBe("initial"));
 
-		act(() => result.current.setSearchQuery("first"));
+		void act(() => {
+			void result.current.refreshSessions();
+		});
 		await waitFor(() => expect(resolveFirst).toBeTypeOf("function"));
-		act(() => result.current.setSearchQuery("second"));
+		void act(() => {
+			void result.current.refreshSessions();
+		});
 		await waitFor(() => expect(resolveSecond).toBeTypeOf("function"));
 
 		await act(async () => resolveSecond?.([session("second-result")]));

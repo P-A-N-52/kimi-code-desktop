@@ -2,6 +2,10 @@ import { GitFork } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import type { LiveMessage } from "@/hooks/types";
 import type { ApprovalResponseDecision } from "@/hooks/wireTypes";
+import {
+  isAskUserToolCall,
+  parseAskUserToolOutput,
+} from "@/modules/statusbar/permission-mode";
 import { AiMessage } from "./ai-message";
 import { ApprovalCard } from "./approval-card";
 import { CodeBlock } from "./code-block";
@@ -31,7 +35,7 @@ function MessageView({
         ? () => onForkSession(message.turnIndex as number)
         : undefined;
     return (
-      <div className="group/fork relative">
+      <div className="group/fork relative min-w-0">
         <UserMessage
           attachments={message.attachments}
           label={message.variant === "steer" ? "补充指令" : undefined}
@@ -73,8 +77,50 @@ function MessageView({
           />
         );
       }
-      if (tc.state === "question-requested" && tc.question) {
+      if (
+        (tc.state === "question-requested" || tc.state === "question-responded") &&
+        tc.question
+      ) {
         return <QuestionCard question={tc.question} onRespond={onRespondQuestion} />;
+      }
+      // Ask User permission uses a different toolCallId (`…:question:N`) than
+      // the streamed tool card. Hide the bare pending Ask User tool row so it
+      // cannot render as Agent/Generic while the QuestionCard owns the interaction.
+      if (
+        isAskUserToolCall(tc) &&
+        (tc.state === "input-streaming" || tc.state === "input-available")
+      ) {
+        return null;
+      }
+      // After ToolResult, Ask User falls to output-available with JSON output.
+      // Keep QuestionCard UX instead of a raw Generic tool dump.
+      if (isAskUserToolCall(tc)) {
+        const parsed = parseAskUserToolOutput(
+          typeof tc.output === "string" ? tc.output : undefined,
+        );
+        const answers = tc.question?.answers ?? parsed.answers;
+        const question = tc.question
+          ? {
+              ...tc.question,
+              submitted: true,
+              resolved: true,
+              answers,
+            }
+          : {
+              id: tc.toolCallId ?? "ask-user",
+              toolCallId: tc.toolCallId ?? "",
+              questions: [],
+              submitted: true,
+              resolved: true,
+              answers,
+            };
+        return (
+          <QuestionCard
+            question={question}
+            onRespond={onRespondQuestion}
+            dismissed={parsed.dismissed || Object.keys(answers).length === 0}
+          />
+        );
       }
       return <ToolCard toolCall={tc} defaultOpen={tc.title.toLowerCase().includes("edit")} />;
     }
@@ -171,9 +217,9 @@ export function MessageList({
         const el = e.currentTarget;
         followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
       }}
-      className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-2"
+      className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pb-6 pt-2 sm:px-6"
     >
-      <div className="mx-auto max-w-[44rem]">
+      <div className="mx-auto w-full min-w-0 max-w-[44rem]">
         {messages.map((m) => (
           <MessageView
             key={m.id}

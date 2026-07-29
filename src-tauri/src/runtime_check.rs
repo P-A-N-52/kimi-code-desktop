@@ -82,7 +82,7 @@ fn check_kimi_code_runtime_readiness() -> RuntimeReadiness {
     let mut issues = Vec::new();
     let mut warnings = Vec::new();
 
-    let program = match resolve_kimi_code_cli_program_blocking() {
+    let program = match resolve_acp_command_validated() {
         Ok(program) => {
             checks.push(RuntimeReadinessCheck {
                 id: "kimiCodeCli",
@@ -104,7 +104,24 @@ fn check_kimi_code_runtime_readiness() -> RuntimeReadiness {
         }
     };
 
-    let version = match resolve_kimi_code_cli_version_for_program(&program) {
+    // Version + ACP entrypoint both shell out; run them in parallel to cut cold-start wait.
+    let program_for_version = program.clone();
+    let program_for_acp = program.clone();
+    let (version_result, acp_result) = thread::scope(|scope| {
+        let version_handle =
+            scope.spawn(move || resolve_kimi_code_cli_version_for_program(&program_for_version));
+        let acp_handle = scope.spawn(move || validate_kimi_acp_command(&program_for_acp));
+        (
+            version_handle
+                .join()
+                .unwrap_or_else(|_| Err("Kimi Code CLI version check thread panicked".to_string())),
+            acp_handle
+                .join()
+                .unwrap_or_else(|_| Err("Kimi ACP entrypoint check thread panicked".to_string())),
+        )
+    });
+
+    let version = match version_result {
         Ok(version) => {
             checks.push(RuntimeReadinessCheck {
                 id: "kimiCodeCliVersion",
@@ -126,7 +143,7 @@ fn check_kimi_code_runtime_readiness() -> RuntimeReadiness {
         }
     };
 
-    if let Err(error) = validate_kimi_acp_command(&program) {
+    if let Err(error) = acp_result {
         issues.push(error.clone());
         checks.push(RuntimeReadinessCheck {
             id: "kimiAcpEntrypoint",

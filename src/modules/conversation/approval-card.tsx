@@ -5,6 +5,7 @@ import { Button } from "@/ui/button";
 import { Kbd } from "@/ui/kbd";
 import { findDiffDisplay } from "./diff-display";
 import { DiffView } from "./diff-view";
+import { ToolDisplayContent } from "./tool-display-content";
 
 type Approval = NonNullable<NonNullable<LiveMessage["toolCall"]>["approval"]>;
 type ToolCall = NonNullable<LiveMessage["toolCall"]>;
@@ -26,6 +27,7 @@ export function ApprovalCard({
 		approval.action === "Bash" || approval.description.startsWith("$")
 			? approval.description
 			: null;
+	const hasPreviewDisplay = Boolean(display?.length) && !diff && !command;
 
 	return (
 		<div className="my-3 overflow-hidden rounded-r2 border border-warn/30 bg-warn-bg">
@@ -49,6 +51,11 @@ export function ApprovalCard({
 			{!diff && command && (
 				<div className="mx-3 mb-2.5 rounded-r1 border border-line bg-black/20 px-2.5 py-2 font-mono text-[11.5px] text-muted dark:bg-black/20">
 					{command}
+				</div>
+			)}
+			{hasPreviewDisplay && (
+				<div className="mx-3 mb-2.5 overflow-hidden rounded-r1 border border-line bg-background/60">
+					<ToolDisplayContent display={display} />
 				</div>
 			)}
 			<div className="flex items-center gap-2 px-3 pb-3">

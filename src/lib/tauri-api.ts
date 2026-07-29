@@ -566,6 +566,13 @@ export async function pickFiles(): Promise<string[]> {
 	return Array.isArray(raw) ? raw.map(String) : [];
 }
 
+/** Native folder picker; returns absolute path or null on cancel / non-Tauri. */
+export async function pickFolder(): Promise<string | null> {
+	if (!isTauri()) return Promise.resolve(null);
+	const raw = await invoke<unknown>("pick_folder");
+	return typeof raw === "string" && raw.length > 0 ? raw : null;
+}
+
 export async function getGlobalConfig(): Promise<GlobalConfig> {
 	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
 	const raw = await invoke<Record<string, unknown>>("get_global_config");

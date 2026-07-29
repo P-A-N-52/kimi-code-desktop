@@ -265,9 +265,10 @@ export function useSessions(
 		setError(null);
 
 		try {
+			// Load the full active list once; sidebar search filters client-side.
+			// Passing `q` here used to re-hit ACP on every keystroke under high latency.
 			const sessionsList = await fetchAllSessionsPage({
 				archived: false,
-				q: searchQuery.trim() || undefined,
 			});
 
 			if (requestId !== refreshRequestIdRef.current) return;
@@ -284,7 +285,7 @@ export function useSessions(
 		} finally {
 			if (requestId === refreshRequestIdRef.current) setIsLoading(false);
 		}
-	}, [enabled, searchQuery]);
+	}, [enabled]);
 
 	const loadMoreSessions = useCallback(async () => {
 		// Sessions are fully loaded on refresh; keep for API compatibility.
@@ -385,12 +386,12 @@ export function useSessions(
 		return;
 	}, []);
 
-	// Refresh sessions list when search changes
+	// Initial + enabled-gated refresh (search is client-side — do not refetch on typing).
 	useEffect(() => {
 		if (!enabled) {
 			return;
 		}
-		refreshSessions();
+		void refreshSessions();
 	}, [enabled, refreshSessions]);
 
 	// Refresh when returning to the tab (throttled)

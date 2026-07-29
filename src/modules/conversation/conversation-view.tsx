@@ -305,6 +305,10 @@ export function ConversationView({
   ]);
 
   const streamDead = stream.status === "error";
+  const connectingSession =
+    !streamDead &&
+    ((stream.isReplayingHistory && stream.status !== "ready") ||
+      (!stream.isConnected && stream.status === "submitted"));
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
@@ -318,8 +322,17 @@ export function ConversationView({
           void stream.respondToQuestion(id, answers);
         }}
       />
-      <div className="shrink-0 px-6 pb-4">
-        <div className="mx-auto max-w-[44rem]">
+      <div className="min-w-0 shrink-0 px-4 pb-4 sm:px-6">
+        <div className="mx-auto w-full min-w-0 max-w-[44rem]">
+          {connectingSession && (
+            <div
+              role="status"
+              className="mb-2 flex items-center gap-2 rounded-r2 border border-line bg-elevated px-3 py-2 font-mono text-[11px] text-muted"
+            >
+              <span className="size-3 shrink-0 animate-spin rounded-full border border-muted border-t-transparent" />
+              {stream.isReplayingHistory ? "正在加载会话历史…" : "正在连接会话…"}
+            </div>
+          )}
           {streamDead && (
             <div
               role="alert"
@@ -327,6 +340,11 @@ export function ConversationView({
             >
               <p className="min-w-0 flex-1 text-[12px] text-danger">
                 {stream.error?.message || "连接已断开，对话已中断"}
+                {(stream.error?.message || "")
+                  .toLowerCase()
+                  .match(/timeout|timed out|auth|credential|vpn|network/)
+                  ? "（高延迟/VPN/凭据异常时请检查网络后重试）"
+                  : ""}
               </p>
               <button
                 type="button"

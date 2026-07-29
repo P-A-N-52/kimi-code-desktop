@@ -49,7 +49,7 @@ describe("AppShell", () => {
 		expect((sidebar as HTMLElement).style.width).toBe("52px");
 	});
 
-	it("双开时左栏带窄屏 overlay 类，右栏亦然", () => {
+	it("双开时左栏带窄屏 overlay 类，右栏仅在打开时 overlay", () => {
 		const { container } = render(
 			<AppShell
 				sidebar={<div>S</div>}
@@ -62,10 +62,32 @@ describe("AppShell", () => {
 			</AppShell>,
 		);
 		const sidebar = container.querySelector("[data-slot=sessions-sidebar]");
+		const spacer = container.querySelector("[data-slot=sessions-sidebar-spacer]");
 		const panel = container.querySelector("[data-slot=workspace-panel]");
-		expect(sidebar?.className).toContain("max-[900px]:absolute");
 		expect(sidebar?.className).toContain("max-[1100px]:absolute");
+		expect(sidebar?.className).not.toContain("max-[900px]:absolute");
+		expect(spacer).not.toBeNull();
 		expect(panel?.className).toContain("max-[900px]:absolute");
+	});
+
+	it("仅侧栏展开时不 overlay，避免最小宽度下盖住对话框", () => {
+		const { container } = render(
+			<AppShell
+				sidebar={<div>S</div>}
+				sidebarOpen
+				topbar={<div />}
+				panel={<div>P</div>}
+				panelOpen={false}
+			>
+				<div />
+			</AppShell>,
+		);
+		const sidebar = container.querySelector("[data-slot=sessions-sidebar]");
+		const spacer = container.querySelector("[data-slot=sessions-sidebar-spacer]");
+		const panel = container.querySelector("[data-slot=workspace-panel]");
+		expect(sidebar?.className).not.toContain("absolute");
+		expect(spacer).toBeNull();
+		expect(panel?.className).not.toContain("max-[900px]:absolute");
 	});
 
 	it("顶栏拖拽区存在且内容层 pointer-events-none，避免挡住拖拽", () => {

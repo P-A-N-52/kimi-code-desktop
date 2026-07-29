@@ -56,6 +56,11 @@ describe("SwarmToolCard", () => {
     expect(document.querySelector("[data-slot=swarm-body]")?.getAttribute("data-open")).toBe(
       "true",
     );
+    const liveRow = document.querySelector('[data-slot=swarm-member-row][data-phase=working]');
+    expect(liveRow).not.toBeNull();
+    expect(liveRow?.getAttribute("data-phase")).toBe("working");
+    // Working members with activity expand by default so progress is visible.
+    expect(screen.getAllByText("latest activity").length).toBeGreaterThan(0);
   });
 
   it("defaults collapsed for completed historical swarms and shows result rows", () => {
@@ -111,5 +116,23 @@ describe("SwarmToolCard", () => {
     expect(screen.getByText("已拒绝 / 未执行")).toBeTruthy();
     expect(screen.getByText(/rejected the approval request/)).toBeTruthy();
     expect(screen.queryByText("等待子代理启动…")).toBeNull();
+  });
+
+  it("does not flash a checkmark when tool finished before members appear", () => {
+    render(
+      <SwarmToolCard
+        toolCall={{
+          title: "AgentSwarm",
+          type: "tool-AgentSwarm" as never,
+          state: "output-available",
+          toolCallId: "swarm-spawn-race",
+          input: { description: "Parallel explore", items: [{}, {}] },
+        }}
+      />,
+    );
+
+    expect(document.querySelector('[data-status="running"]')).not.toBeNull();
+    expect(screen.getByText("进行中")).toBeTruthy();
+    expect(screen.queryByText("已完成")).toBeNull();
   });
 });

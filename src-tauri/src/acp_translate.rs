@@ -150,26 +150,142 @@ pub fn legacy_user_input_to_acp_prompt_with_swarm(
 }
 
 pub fn legacy_approval_result_to_acp_outcome(result: &Value) -> Value {
+    legacy_approval_result_to_acp_outcome_with_options(result, &[])
+}
+
+/// Map a desktop approval / question decision to an ACP `optionId`.
+///
+/// Prefer echoing an `optionId` from the permission request's `options`
+/// list (matched by ACP `kind`). Kimi Code 0.29.2+ ExitPlanMode uses a
+/// `plan_review` branch whose allow/reject ids are `plan_approve` /
+/// `plan_opt_*` / `plan_revise` / `plan_reject_and_exit` — hardcoding
+/// `approve_once` is treated as unknown and defensively rejected.
+///
+/// AskUserQuestion is also bridged over `session/request_permission` with
+/// `q{n}_opt_*` / `q{n}_skip` optionIds. When the UI answers via
+/// `QuestionRequest` (`result.answers`), match the selected label to an
+/// option `name` so YOLO does not silently pick the first allow_once.
+///
+/// When `options` is empty, fall back to the canonical 0.29 ids.
+pub fn legacy_approval_result_to_acp_outcome_with_options(
+    result: &Value,
+    options: &[Value],
+) -> Value {
+    if let Some(option_id) = map_question_answers_to_option_id(result, options) {
+        return json!({
+            "outcome": {
+                "outcome": "selected",
+                "optionId": option_id,
+            }
+        });
+    }
     let response = result
         .get("response")
         .and_then(Value::as_str)
         .unwrap_or("reject");
-    // Kimi Code ACP (0.29+) maps optionId → ApprovalResponse via:
-    //   approve_once | approve → approved
-    //   approve_always | approve_for_session → approved (session)
-    //   reject → rejected
-    //   anything else (incl. Zed-style allow-once / reject-once) → rejected
-    let option_id = match response {
-        "approve" => "approve_once",
-        "approve_for_session" => "approve_always",
-        _ => "reject",
-    };
+    let option_id = map_decision_to_permission_option_id(response, options);
     json!({
         "outcome": {
             "outcome": "selected",
             "optionId": option_id,
         }
     })
+}
+
+/// Map QuestionCard `answers` ({ questionText: selectedLabel }) onto an ACP
+/// permission `optionId`. Empty answers prefer the Skip option.
+///
+/// Free-text "Other" answers that do not match a predefined option `name`
+/// cannot round-trip through today's kimi ACP ask-user bridge (adapter only
+/// accepts `q{n}_opt_{i}` and rewrites them to that option's label). Prefer
+/// an exact / case-insensitive label match; unmatched non-empty answers fall
+/// back to Skip so the turn does not hang on an unknown optionId.
+fn map_question_answers_to_option_id(result: &Value, options: &[Value]) -> Option<String> {
+    let answers = result.get("answers")?.as_object()?;
+    for value in answers.values() {
+        let Some(label) = value.as_str().map(str::trim).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        if let Some(option_id) = find_permission_option_id_by_name(options, label) {
+            return Some(option_id);
+        }
+    }
+    // Empty answers, or free-text that did not match a predefined option → Skip.
+    find_skip_permission_option_id(options)
+}
+
+fn find_permission_option_id_by_name(options: &[Value], label: &str) -> Option<String> {
+    let needle = label.trim();
+    // Exact match first (option labels are the answers the model expects).
+    if let Some(option_id) = options.iter().find_map(|option| {
+        let name = option.get("name").and_then(Value::as_str)?;
+        if name != needle {
+            return None;
+        }
+        option
+            .get("optionId")
+            .or_else(|| option.get("option_id"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }) {
+        return Some(option_id);
+    }
+    // Case-insensitive fallback for free-typed option labels.
+    let needle_lower = needle.to_ascii_lowercase();
+    options.iter().find_map(|option| {
+        let name = option.get("name").and_then(Value::as_str)?;
+        if name.to_ascii_lowercase() != needle_lower {
+            return None;
+        }
+        option
+            .get("optionId")
+            .or_else(|| option.get("option_id"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+}
+
+fn find_skip_permission_option_id(options: &[Value]) -> Option<String> {
+    options.iter().find_map(|option| {
+        let kind = option.get("kind").and_then(Value::as_str)?;
+        if kind != "reject_once" && kind != "reject_always" {
+            return None;
+        }
+        option
+            .get("optionId")
+            .or_else(|| option.get("option_id"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+}
+
+fn map_decision_to_permission_option_id(response: &str, options: &[Value]) -> String {
+    let preferred_kinds: &[&str] = match response {
+        "approve" => &["allow_once"],
+        "approve_for_session" => &["allow_always", "allow_once"],
+        _ => &["reject_once", "reject_always"],
+    };
+    for kind in preferred_kinds {
+        if let Some(option_id) = options.iter().find_map(|option| {
+            let option_kind = option.get("kind").and_then(Value::as_str)?;
+            if option_kind != *kind {
+                return None;
+            }
+            option
+                .get("optionId")
+                .or_else(|| option.get("option_id"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        }) {
+            return option_id;
+        }
+    }
+    // Canonical Kimi Code ACP (0.29+) fallbacks when the request omitted options.
+    match response {
+        "approve" => "approve_once".to_string(),
+        "approve_for_session" => "approve_always".to_string(),
+        _ => "reject".to_string(),
+    }
 }
 
 pub fn translate_session_update(session_id: &str, update: &Value) -> Vec<String> {
@@ -250,14 +366,34 @@ pub fn translate_session_update(session_id: &str, update: &Value) -> Vec<String>
                 .unwrap_or_default();
             let content = entries
                 .iter()
-                .filter_map(|entry| entry.get("content").and_then(Value::as_str))
+                .filter_map(|entry| {
+                    let text = entry
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .or_else(|| entry.get("text").and_then(Value::as_str))
+                        .filter(|value| !value.is_empty())?;
+                    let status = entry
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty());
+                    Some(match status {
+                        Some(status) => format!("- [{status}] {text}"),
+                        None => format!("- {text}"),
+                    })
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
+            let file_path = update
+                .get("filePath")
+                .or_else(|| update.get("file_path"))
+                .or_else(|| update.get("path"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
             vec![wire_event_message(
                 "PlanDisplay",
                 json!({
                     "content": content,
-                    "file_path": "",
+                    "file_path": file_path,
                 }),
             )]
         }
@@ -857,10 +993,19 @@ fn tool_call_content_to_display_item(item: &Value) -> Option<Value> {
     }
 }
 
+/// Translate ACP `session/request_permission` into a legacy wire reverse request.
+///
+/// AskUserQuestion is bridged by the ACP adapter over the same permission
+/// surface (optionIds `q{n}_opt_*` / `q{n}_skip`). Map those to
+/// `QuestionRequest` so the desktop QuestionCard can collect an answer;
+/// everything else becomes `ApprovalRequest`.
+///
+/// Returns `(wire_message, wire_id, options)` so the response path can echo a
+/// real `optionId` from the request (required for plan_review / ask-user).
 pub fn acp_permission_to_legacy_request(
     request_id: u64,
     params: &Value,
-) -> Option<(String, String)> {
+) -> Option<(String, String, Vec<Value>)> {
     let tool_call = params.get("toolCall")?;
     let tool_call_id = tool_call
         .get("toolCallId")
@@ -870,23 +1015,116 @@ pub fn acp_permission_to_legacy_request(
         .get("title")
         .and_then(Value::as_str)
         .unwrap_or("Tool approval required");
+    let options = params
+        .get("options")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let wire_id = request_id.to_string();
+
+    if is_ask_user_permission_title(title) {
+        let prompt = tool_call
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(extract_tool_call_content_text)
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+            })
+            .unwrap_or_default();
+        let prompt = if prompt.trim().is_empty() {
+            "Kimi has a question".to_string()
+        } else {
+            prompt
+        };
+        // Present allow_once choices as answers; Skip stays a reject_once on
+        // the response path when the user submits empty answers.
+        let question_options: Vec<Value> = options
+            .iter()
+            .filter(|option| {
+                option.get("kind").and_then(Value::as_str) == Some("allow_once")
+            })
+            .filter_map(|option| {
+                let label = option.get("name").and_then(Value::as_str)?;
+                Some(json!({
+                    "label": label,
+                    "description": "",
+                }))
+            })
+            .collect();
+        let payload = json!({
+            "id": wire_id,
+            "tool_call_id": tool_call_id,
+            "questions": [{
+                "question": prompt,
+                "header": prompt,
+                "options": question_options,
+                "multi_select": false,
+                // CLI always offers free-text "Other"; ACP permission options
+                // only carry predefined allow_once labels, so the desktop UI
+                // adds this field itself.
+                "other_label": "其他",
+                "other_description": "输入自定义回答",
+            }],
+        });
+        return Some((
+            wire_request_message("QuestionRequest", payload, json!(wire_id)),
+            wire_id,
+            options,
+        ));
+    }
+
     let kind = tool_call
         .get("kind")
         .and_then(Value::as_str)
         .map(|s| s.to_string());
-    let wire_id = request_id.to_string();
+    let display = tool_call
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| {
+                    extract_tool_call_content_text(item)
+                        .map(|text| !text.starts_with("Requesting approval to "))
+                        .unwrap_or(true)
+                })
+                .filter_map(tool_call_content_to_display_item)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    // Keep `description` short (tool title). Plan / preview bodies go into
+    // `display` so the approval card can render them with proper formatting.
+    let description = title.to_string();
     let payload = json!({
         "id": wire_id,
         "action": title,
-        "description": title,
+        "description": description,
         "sender": "acp",
         "tool_call_id": tool_call_id,
         "kind": kind,
+        "display": display,
+        "options": options.clone(),
     });
     Some((
         wire_request_message("ApprovalRequest", payload, json!(wire_id)),
         wire_id,
+        options,
     ))
+}
+
+fn is_ask_user_permission_title(title: &str) -> bool {
+    let normalized: String = title
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    matches!(
+        normalized.as_str(),
+        "askuserquestion" | "askuser" | "askuserquestions"
+    )
 }
 
 pub fn normalize_workspace_path(raw: &str, workspace: &Path) -> Result<PathBuf, String> {
@@ -1300,6 +1538,156 @@ mod tests {
 
         let reject = legacy_approval_result_to_acp_outcome(&json!({ "response": "reject" }));
         assert_eq!(reject["outcome"]["optionId"], "reject");
+    }
+
+    #[test]
+    fn approval_result_echoes_plan_review_option_ids() {
+        let plan_options = vec![
+            json!({ "optionId": "plan_approve", "name": "Approve", "kind": "allow_once" }),
+            json!({ "optionId": "plan_revise", "name": "Revise", "kind": "reject_once" }),
+            json!({
+                "optionId": "plan_reject_and_exit",
+                "name": "Reject and Exit",
+                "kind": "reject_once"
+            }),
+        ];
+
+        let approve = legacy_approval_result_to_acp_outcome_with_options(
+            &json!({ "response": "approve" }),
+            &plan_options,
+        );
+        assert_eq!(approve["outcome"]["optionId"], "plan_approve");
+
+        let always = legacy_approval_result_to_acp_outcome_with_options(
+            &json!({ "response": "approve_for_session" }),
+            &plan_options,
+        );
+        // No allow_always in plan_review — fall back to first allow_once.
+        assert_eq!(always["outcome"]["optionId"], "plan_approve");
+
+        let reject = legacy_approval_result_to_acp_outcome_with_options(
+            &json!({ "response": "reject" }),
+            &plan_options,
+        );
+        assert_eq!(reject["outcome"]["optionId"], "plan_revise");
+    }
+
+    #[test]
+    fn question_answers_map_to_ask_user_option_ids() {
+        let ask_options = vec![
+            json!({ "optionId": "q0_opt_0", "name": "Approach A", "kind": "allow_once" }),
+            json!({ "optionId": "q0_opt_1", "name": "Approach B", "kind": "allow_once" }),
+            json!({ "optionId": "q0_skip", "name": "Skip", "kind": "reject_once" }),
+        ];
+
+        let answered = legacy_approval_result_to_acp_outcome_with_options(
+            &json!({ "answers": { "Which approach?": "Approach B" } }),
+            &ask_options,
+        );
+        assert_eq!(answered["outcome"]["optionId"], "q0_opt_1");
+
+        let skipped = legacy_approval_result_to_acp_outcome_with_options(
+            &json!({ "answers": {} }),
+            &ask_options,
+        );
+        assert_eq!(skipped["outcome"]["optionId"], "q0_skip");
+
+        let case_insensitive = legacy_approval_result_to_acp_outcome_with_options(
+            &json!({ "answers": { "Which approach?": "approach b" } }),
+            &ask_options,
+        );
+        assert_eq!(case_insensitive["outcome"]["optionId"], "q0_opt_1");
+
+        let custom_other = legacy_approval_result_to_acp_outcome_with_options(
+            &json!({ "answers": { "Which approach?": "use postgres instead" } }),
+            &ask_options,
+        );
+        // ACP ask-user bridge has no free-text optionId; unmatched → Skip.
+        assert_eq!(custom_other["outcome"]["optionId"], "q0_skip");
+    }
+
+    #[test]
+    fn permission_request_forwards_plan_review_content_and_options() {
+        let params = json!({
+            "sessionId": "sess-1",
+            "options": [
+                { "optionId": "plan_approve", "name": "Approve", "kind": "allow_once" },
+                { "optionId": "plan_revise", "name": "Revise", "kind": "reject_once" },
+                {
+                    "optionId": "plan_reject_and_exit",
+                    "name": "Reject and Exit",
+                    "kind": "reject_once"
+                }
+            ],
+            "toolCall": {
+                "toolCallId": "1:exit-plan",
+                "title": "ExitPlanMode",
+                "kind": "switch_mode",
+                "content": [
+                    {
+                        "type": "content",
+                        "content": {
+                            "type": "text",
+                            "text": "Plan saved to: /tmp/plan.md\n\n## Plan\n\n1. Ship it"
+                        }
+                    },
+                    {
+                        "type": "content",
+                        "content": {
+                            "type": "text",
+                            "text": "Requesting approval to Present the plan and exit plan mode"
+                        }
+                    }
+                ]
+            }
+        });
+        let (message, wire_id, options) =
+            acp_permission_to_legacy_request(42, &params).expect("permission request");
+        assert_eq!(wire_id, "42");
+        assert_eq!(options.len(), 3);
+        assert_eq!(options[0]["optionId"], "plan_approve");
+        assert!(message.contains("ApprovalRequest"));
+        assert!(message.contains("Plan saved to: /tmp/plan.md"));
+        assert!(message.contains("## Plan"));
+        assert!(message.contains(r#""type":"text""#));
+        assert!(!message.contains("Requesting approval to Present the plan"));
+    }
+
+    #[test]
+    fn ask_user_permission_becomes_question_request() {
+        let params = json!({
+            "sessionId": "sess-1",
+            "options": [
+                { "optionId": "q0_opt_0", "name": "Ship it", "kind": "allow_once" },
+                { "optionId": "q0_opt_1", "name": "Keep iterating", "kind": "allow_once" },
+                { "optionId": "q0_skip", "name": "Skip", "kind": "reject_once" }
+            ],
+            "toolCall": {
+                "toolCallId": "1:ask",
+                "title": "AskUserQuestion",
+                "content": [
+                    {
+                        "type": "content",
+                        "content": {
+                            "type": "text",
+                            "text": "Which approach should we take?"
+                        }
+                    }
+                ]
+            }
+        });
+        let (message, wire_id, options) =
+            acp_permission_to_legacy_request(7, &params).expect("ask-user permission");
+        assert_eq!(wire_id, "7");
+        assert_eq!(options.len(), 3);
+        assert!(message.contains("QuestionRequest"));
+        assert!(!message.contains("ApprovalRequest"));
+        assert!(message.contains("Which approach should we take?"));
+        assert!(message.contains("Ship it"));
+        assert!(message.contains("Keep iterating"));
+        assert!(message.contains(r#""other_label":"其他""#));
+        // Skip is reject_once — not shown as an answer choice.
+        assert!(!message.contains(r#""label":"Skip""#));
     }
 
     #[test]

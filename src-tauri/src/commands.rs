@@ -18,6 +18,56 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
+
+/// Soft budget for non-critical ACP `session/list` enrichment.
+/// Listing must not sit behind the full RPC timeout (often 120s) under VPN/slow auth.
+fn acp_list_soft_timeout(has_local_data: bool) -> Duration {
+    let default_secs = if has_local_data { 3 } else { 8 };
+    std::env::var("ACP_LIST_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(default_secs))
+}
+
+fn format_acp_list_timeout(timeout: Duration) -> String {
+    format!(
+        "ACP session/list timed out after {}s. Local cache was used when available. If you use a VPN, check the connection or retry.",
+        timeout.as_secs()
+    )
+}
+
+async fn fetch_acp_sessions_soft(
+    acp_desktop: &AcpDesktopClient,
+    app: &tauri::AppHandle,
+    has_local_data: bool,
+) -> Result<Vec<Value>, String> {
+    let timeout = acp_list_soft_timeout(has_local_data);
+    match tokio::time::timeout(timeout, fetch_all_acp_sessions(acp_desktop, app)).await {
+        Ok(Ok(sessions)) => Ok(sessions),
+        Ok(Err(err)) => Err(err),
+        Err(_) => Err(format_acp_list_timeout(timeout)),
+    }
+}
+
+fn humanize_acp_error(err: &str) -> String {
+    let lower = err.to_ascii_lowercase();
+    if lower.contains("credential")
+        || lower.contains("auth")
+        || lower.contains("login")
+        || lower.contains("unauthorized")
+    {
+        return format!(
+            "{err} 若使用 VPN，请确认网络畅通后重新登录或检查 config.toml 中的凭据。"
+        );
+    }
+    if lower.contains("timed out") || lower.contains("timeout") {
+        return format!("{err} 高延迟或 VPN 可能导致超时，可稍后重试。");
+    }
+    err.to_string()
+}
 
 const DEFAULT_MCP_JSON: &str = "{\n  \"mcpServers\": {}\n}\n";
 
@@ -128,34 +178,10 @@ pub async fn list_sessions(
     let limit = limit.unwrap_or(100).clamp(1, 500);
     let offset = offset.unwrap_or(0);
 
-    // ACP auth/token races must not blank the sidebar — fall back to on-disk sessions.
-    let (raw_sessions, acp_list_error) = match fetch_all_acp_sessions(&acp_desktop, &app).await {
-        Ok(sessions) => (sessions, None),
-        Err(err) => {
-            eprintln!("[list_sessions] ACP session/list failed, using local sessions: {err}");
-            (Vec::new(), Some(err))
-        }
-    };
-    let mut shaped: Vec<Value> = raw_sessions
-        .iter()
-        .map(|session| {
-            let mut legacy = shape_acp_session_to_legacy(session);
-            let session_id = legacy
-                .get("session_id")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            if let Some(session_id) = session_id {
-                session_store::merge_local_metadata_into_legacy(&mut legacy, &session_id);
-            }
-            legacy
-        })
-        .collect();
-    let mut known_session_ids = shaped
-        .iter()
-        .filter_map(|session| session.get("session_id").and_then(Value::as_str))
-        .map(str::to_string)
-        .collect::<HashSet<_>>();
-    for session in session_store::list_local_sessions()? {
+    // Local-first: seed from disk so the sidebar is not blocked on ACP spawn/auth.
+    let mut shaped: Vec<Value> = Vec::new();
+    let mut known_session_ids = HashSet::new();
+    for session in session_store::list_local_sessions().unwrap_or_default() {
         let Some(session_id) = session.get("session_id").and_then(Value::as_str) else {
             continue;
         };
@@ -163,9 +189,41 @@ pub async fn list_sessions(
             shaped.push(session);
         }
     }
+    let has_local = !shaped.is_empty();
+
+    // Soft-timeout ACP enrichment only when we have nothing local yet.
+    // With a warm cache, waiting on ACP (VPN / cold auth) makes the sidebar feel stuck.
+    let acp_list_error = if has_local {
+        None
+    } else {
+        match fetch_acp_sessions_soft(&acp_desktop, &app, false).await {
+            Ok(raw_sessions) => {
+                for session in raw_sessions {
+                    let mut legacy = shape_acp_session_to_legacy(&session);
+                    let Some(session_id) = legacy
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                    else {
+                        continue;
+                    };
+                    session_store::merge_local_metadata_into_legacy(&mut legacy, &session_id);
+                    if known_session_ids.insert(session_id) {
+                        shaped.push(legacy);
+                    }
+                }
+                None
+            }
+            Err(err) => {
+                eprintln!("[list_sessions] ACP session/list failed, using local sessions: {err}");
+                Some(err)
+            }
+        }
+    };
+
     if shaped.is_empty() {
         if let Some(err) = acp_list_error {
-            return Err(err);
+            return Err(humanize_acp_error(&err));
         }
     }
     let filtered = filter_sessions(shaped, q.as_deref(), archived);
@@ -188,20 +246,23 @@ pub async fn get_session(
     acp_wire: tauri::State<'_, AcpProcessManager>,
     session_id: String,
 ) -> Result<Value, String> {
-    let mut result = match fetch_all_acp_sessions(&acp_desktop, &app).await {
+    // Prefer on-disk session — opening a chat must not wait on full ACP session/list.
+    if let Ok(mut local) = session_store::read_local_session(&session_id) {
+        attach_acp_runtime_status_to_session(&mut local, &acp_wire);
+        return Ok(local);
+    }
+
+    let mut result = match fetch_acp_sessions_soft(&acp_desktop, &app, false).await {
         Ok(raw_sessions) => {
             if let Some(raw) = find_session_in_list(&raw_sessions, &session_id) {
                 let mut shaped = shape_acp_session_to_legacy(&raw);
                 session_store::merge_local_metadata_into_legacy(&mut shaped, &session_id);
                 shaped
             } else {
-                session_store::read_local_session(&session_id)?
+                return Err(format!("Session not found: {session_id}"));
             }
         }
-        Err(acp_err) => match session_store::read_local_session(&session_id) {
-            Ok(local) => local,
-            Err(_) => return Err(acp_err),
-        },
+        Err(acp_err) => return Err(humanize_acp_error(&acp_err)),
     };
     attach_acp_runtime_status_to_session(&mut result, &acp_wire);
     Ok(result)
@@ -443,24 +504,28 @@ pub async fn list_work_dirs(
         }
     }
 
-    let raw_sessions = match fetch_all_acp_sessions(&acp_desktop, &app).await {
-        Ok(sessions) => sessions,
-        Err(err) => {
-            eprintln!("[list_work_dirs] ACP session/list failed, using metadata only: {err}");
-            Vec::new()
-        }
-    };
-
-    for session in raw_sessions {
-        let Some(cwd) = session.get("cwd").and_then(Value::as_str) else {
-            continue;
+    // Metadata is enough for the picker. Only soft-probe ACP when local cache is empty.
+    if work_dirs.is_empty() {
+        let raw_sessions = match fetch_acp_sessions_soft(&acp_desktop, &app, false).await {
+            Ok(sessions) => sessions,
+            Err(err) => {
+                eprintln!("[list_work_dirs] ACP session/list failed, using metadata only: {err}");
+                Vec::new()
+            }
         };
-        if is_hidden_work_dir(cwd) || !Path::new(cwd).exists() || !seen.insert(cwd.to_string()) {
-            continue;
-        }
-        work_dirs.push(cwd.to_string());
-        if work_dirs.len() >= 20 {
-            break;
+
+        for session in raw_sessions {
+            let Some(cwd) = session.get("cwd").and_then(Value::as_str) else {
+                continue;
+            };
+            if is_hidden_work_dir(cwd) || !Path::new(cwd).exists() || !seen.insert(cwd.to_string())
+            {
+                continue;
+            }
+            work_dirs.push(cwd.to_string());
+            if work_dirs.len() >= 20 {
+                break;
+            }
         }
     }
 
@@ -511,6 +576,19 @@ pub fn pick_files() -> Result<Value, String> {
         })
         .unwrap_or_default();
     Ok(json!(paths))
+}
+
+/// Native folder picker for choosing a session work directory. Returns the
+/// absolute path, or null when the user cancels.
+#[tauri::command]
+pub fn pick_folder() -> Result<Value, String> {
+    match rfd::FileDialog::new()
+        .set_title("选择工作目录")
+        .pick_folder()
+    {
+        Some(path) => Ok(json!(path.to_string_lossy().to_string())),
+        None => Ok(Value::Null),
+    }
 }
 
 #[tauri::command]

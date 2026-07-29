@@ -30,4 +30,29 @@ describe("ApprovalCard", () => {
 		expect(screen.getByText("已批准")).toBeTruthy();
 		expect(screen.queryByRole("button", { name: /允许/ })).toBeNull();
 	});
+
+	it("渲染 plan_review 预览正文", () => {
+		render(
+			<ApprovalCard
+				approval={{
+					id: "r-plan",
+					action: "ExitPlanMode",
+					description: "ExitPlanMode",
+					sender: "acp",
+				}}
+				display={[
+					{
+						type: "text",
+						data: {
+							type: "text",
+							text: "Plan saved to: /tmp/plan.md\n\n## Plan\n\n1. Ship it",
+						},
+					},
+				]}
+				onRespond={() => {}}
+			/>,
+		);
+		expect(screen.getByText(/Plan saved to: \/tmp\/plan\.md/)).toBeTruthy();
+		expect(screen.getByText(/## Plan/)).toBeTruthy();
+	});
 });

@@ -138,7 +138,16 @@ export function KimiLoginPanel({
 						if (cancelledRef.current || loginIdRef.current !== loginId) return;
 						loginIdRef.current = null;
 						setPhase("error");
-						setMessage(err instanceof Error ? err.message : String(err));
+						const raw = err instanceof Error ? err.message : String(err);
+						const lower = raw.toLowerCase();
+						const hint =
+							lower.includes("timeout") ||
+							lower.includes("network") ||
+							lower.includes("fetch") ||
+							lower.includes("connect")
+								? " 若使用 VPN，请确认网络畅通后重试。"
+								: "";
+						setMessage(`${raw}${hint}`);
 					}
 				})();
 			}, Math.max(1, intervalSec) * 1000);
@@ -175,7 +184,16 @@ export function KimiLoginPanel({
 		} catch (err) {
 			loginIdRef.current = null;
 			setPhase("error");
-			setMessage(err instanceof Error ? err.message : String(err));
+			const raw = err instanceof Error ? err.message : String(err);
+			const lower = raw.toLowerCase();
+			const hint =
+				lower.includes("timeout") ||
+				lower.includes("network") ||
+				lower.includes("fetch") ||
+				lower.includes("connect")
+					? " 若使用 VPN，请确认网络畅通后重试。"
+					: "";
+			setMessage(`${raw}${hint}`);
 		}
 	}, [clearTimer, schedulePoll]);
 

@@ -66,7 +66,7 @@ export function ModelPicker({
 	const thinkingChecked = forcesThinking || thinkingEnabled;
 
 	return (
-		<div ref={rootRef} className="relative ml-auto">
+		<div ref={rootRef} className="relative min-w-0">
 			<button
 				type="button"
 				aria-label={`当前模型 ${label}`}
@@ -74,7 +74,7 @@ export function ModelPicker({
 				aria-haspopup="listbox"
 				disabled={disabled}
 				onClick={() => setOpen((value) => !value)}
-				className="flex h-7 max-w-44 items-center gap-1.5 rounded-full border border-line px-2.5 font-mono text-[11px] font-medium text-muted transition-colors hover:bg-hover hover:text-foreground disabled:pointer-events-none disabled:opacity-45"
+				className="flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-full border border-line px-2.5 font-mono text-[11px] font-medium text-muted transition-colors hover:bg-hover hover:text-foreground disabled:pointer-events-none disabled:opacity-45 sm:max-w-44"
 			>
 				<span className="truncate">{label}</span>
 				<ChevronDown size={10} strokeWidth={1.5} className="shrink-0" />

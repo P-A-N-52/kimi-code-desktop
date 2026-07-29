@@ -20,7 +20,10 @@ import { ConversationView } from "@/modules/conversation/conversation-view";
 import { ReadinessOverlay } from "@/modules/readiness/readiness-overlay";
 import { AppSidebar } from "@/modules/sessions/app-sidebar";
 import { SettingsDialog, type SettingsTab } from "@/modules/settings/settings-dialog";
-import type { SessionModeDraft } from "@/modules/statusbar/permission-mode";
+import {
+  shouldAutoApprove,
+  type SessionModeDraft,
+} from "@/modules/statusbar/permission-mode";
 import { Topbar } from "@/modules/topbar/topbar";
 import { ChangesPanel, type WorkspaceTab } from "@/modules/workspace/changes-panel";
 import {
@@ -30,6 +33,9 @@ import {
 } from "@/modules/workspace/derive-changes";
 import { AppShell } from "./app-shell";
 import { NewSessionView } from "./new-session-view";
+
+/** Wait for YOLO auto-approve / quick resolve before surfacing a system toast. */
+const APPROVAL_NOTIFICATION_DELAY_MS = 400;
 
 export default function App() {
   useTheme();
@@ -111,6 +117,8 @@ export default function App() {
     loadMoreArchivedSessions,
     hasMoreSessions,
     hasMoreArchivedSessions,
+    isLoading,
+    isLoadingArchived,
     isLoadingMore,
     isLoadingMoreArchived,
     searchQuery,
@@ -197,16 +205,43 @@ export default function App() {
     [stream.messages],
   );
   const notifiedApprovalsRef = useRef(new Set<string>());
+  const pendingApprovalsRef = useRef(pendingApprovals);
+  pendingApprovalsRef.current = pendingApprovals;
+  const permissionMode = stream.permissionMode;
 
   useEffect(() => {
     if (!isTauri() || document.hasFocus()) return;
+
+    const timers: ReturnType<typeof setTimeout>[] = [];
     for (const approval of pendingApprovals) {
+      // YOLO/auto will approve these client-side — never toast "需要批准".
+      if (shouldAutoApprove(permissionMode, approval.toolTitle, approval.toolKind)) {
+        continue;
+      }
       const notificationKey = `${selectedSessionId}:${approval.id}`;
       if (notifiedApprovalsRef.current.has(notificationKey)) continue;
-      notifiedApprovalsRef.current.add(notificationKey);
-      void sendNotification("Kimi Code 需要批准", approval.description).catch(() => {});
+
+      // Delay so auto-approve / cancel / resolve can clear the request first.
+      timers.push(
+        setTimeout(() => {
+          if (notifiedApprovalsRef.current.has(notificationKey)) return;
+          if (document.hasFocus()) return;
+          const stillNeedsUser = pendingApprovalsRef.current.some(
+            (item) =>
+              item.id === approval.id &&
+              !shouldAutoApprove(permissionMode, item.toolTitle, item.toolKind),
+          );
+          if (!stillNeedsUser) return;
+          notifiedApprovalsRef.current.add(notificationKey);
+          void sendNotification("Kimi Code 需要批准", approval.description).catch(() => {});
+        }, APPROVAL_NOTIFICATION_DELAY_MS),
+      );
     }
-  }, [pendingApprovals, selectedSessionId]);
+
+    return () => {
+      for (const timer of timers) clearTimeout(timer);
+    };
+  }, [pendingApprovals, permissionMode, selectedSessionId]);
 
   useEffect(() => {
     if (changes.length > 0 && !userClosedPanelRef.current) {
@@ -371,6 +406,8 @@ export default function App() {
             hasLoadedArchived={hasLoadedArchivedSessions}
             hasMoreActive={hasMoreSessions}
             hasMoreArchived={hasMoreArchivedSessions}
+            isLoadingActive={isLoading}
+            isLoadingArchived={isLoadingArchived}
             isLoadingMoreActive={isLoadingMore}
             isLoadingMoreArchived={isLoadingMoreArchived}
           />

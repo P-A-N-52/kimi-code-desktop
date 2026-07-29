@@ -57,6 +57,9 @@ export type PendingApproval = {
   id: string;
   toolCallId?: string;
   description: string;
+  /** Tool card title / action — used to decide YOLO auto-approve vs notify. */
+  toolTitle?: string;
+  toolKind?: string | null;
 };
 
 export function derivePendingApprovals(messages: LiveMessage[]): PendingApproval[] {
@@ -69,6 +72,8 @@ export function derivePendingApprovals(messages: LiveMessage[]): PendingApproval
       id: tc.approval.id,
       toolCallId: tc.approval.toolCallId,
       description: tc.approval.description || tc.approval.action,
+      toolTitle: tc.title || tc.approval.action,
+      toolKind: tc.approval.toolKind ?? null,
     });
   }
   return list;

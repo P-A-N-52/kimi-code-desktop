@@ -64,6 +64,7 @@ pub fn run() {
             commands::get_startup_dir,
             commands::list_available_skills,
             commands::pick_files,
+            commands::pick_folder,
             commands::get_global_config,
             commands::get_config_toml,
             commands::update_config_toml,

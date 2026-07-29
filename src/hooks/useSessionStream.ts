@@ -154,6 +154,7 @@ import {
   type SlashCommandDef,
 } from "@/lib/slash-command-catalog";
 import { formatMentionToken } from "@/modules/composer/file-mentions";
+import { resolveAskUserParentToolCallId } from "@/modules/statusbar/permission-mode";
 
 /**
  * Inline uploaded attachments into the prompt text as CLI-style `@path`
@@ -2420,6 +2421,13 @@ export function useSessionStream(
           }
 
           const messageStr = return_value.message;
+          const extrasRecord =
+            return_value.extras && typeof return_value.extras === "object"
+              ? (return_value.extras as Record<string, unknown>)
+              : undefined;
+          // ACP tool_call_update status=in_progress is translated to ToolResult with
+          // extras.in_progress. That is a progress tick — not terminal completion.
+          const toolStillInProgress = extrasRecord?.in_progress === true;
 
           if (tc) {
             tc.argumentsComplete = true;
@@ -2437,7 +2445,10 @@ export function useSessionStream(
           setMessages((prev) =>
             prev.map((msg) => {
               if (msg.toolCall?.toolCallId !== tool_call_id) return msg;
-              if (msg.toolCall?.subagentRunning || msg.toolCall?.subagentSteps?.length) {
+              if (
+                !toolStillInProgress &&
+                (msg.toolCall?.subagentRunning || msg.toolCall?.subagentSteps?.length)
+              ) {
                 const taskId = msg.toolCall.subagentAgentId ?? msg.toolCall.toolCallId;
                 if (taskId) {
                   completeAgentMonitorTask(
@@ -2456,7 +2467,9 @@ export function useSessionStream(
                   ...msg.toolCall,
                   state: return_value.is_error
                     ? ("output-error" as ToolUIPart["state"])
-                    : ("output-available" as ToolUIPart["state"]),
+                    : toolStillInProgress
+                      ? ("input-available" as ToolUIPart["state"])
+                      : ("output-available" as ToolUIPart["state"]),
                   // Aligned with backend ToolReturnValue
                   output: outputStr || undefined,
                   message: messageStr || undefined,
@@ -2467,17 +2480,22 @@ export function useSessionStream(
                     ? messageStr || undefined
                     : undefined,
                   mediaParts: mediaParts.length > 0 ? mediaParts : undefined,
-                  // Mark subagent as complete when its parent Agent tool receives result
-                  subagentRunning: msg.toolCall.subagentSteps
-                    ? false
-                    : msg.toolCall.subagentRunning,
+                  // Only keep subagentRunning for tools that already have subagent
+                  // activity. ACP in_progress ticks hit every tool — must not mark
+                  // Bash/Edit/Read as subagent or GenericToolCard shows agent UI.
+                  subagentRunning: toolStillInProgress
+                    ? Boolean(
+                        msg.toolCall.subagentRunning ||
+                          msg.toolCall.subagentSteps?.length,
+                      )
+                    : false,
                 },
-                isStreaming: false,
+                isStreaming: toolStillInProgress ? msg.isStreaming : false,
               };
             }),
           );
 
-          if (currentToolCallIdRef.current === tool_call_id) {
+          if (!toolStillInProgress && currentToolCallIdRef.current === tool_call_id) {
             currentToolCallIdRef.current = null;
           }
 
@@ -2621,8 +2639,11 @@ export function useSessionStream(
                   ...message.toolCall,
                   state: "approval-requested",
                   approval: approvalState,
-                  // Show approval preview (diff/command) if tool has no display yet
-                  display: message.toolCall.display ?? approvalDisplay,
+                  // Prefer permission-request preview (plan markdown / diff).
+                  display:
+                    approvalDisplay && approvalDisplay.length > 0
+                      ? approvalDisplay
+                      : message.toolCall.display,
                 },
               };
             });
@@ -2805,7 +2826,17 @@ export function useSessionStream(
             clearAwaitingFirstResponse();
           }
           const qPayload = (event as QuestionRequestEvent).payload;
-          const qtc = currentToolCallsRef.current.get(qPayload.tool_call_id);
+          // ACP ask-user permission ids are `${parentId}:question:N`; prefer the
+          // already-streamed AskUserQuestion tool card so we don't leave a
+          // dangling Agent/Generic row beside the QuestionCard.
+          const parentToolCallId = resolveAskUserParentToolCallId(
+            qPayload.tool_call_id,
+          );
+          const qtc =
+            currentToolCallsRef.current.get(qPayload.tool_call_id) ??
+            (parentToolCallId !== qPayload.tool_call_id
+              ? currentToolCallsRef.current.get(parentToolCallId)
+              : undefined);
 
       if (isReplay) {
         const questionState = {
@@ -2826,6 +2857,7 @@ export function useSessionStream(
                   isStreaming: false,
                   toolCall: {
                     ...message.toolCall,
+                    title: "AskUserQuestion",
                     state: "question-responded",
                     question: questionState,
                   },
@@ -2873,6 +2905,7 @@ export function useSessionStream(
                 isStreaming: false,
                 toolCall: {
                   ...message.toolCall,
+                  title: "AskUserQuestion",
                   state: "question-requested",
                   question: questionState,
                 },
@@ -2905,6 +2938,19 @@ export function useSessionStream(
 
             setMessages((prev) => [...prev, questionMessage]);
             qMessageId = fallbackMessageId;
+          }
+
+          // Alias permission toolCallId → parent message so respond/result stay linked.
+          if (parentToolCallId !== qPayload.tool_call_id && qtc?.messageId) {
+            currentToolCallsRef.current.set(qPayload.tool_call_id, {
+              ...(currentToolCallsRef.current.get(qPayload.tool_call_id) ?? {
+                id: qPayload.tool_call_id,
+                name: "AskUserQuestion",
+                arguments: "",
+                argumentsComplete: false,
+              }),
+              messageId: qtc.messageId,
+            });
           }
 
           pendingQuestionRequestsRef.current.set(qPayload.id, {
@@ -3236,7 +3282,17 @@ export function useSessionStream(
 
         case "PlanDisplay": {
           const planPayload = (event as PlanDisplayEvent).payload;
+          const planBody = planPayload.content?.trim() ?? "";
+          const planPath = planPayload.file_path?.trim() ?? "";
+          if (!planBody && !planPath) {
+            break;
+          }
           const planMessageId = getNextMessageId("assistant");
+          const content = planPath
+            ? planBody
+              ? `Plan saved to: ${planPath}\n\n${planBody}`
+              : `Plan saved to: ${planPath}`
+            : planBody;
           upsertMessage({
             id: planMessageId,
             role: "assistant",
@@ -3245,7 +3301,7 @@ export function useSessionStream(
               turnCounterRef.current > 0
                 ? turnCounterRef.current - 1
                 : undefined,
-            content: planPayload.content,
+            content,
             isStreaming: false,
           });
           break;
@@ -4158,7 +4214,11 @@ export function useSessionStream(
       pending.submitted = true;
       pendingQuestionRequestsRef.current.set(requestId, pending);
 
-      const tc = currentToolCallsRef.current.get(pending.toolCallId);
+      const tc =
+        currentToolCallsRef.current.get(pending.toolCallId) ??
+        currentToolCallsRef.current.get(
+          resolveAskUserParentToolCallId(pending.toolCallId),
+        );
 
       if (tc?.messageId) {
         updateMessageById(tc.messageId, (message) => {

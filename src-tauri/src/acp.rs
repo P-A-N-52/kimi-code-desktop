@@ -2,7 +2,7 @@
 
 use crate::acp_translate::{
     acp_permission_to_legacy_request, acp_slash_command_prompt, acp_update_to_wire_event,
-    legacy_approval_result_to_acp_outcome, legacy_prompt_status_from_stop_reason,
+    legacy_approval_result_to_acp_outcome_with_options, legacy_prompt_status_from_stop_reason,
     legacy_user_input_to_acp_prompt_with_swarm, normalize_workspace_path,
     translate_acp_lifecycle_notification, translate_session_update, wire_event_message,
 };
@@ -391,6 +391,13 @@ impl PermissionMode {
     }
 }
 
+pub(crate) struct PendingPermission {
+    acp_request_id: u64,
+    /// Opaque ACP permission options from the original request — response
+    /// must echo one of these `optionId`s (plan_review uses plan_* ids).
+    options: Vec<Value>,
+}
+
 pub(crate) struct AcpWorker {
     session_id: String,
     connection_id: Mutex<Option<String>>,
@@ -402,7 +409,7 @@ pub(crate) struct AcpWorker {
     rpc: Mutex<Option<Arc<AcpRpcSession>>>,
     status_seq: AtomicU64,
     in_flight_prompt_ids: Mutex<HashSet<String>>,
-    pending_permission_ids: Mutex<HashMap<String, u64>>,
+    pending_permission_ids: Mutex<HashMap<String, PendingPermission>>,
     last_session_update_at: Mutex<Option<Instant>>,
     plan_mode: Mutex<bool>,
     permission_mode: Mutex<PermissionMode>,
@@ -787,23 +794,37 @@ fn describe_rpc_error(response: &JsonRpcResponse) -> String {
     }
 }
 
-fn is_already_in_plan_mode_error(response: &JsonRpcResponse) -> bool {
-    response
-        .error
-        .as_ref()
-        .and_then(|error| {
-            error
-                .data
-                .as_ref()
-                .and_then(|data| {
-                    data.get("details")
-                        .and_then(Value::as_str)
-                        .or_else(|| data.as_str())
-                })
-                .or(error.message.as_deref())
-        })
-        .map(|details| details.trim().eq_ignore_ascii_case("Already in plan mode"))
-        .unwrap_or(false)
+fn rpc_error_details(response: &JsonRpcResponse) -> Option<&str> {
+    response.error.as_ref().and_then(|error| {
+        error
+            .data
+            .as_ref()
+            .and_then(|data| {
+                data.get("details")
+                    .and_then(Value::as_str)
+                    .or_else(|| data.as_str())
+            })
+            .or(error.message.as_deref())
+    })
+}
+
+/// Kimi CLI returns -32603 / "Already in {mode} mode" when `session/set_mode`
+/// repeats the active mode. Treat that as an idempotent no-op success.
+fn is_already_in_target_mode_error(response: &JsonRpcResponse, mode_id: &str) -> bool {
+    let Some(details) = rpc_error_details(response) else {
+        return false;
+    };
+    let normalized = details.trim().to_ascii_lowercase();
+    let prefix = "already in ";
+    let suffix = " mode";
+    if !normalized.starts_with(prefix) || !normalized.ends_with(suffix) {
+        return false;
+    }
+    let inner = &normalized[prefix.len()..normalized.len() - suffix.len()];
+    let mode = mode_id.trim().to_ascii_lowercase();
+    inner == mode
+        || (mode == "default" && inner == "manual")
+        || (mode == "manual" && inner == "default")
 }
 
 async fn resolve_session_cwd(app: &AppHandle, session_id: &str) -> Result<PathBuf, String> {
@@ -923,7 +944,7 @@ pub(crate) async fn ensure_acp_authenticated(rpc: &mut AcpRpcSession) -> Result<
 
     if is_auth_required_response(&authenticate) || !is_authenticated_response(&authenticate) {
         return Err(
-            "Kimi Code rejected the configured provider credentials. Check the selected provider in config.toml, then retry."
+            "Kimi Code rejected the configured provider credentials. Check config.toml / login state, then retry. If you use a VPN, confirm the network is reachable."
                 .to_string(),
         );
     }
@@ -1314,62 +1335,37 @@ async fn handle_set_plan_mode(
     let enabled = mode_enabled_from_params(&params)?;
     ensure_mode_change_idle(worker)?;
     let _mode_guard = worker.mode_ops.lock().await;
+
+    // Idempotent: skip ACP when the worker already mirrors the desired plan bit.
+    if *worker.plan_mode.lock().unwrap() == enabled {
+        emit_mode_response(app, worker, id);
+        emit_mode_status_wire(app, worker);
+        return Ok(());
+    }
+
     let permission_mode = *worker.permission_mode.lock().unwrap();
+    let mode_id = acp_mode_id_for_plan(enabled, permission_mode);
 
     let response = {
         let rpc = active_worker_rpc(worker)?;
-        let mut response = rpc
-            .request(
-                "session/set_mode",
-                json!({
-                    "sessionId": worker.session_id,
-                    "modeId": acp_mode_id_for_plan(enabled, permission_mode),
-                }),
-            )
-            .await?;
-
-        // Kimi Code CLI 0.27.0 restores persisted plan state while its ACP
-        // session/resume response still advertises `default`. Re-selecting
-        // Plan then returns -32603 / "Already in plan mode" before ACP can
-        // apply the matching manual permission. Cycle through default so the
-        // requested ACP mode is applied completely instead of swallowing a
-        // partially-satisfied mode transition.
-        if enabled && is_already_in_plan_mode_error(&response) {
-            let reset = rpc
-                .request(
-                    "session/set_mode",
-                    json!({
-                        "sessionId": worker.session_id,
-                        "modeId": acp_mode_id_for_plan(false, permission_mode),
-                    }),
-                )
-                .await?;
-            if reset.error.is_some() {
-                return Err(format!(
-                    "ACP session/set_mode recovery failed while resetting Plan: {}",
-                    describe_rpc_error(&reset)
-                ));
-            }
-
-            response = rpc
-                .request(
-                    "session/set_mode",
-                    json!({
-                        "sessionId": worker.session_id,
-                        "modeId": acp_mode_id_for_plan(true, permission_mode),
-                    }),
-                )
-                .await?;
-        }
-
-        response
+        rpc.request(
+            "session/set_mode",
+            json!({
+                "sessionId": worker.session_id,
+                "modeId": mode_id,
+            }),
+        )
+        .await?
     };
 
     if response.error.is_some() {
-        return Err(format!(
-            "ACP session/set_mode failed: {}",
-            describe_rpc_error(&response)
-        ));
+        // CLI already in the target mode — treat as success and sync local state.
+        if !is_already_in_target_mode_error(&response, mode_id) {
+            return Err(format!(
+                "ACP session/set_mode failed: {}",
+                describe_rpc_error(&response)
+            ));
+        }
     }
 
     *worker.plan_mode.lock().unwrap() = enabled;
@@ -1395,29 +1391,32 @@ async fn handle_set_permission_mode(
         return Ok(());
     }
 
-    // Commit desired permission before ACP RPCs so a concurrent plan enable
-    // (Already-in-plan recovery) snapshots Auto instead of stale Manual.
+    // Commit desired permission before ACP RPCs so concurrent readers see the
+    // intended mode even while set_mode is in flight.
     *worker.permission_mode.lock().unwrap() = next_mode;
     let plan_mode = *worker.plan_mode.lock().unwrap();
-    let response = {
+    let permission_mode_id = next_mode.acp_mode_id();
+    {
         let rpc = active_worker_rpc(worker)?;
-        let permission_response = rpc
+        let permission_response = match rpc
             .request(
                 "session/set_mode",
                 json!({
                     "sessionId": worker.session_id,
-                    "modeId": next_mode.acp_mode_id(),
+                    "modeId": permission_mode_id,
                 }),
             )
-            .await;
-        let permission_response = match permission_response {
+            .await
+        {
             Ok(response) => response,
             Err(err) => {
                 *worker.permission_mode.lock().unwrap() = previous_mode;
                 return Err(err);
             }
         };
-        if permission_response.error.is_some() {
+        if permission_response.error.is_some()
+            && !is_already_in_target_mode_error(&permission_response, permission_mode_id)
+        {
             *worker.permission_mode.lock().unwrap() = previous_mode;
             return Err(format!(
                 "ACP session/set_mode failed: {}",
@@ -1426,7 +1425,7 @@ async fn handle_set_permission_mode(
         }
 
         if plan_mode {
-            match rpc
+            let plan_response = match rpc
                 .request(
                     "session/set_mode",
                     json!({
@@ -1441,18 +1440,17 @@ async fn handle_set_permission_mode(
                     *worker.permission_mode.lock().unwrap() = previous_mode;
                     return Err(err);
                 }
+            };
+            if plan_response.error.is_some()
+                && !is_already_in_target_mode_error(&plan_response, "plan")
+            {
+                *worker.permission_mode.lock().unwrap() = previous_mode;
+                return Err(format!(
+                    "ACP session/set_mode failed while restoring Plan: {}",
+                    describe_rpc_error(&plan_response)
+                ));
             }
-        } else {
-            permission_response
         }
-    };
-
-    if response.error.is_some() {
-        *worker.permission_mode.lock().unwrap() = previous_mode;
-        return Err(format!(
-            "ACP session/set_mode failed while restoring Plan: {}",
-            describe_rpc_error(&response)
-        ));
     }
 
     emit_mode_response(app, worker, id);
@@ -1783,12 +1781,12 @@ async fn handle_permission_response(
             _ => value.to_string(),
         })
         .unwrap_or_default();
-    let acp_request_id = worker
+    let acp_permission = worker
         .pending_permission_ids
         .lock()
         .unwrap()
         .remove(&wire_id);
-    let Some(acp_request_id) = acp_request_id else {
+    let Some(acp_permission) = acp_permission else {
         // Question answers share this result path; missing mapping used to no-op and hang the turn.
         if result.and_then(|v| v.get("answers")).is_some() {
             return Err(format!(
@@ -1797,9 +1795,12 @@ async fn handle_permission_response(
         }
         return Ok(());
     };
-    let outcome = legacy_approval_result_to_acp_outcome(result.unwrap_or(&Value::Null));
+    let outcome = legacy_approval_result_to_acp_outcome_with_options(
+        result.unwrap_or(&Value::Null),
+        &acp_permission.options,
+    );
     let rpc = active_worker_rpc(worker)?;
-    rpc.respond(acp_request_id, outcome)?;
+    rpc.respond(acp_permission.acp_request_id, outcome)?;
     Ok(())
 }
 
@@ -2069,14 +2070,16 @@ fn handle_acp_reverse_request(
 ) -> Result<(), String> {
     match method {
         "session/request_permission" => {
-            if let Some((wire_message, wire_id)) =
+            if let Some((wire_message, wire_id, options)) =
                 acp_permission_to_legacy_request(request_id, params)
             {
-                worker
-                    .pending_permission_ids
-                    .lock()
-                    .unwrap()
-                    .insert(wire_id, request_id);
+                worker.pending_permission_ids.lock().unwrap().insert(
+                    wire_id,
+                    PendingPermission {
+                        acp_request_id: request_id,
+                        options,
+                    },
+                );
                 emit_wire_message(app, &worker.session_id, wire_message);
             } else {
                 eprintln!(
@@ -2497,20 +2500,24 @@ mod tests {
         assert!(!is_auth_required_response(&response));
     }
 
-    #[test]
-    fn detects_kimi_already_in_plan_mode_error() {
-        let response = JsonRpcResponse {
+    fn already_in_mode_response(details: &str) -> JsonRpcResponse {
+        JsonRpcResponse {
             id: Some(4),
             result: None,
             error: Some(JsonRpcError {
                 code: Some(json!(-32603)),
                 message: Some("Internal error".to_string()),
-                data: Some(json!({ "details": "Already in plan mode" })),
+                data: Some(json!({ "details": details })),
             }),
             method: None,
-        };
+        }
+    }
 
-        assert!(is_already_in_plan_mode_error(&response));
+    #[test]
+    fn detects_kimi_already_in_plan_mode_error() {
+        let response = already_in_mode_response("Already in plan mode");
+
+        assert!(is_already_in_target_mode_error(&response, "plan"));
         assert_eq!(
             describe_rpc_error(&response),
             "code=-32603 message=Internal error details=Already in plan mode"
@@ -2518,19 +2525,41 @@ mod tests {
     }
 
     #[test]
-    fn does_not_treat_other_internal_errors_as_idempotent_plan_success() {
-        let response = JsonRpcResponse {
-            id: Some(4),
-            result: None,
-            error: Some(JsonRpcError {
-                code: Some(json!(-32603)),
-                message: Some("Internal error".to_string()),
-                data: Some(json!({ "details": "Session is busy" })),
-            }),
-            method: None,
-        };
+    fn detects_symmetric_already_in_permission_mode_errors() {
+        assert!(is_already_in_target_mode_error(
+            &already_in_mode_response("Already in auto mode"),
+            "auto"
+        ));
+        assert!(is_already_in_target_mode_error(
+            &already_in_mode_response("Already in yolo mode"),
+            "yolo"
+        ));
+        assert!(is_already_in_target_mode_error(
+            &already_in_mode_response("Already in default mode"),
+            "default"
+        ));
+        // Manual maps to ACP `default`; accept either wording.
+        assert!(is_already_in_target_mode_error(
+            &already_in_mode_response("Already in manual mode"),
+            "default"
+        ));
+        assert!(is_already_in_target_mode_error(
+            &already_in_mode_response("Already in default mode"),
+            "manual"
+        ));
+        // Wrong target must not match.
+        assert!(!is_already_in_target_mode_error(
+            &already_in_mode_response("Already in plan mode"),
+            "auto"
+        ));
+    }
 
-        assert!(!is_already_in_plan_mode_error(&response));
+    #[test]
+    fn does_not_treat_other_internal_errors_as_idempotent_plan_success() {
+        let response = already_in_mode_response("Session is busy");
+
+        assert!(!is_already_in_target_mode_error(&response, "plan"));
+        assert!(!is_already_in_target_mode_error(&response, "auto"));
     }
 
     #[test]

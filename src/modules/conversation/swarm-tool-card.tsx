@@ -62,11 +62,17 @@ function phaseTextClass(phase: SwarmPhase): string {
 }
 
 function MemberRow({ row }: { row: SwarmCardRow }) {
-  const [open, setOpen] = useState(false);
+  const live = row.phase === "working" || row.phase === "suspended" || row.phase === "queued";
+  const [open, setOpen] = useState(live && Boolean(row.activity || row.body));
   return (
-    <div className={cn("border-b border-line/70 last:border-b-0", open && "bg-background/60")}>
+    <div
+      data-slot="swarm-member-row"
+      data-phase={row.phase}
+      className={cn("border-b border-line/70 last:border-b-0", open && "bg-background/60")}
+    >
       <button
         type="button"
+        aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className="flex w-full min-h-8 items-center gap-2 px-2.5 text-left text-[12px] hover:bg-hover"
       >
@@ -89,7 +95,7 @@ function MemberRow({ row }: { row: SwarmCardRow }) {
       </button>
       <Expandable open={open}>
         <div className="whitespace-pre-wrap break-words px-2.5 pb-2.5 pl-[31px] font-mono text-[10.5px] leading-relaxed text-muted">
-          {row.body || "（无输出）"}
+          {row.body || row.activity || "（无输出）"}
         </div>
       </Expandable>
     </div>
@@ -123,15 +129,21 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
   const total = rows.length || input.itemCount || 0;
   const done = counts.completed + counts.failed;
   const inProgress = counts.working + counts.suspended + counts.queued;
+  // ToolResult can arrive before TaskCreated members are linked. Do not treat an
+  // empty swarm as "all done" — that flashes a checkmark at spawn time.
+  const settled =
+    !running &&
+    inProgress === 0 &&
+    (result != null || (rows.length > 0 && done === rows.length));
   const aggregateError =
     !running &&
     (denied ||
-      toolCall.isError ||
-      (result?.failed ?? 0) > 0 ||
-      (result?.aborted ?? 0) > 0);
-  const aggregateOk = !running && !aggregateError && !denied;
+      Boolean(toolCall.isError) ||
+      (settled && ((result?.failed ?? 0) > 0 || (result?.aborted ?? 0) > 0)));
+  const aggregateOk = settled && !aggregateError && !denied;
+  const waitingForMembers = !running && !settled && !denied && !toolCall.isError;
 
-  const [open, setOpen] = useState(running || inProgress > 0 || denied);
+  const [open, setOpen] = useState(running || inProgress > 0 || denied || waitingForMembers);
 
   const segments = PHASE_ORDER.map(({ phase, barClass, legendClass }) => ({
     phase,
@@ -185,7 +197,7 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
           {done} / {total}
         </span>
         <span className="inline-flex shrink-0 items-center">
-          {running || inProgress > 0 ? (
+          {running || inProgress > 0 || waitingForMembers ? (
             <StatusDot status="running" />
           ) : aggregateError ? (
             <X size={12} strokeWidth={1.75} className="text-danger" />
@@ -215,7 +227,7 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
               <span className="font-mono text-[10.5px] text-muted">
                 {denied
                   ? "已拒绝 / 未执行"
-                  : running || inProgress > 0
+                  : running || inProgress > 0 || waitingForMembers
                     ? inProgress > 0
                       ? `${inProgress} 个进行中`
                       : "进行中"

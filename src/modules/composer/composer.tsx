@@ -11,10 +11,12 @@ import {
 } from "lucide-react";
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ClipboardEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { toast } from "sonner";
@@ -32,6 +34,11 @@ import {
 } from "./file-mentions";
 import { ModelPicker } from "./model-picker";
 import { useFileMentions } from "./use-file-mentions";
+
+/** ~2 lines at 14px / 1.55 leading */
+const TEXTAREA_MIN_HEIGHT = 44;
+/** Cap auto-grow and manual resize; overflow scrolls beyond this. */
+const TEXTAREA_MAX_HEIGHT = 240;
 
 export type QueuedPrompt = {
   id: string;
@@ -104,6 +111,9 @@ export function Composer({
   const [activeCommand, setActiveCommand] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [textareaHeight, setTextareaHeight] = useState(TEXTAREA_MIN_HEIGHT);
+  /** User-dragged floor; auto-grow may exceed this up to MAX. */
+  const manualFloorRef = useRef(TEXTAREA_MIN_HEIGHT);
   const fileMentions = useFileMentions({
     text: draft,
     setText: onDraftChange,
@@ -129,6 +139,55 @@ export function Composer({
 
   const closeCommandMenu = () => {
     setCommandMenuOpen(false);
+  };
+
+  const syncTextareaHeight = () => {
+    const node = textareaRef.current;
+    if (!node) return;
+    // Collapse to min so scrollHeight reflects content, not the previous box.
+    node.style.height = `${TEXTAREA_MIN_HEIGHT}px`;
+    const contentHeight = node.scrollHeight;
+    const next = Math.min(
+      Math.max(contentHeight, manualFloorRef.current, TEXTAREA_MIN_HEIGHT),
+      TEXTAREA_MAX_HEIGHT,
+    );
+    node.style.height = `${next}px`;
+    setTextareaHeight(next);
+  };
+
+  useLayoutEffect(() => {
+    syncTextareaHeight();
+  }, [draft]);
+
+  const onResizePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    const startY = event.clientY;
+    const startHeight = textareaHeight;
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const delta = startY - moveEvent.clientY;
+      const next = Math.min(
+        Math.max(startHeight + delta, TEXTAREA_MIN_HEIGHT),
+        TEXTAREA_MAX_HEIGHT,
+      );
+      manualFloorRef.current = next;
+      setTextareaHeight(next);
+    };
+
+    const onUp = (upEvent: PointerEvent) => {
+      handle.releasePointerCapture(upEvent.pointerId);
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      // Snap up if content needs more room than the dragged floor.
+      syncTextareaHeight();
+    };
+
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
   };
 
   const selectCommand = (command: SlashCommandDef) => {
@@ -269,11 +328,23 @@ export function Composer({
   return (
     <div
       className={cn(
-        "relative rounded-r3 border bg-elevated px-3 pb-2 pt-3 shadow-pop transition-colors focus-within:border-line-strong",
+        "relative min-w-0 rounded-r3 border bg-elevated px-3 pb-2 pt-3 shadow-pop transition-colors focus-within:border-line-strong",
         planMode ? "border-dashed border-bright/40" : "border-line-strong",
         dragActive && "border-bright bg-active/40",
       )}
     >
+      <div
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="调整输入框高度"
+        aria-valuemin={TEXTAREA_MIN_HEIGHT}
+        aria-valuemax={TEXTAREA_MAX_HEIGHT}
+        aria-valuenow={textareaHeight}
+        onPointerDown={onResizePointerDown}
+        className="absolute inset-x-0 top-0 z-20 flex h-3 cursor-ns-resize touch-none items-center justify-center"
+      >
+        <div className="h-0.5 w-8 rounded-full bg-line-strong/70 transition-colors hover:bg-bright/50" />
+      </div>
       {dragActive && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-r3 bg-elevated/80 text-[13px] text-bright">
           松开以插入文件路径
@@ -318,7 +389,7 @@ export function Composer({
       {commandMenuOpen && (
         <div
           ref={commandMenuRef}
-          className="absolute bottom-[3.1rem] left-3 right-3 z-30 max-h-64 overflow-y-auto rounded-r2 border border-line-strong bg-elevated p-1 shadow-pop"
+          className="absolute bottom-[calc(100%+8px)] left-3 right-3 z-30 max-h-64 overflow-y-auto rounded-r2 border border-line-strong bg-elevated p-1 shadow-pop"
         >
           {visibleCommands.length === 0 ? (
             <p className="p-3 text-center text-[11px] text-faint">没有匹配的命令</p>
@@ -350,7 +421,7 @@ export function Composer({
           ref={mentionMenuRef}
           role="listbox"
           aria-label="文件引用"
-          className="absolute bottom-[3.1rem] left-3 right-3 z-30 max-h-64 overflow-y-auto rounded-r2 border border-line-strong bg-elevated p-1 shadow-pop"
+          className="absolute bottom-[calc(100%+8px)] left-3 right-3 z-30 max-h-64 overflow-y-auto rounded-r2 border border-line-strong bg-elevated p-1 shadow-pop"
         >
           {fileMentions.status === "loading" && fileMentions.options.length === 0 ? (
             <p className="flex items-center justify-center gap-2 p-3 text-[11px] text-faint">
@@ -470,7 +541,8 @@ export function Composer({
             submit();
           }
         }}
-        rows={2}
+        rows={1}
+        style={{ height: textareaHeight }}
         placeholder={
           sendDisabled
             ? "连接已断开，请先重新连接…"
@@ -478,78 +550,82 @@ export function Composer({
               ? "继续输入；发送后会加入队列…"
               : "给 Kimi 布置任务…（@ 文件 / 命令）"
         }
-        className="max-h-40 w-full resize-none bg-transparent px-1 text-[14px] leading-[1.55] text-foreground outline-none placeholder:text-faint disabled:cursor-not-allowed disabled:opacity-60"
+        className="w-full resize-none overflow-y-auto bg-transparent px-1 text-[14px] leading-[1.55] text-foreground outline-none placeholder:text-faint disabled:cursor-not-allowed disabled:opacity-60"
       />
-      <div className="mt-1.5 flex items-center gap-0.5">
-        <button
-          type="button"
-          aria-label="上传附件"
-          disabled={uploading || sendDisabled}
-          onClick={onPickFiles}
-          className="flex h-7 w-7 items-center justify-center rounded-r1 text-muted transition-colors hover:bg-hover hover:text-foreground disabled:opacity-50"
-        >
-          {uploading ? (
-            <LoaderCircle size={14} className="animate-spin" />
-          ) : (
-            <Plus size={14} strokeWidth={1.5} />
-          )}
-        </button>
-        <button
-          type="button"
-          disabled={sendDisabled}
-          onClick={() => {
-            fileMentions.closeMenu();
-            onDraftChange(draft.startsWith("/") ? draft : "/");
-            setCommandMenuOpen(true);
-            requestAnimationFrame(() => textareaRef.current?.focus());
-          }}
-          className="flex h-7 items-center gap-1 rounded-r1 px-1.5 font-mono text-[11px] text-muted transition-colors hover:bg-hover hover:text-foreground disabled:opacity-50"
-        >
-          <SquareTerminal size={13} strokeWidth={1.5} /> 命令
-        </button>
-        <button
-          type="button"
-          onClick={onOpenContext}
-          className="flex h-7 items-center gap-1 rounded-r1 px-1.5 font-mono text-[11px] text-muted transition-colors hover:bg-hover hover:text-foreground"
-        >
-          <FileText size={13} strokeWidth={1.5} /> 文件
-        </button>
-        {planMode && (
-          <span className="ml-1 rounded bg-bright px-1.5 py-0.5 font-mono text-[9.5px] font-semibold tracking-[0.12em] text-background">
-            PLAN
-          </span>
-        )}
-        <ModelPicker
-          models={models}
-          selectedModel={selectedModel}
-          thinkingEnabled={thinkingEnabled}
-          thinkingEffort={thinkingEffort}
-          disabled={modelControlsDisabled || sendDisabled}
-          updating={modelUpdating}
-          onSelectModel={onSelectModel}
-          onToggleThinking={onToggleThinking}
-          onSelectThinkingEffort={onSelectThinkingEffort}
-          onManageConfig={onManageConfig}
-        />
-        {canCancel && (
+      <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-0.5">
+        <div className="flex min-w-0 flex-wrap items-center gap-0.5">
           <button
             type="button"
-            aria-label="停止生成"
-            onClick={onCancel}
-            className="flex size-7 items-center justify-center rounded-full border border-line-strong text-muted hover:text-foreground"
+            aria-label="上传附件"
+            disabled={uploading || sendDisabled}
+            onClick={onPickFiles}
+            className="flex h-7 w-7 items-center justify-center rounded-r1 text-muted transition-colors hover:bg-hover hover:text-foreground disabled:opacity-50"
           >
-            <Square size={11} strokeWidth={1.5} />
+            {uploading ? (
+              <LoaderCircle size={14} className="animate-spin" />
+            ) : (
+              <Plus size={14} strokeWidth={1.5} />
+            )}
           </button>
-        )}
-        <button
-          type="button"
-          aria-label={busy ? "加入发送队列" : "发送"}
-          onClick={() => submit()}
-          disabled={!draft.trim() || uploading || sendDisabled}
-          className="flex size-7 items-center justify-center rounded-full bg-bright text-background transition-opacity hover:opacity-85 disabled:opacity-40"
-        >
-          <ArrowUp size={13} strokeWidth={2} />
-        </button>
+          <button
+            type="button"
+            disabled={sendDisabled}
+            onClick={() => {
+              fileMentions.closeMenu();
+              onDraftChange(draft.startsWith("/") ? draft : "/");
+              setCommandMenuOpen(true);
+              requestAnimationFrame(() => textareaRef.current?.focus());
+            }}
+            className="flex h-7 items-center gap-1 rounded-r1 px-1.5 font-mono text-[11px] text-muted transition-colors hover:bg-hover hover:text-foreground disabled:opacity-50"
+          >
+            <SquareTerminal size={13} strokeWidth={1.5} /> 命令
+          </button>
+          <button
+            type="button"
+            onClick={onOpenContext}
+            className="flex h-7 items-center gap-1 rounded-r1 px-1.5 font-mono text-[11px] text-muted transition-colors hover:bg-hover hover:text-foreground"
+          >
+            <FileText size={13} strokeWidth={1.5} /> 文件
+          </button>
+          {planMode && (
+            <span className="ml-1 rounded bg-bright px-1.5 py-0.5 font-mono text-[9.5px] font-semibold tracking-[0.12em] text-background">
+              PLAN
+            </span>
+          )}
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          <ModelPicker
+            models={models}
+            selectedModel={selectedModel}
+            thinkingEnabled={thinkingEnabled}
+            thinkingEffort={thinkingEffort}
+            disabled={modelControlsDisabled || sendDisabled}
+            updating={modelUpdating}
+            onSelectModel={onSelectModel}
+            onToggleThinking={onToggleThinking}
+            onSelectThinkingEffort={onSelectThinkingEffort}
+            onManageConfig={onManageConfig}
+          />
+          {canCancel && (
+            <button
+              type="button"
+              aria-label="停止生成"
+              onClick={onCancel}
+              className="flex size-7 items-center justify-center rounded-full border border-line-strong text-muted hover:text-foreground"
+            >
+              <Square size={11} strokeWidth={1.5} />
+            </button>
+          )}
+          <button
+            type="button"
+            aria-label={busy ? "加入发送队列" : "发送"}
+            onClick={() => submit()}
+            disabled={!draft.trim() || uploading || sendDisabled}
+            className="flex size-7 items-center justify-center rounded-full bg-bright text-background transition-opacity hover:opacity-85 disabled:opacity-40"
+          >
+            <ArrowUp size={13} strokeWidth={2} />
+          </button>
+        </div>
       </div>
     </div>
   );
