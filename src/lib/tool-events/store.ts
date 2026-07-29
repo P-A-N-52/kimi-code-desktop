@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { GoalItem } from "@/lib/goal";
 import { isTodoTool, isWriteTool } from "./tool-registry";
 
 export type TodoItem = {
@@ -6,11 +7,7 @@ export type TodoItem = {
   status: "pending" | "in_progress" | "done";
 };
 
-export type GoalItem = {
-  objective: string;
-  completionCriterion?: string;
-  status: "active" | "complete" | "blocked";
-};
+export type { GoalItem } from "@/lib/goal";
 
 type ToolEventsState = {
   /** Files written during the current session/turn */
@@ -96,6 +93,15 @@ export function handleToolResult(
           ? { completionCriterion: args.completionCriterion }
           : {}),
         status: "active",
+        turnsUsed: 0,
+        tokensUsed: 0,
+        wallClockMs: 0,
+        budget: {
+          tokenBudgetReached: false,
+          turnBudgetReached: false,
+          wallClockBudgetReached: false,
+          overBudget: false,
+        },
       });
     } else if (
       presentation === "updategoal" &&
@@ -103,12 +109,47 @@ export function handleToolResult(
     ) {
       const currentGoal = useToolEventsStore.getState().currentGoal;
       if (currentGoal) {
+        const nextStatus =
+          args.status === "paused" ||
+          args.status === "blocked" ||
+          args.status === "complete"
+            ? args.status
+            : "active";
         setCurrentGoal({
           ...currentGoal,
-          status:
-            args.status === "complete" || args.status === "blocked"
-              ? args.status
-              : "active",
+          status: nextStatus,
+          ...(typeof args.reason === "string" && nextStatus !== "active"
+            ? { terminalReason: args.reason }
+            : nextStatus === "active"
+              ? { terminalReason: undefined }
+              : {}),
+        });
+      }
+    } else if (presentation === "setgoalbudget") {
+      const currentGoal = useToolEventsStore.getState().currentGoal;
+      if (currentGoal) {
+        const tokenBudget =
+          typeof args.tokenBudget === "number"
+            ? args.tokenBudget
+            : args.token_budget;
+        const turnBudget =
+          typeof args.turnBudget === "number"
+            ? args.turnBudget
+            : args.turn_budget;
+        const wallClockBudgetMs =
+          typeof args.wallClockBudgetMs === "number"
+            ? args.wallClockBudgetMs
+            : args.wall_clock_budget_ms;
+        setCurrentGoal({
+          ...currentGoal,
+          budget: {
+            ...currentGoal.budget,
+            ...(typeof tokenBudget === "number" ? { tokenBudget } : {}),
+            ...(typeof turnBudget === "number" ? { turnBudget } : {}),
+            ...(typeof wallClockBudgetMs === "number"
+              ? { wallClockBudgetMs }
+              : {}),
+          },
         });
       }
     }

@@ -117,12 +117,17 @@ jobs:
             throw "Release artifacts are incomplete."
           }
 
+          $notesPath = Join-Path $PWD "docs\releases\$tag-notes.md"
           $releaseArgs = @(
             "release", "create", $tag,
             "--target", $env:GITHUB_SHA,
-            "--title", "Kimi Code $tag",
-            "--notes", "Windows MSI release for Kimi Code Desktop $tag."
+            "--title", "Kimi Code $tag"
           )
+          if (Test-Path $notesPath) {
+            $releaseArgs += @("--notes-file", $notesPath)
+          } else {
+            $releaseArgs += @("--notes", "Windows MSI release for Kimi Code Desktop $tag.")
+          }
           if ($env:INPUT_PRERELEASE -eq "true") {
             $releaseArgs += "--prerelease"
           }
@@ -133,8 +138,12 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               throw "Failed to create GitHub release $tag."
             }
+          } elseif (Test-Path $notesPath) {
+            gh release edit $tag --title "Kimi Code $tag" --notes-file $notesPath
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to update GitHub release notes for $tag."
+            }
           }
-
           $filePaths = @($files | ForEach-Object { $_.FullName })
           gh release upload $tag @filePaths --clobber
           if ($LASTEXITCODE -ne 0) {

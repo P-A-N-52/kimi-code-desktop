@@ -16,14 +16,13 @@ import {
   sendNotification,
   showWindow,
 } from "@/lib/tauri-api";
+import { useToolEventsStore } from "@/lib/tool-events/store";
 import { ConversationView } from "@/modules/conversation/conversation-view";
+import { GoalCancelConfirmation } from "@/modules/conversation/goal-cancel-confirmation";
 import { ReadinessOverlay } from "@/modules/readiness/readiness-overlay";
 import { AppSidebar } from "@/modules/sessions/app-sidebar";
 import { SettingsDialog, type SettingsTab } from "@/modules/settings/settings-dialog";
-import {
-  shouldAutoApprove,
-  type SessionModeDraft,
-} from "@/modules/statusbar/permission-mode";
+import { type SessionModeDraft, shouldAutoApprove } from "@/modules/statusbar/permission-mode";
 import { Topbar } from "@/modules/topbar/topbar";
 import { ChangesPanel, type WorkspaceTab } from "@/modules/workspace/changes-panel";
 import {
@@ -33,6 +32,12 @@ import {
 } from "@/modules/workspace/derive-changes";
 import { AppShell } from "./app-shell";
 import { NewSessionView } from "./new-session-view";
+
+type GoalCancelTarget = {
+  sessionId: string;
+  goalId?: string;
+  objective: string;
+};
 
 /** Wait for YOLO auto-approve / quick resolve before surfacing a system toast. */
 const APPROVAL_NOTIFICATION_DELAY_MS = 400;
@@ -61,6 +66,10 @@ export default function App() {
   const [runtimeCheckError, setRuntimeCheckError] = useState<string | null>(null);
   const [isCheckingRuntime, setIsCheckingRuntime] = useState(() => isTauri());
   const [hasAcknowledgedRuntime, setHasAcknowledgedRuntime] = useState(() => !isTauri());
+  const [goalCancelOpen, setGoalCancelOpen] = useState(false);
+  const [goalCancelPending, setGoalCancelPending] = useState(false);
+  const [goalCancelTarget, setGoalCancelTarget] = useState<GoalCancelTarget | null>(null);
+  const currentGoal = useToolEventsStore((state) => state.currentGoal);
 
   const runRuntimeReadinessCheck = useCallback(async () => {
     if (!isTauri()) {
@@ -157,15 +166,9 @@ export default function App() {
       }
       const classified = classifyIdleReason(reason);
       if (!classified.isTurnComplete) return;
-      if (
-        isTauri() &&
-        !document.hasFocus() &&
-        classified.wouldNotifySuccess
-      ) {
+      if (isTauri() && !document.hasFocus() && classified.wouldNotifySuccess) {
         const body = classified.isCancelled ? "任务已取消" : "任务已完成";
-        const completedSession = sessions.find(
-          (session) => session.sessionId === status.sessionId,
-        );
+        const completedSession = sessions.find((session) => session.sessionId === status.sessionId);
         void sendNotification(completedSession?.title || "Kimi Code", body).catch(() => {});
       }
       refreshSession(status.sessionId);
@@ -186,6 +189,89 @@ export default function App() {
   });
   const gitDiff = useGitDiffStats(selectedSessionId || null);
 
+  const handleGoalControl = useCallback(
+    async (action: "pause" | "resume" | "cancel") => {
+      if (action === "cancel") {
+        if (!selectedSessionId || !currentGoal || currentGoal.status === "complete") return;
+        const target: GoalCancelTarget = {
+          sessionId: selectedSessionId,
+          goalId: currentGoal.goalId,
+          objective: currentGoal.objective,
+        };
+        setGoalCancelTarget(target);
+        window.dispatchEvent(
+          new CustomEvent("kimi:goal-cancel-pending", {
+            detail: { sessionId: target.sessionId },
+          }),
+        );
+        setGoalCancelOpen(true);
+        return;
+      }
+      const outcome = await stream.controlGoal(action);
+      if (outcome?.error) toast.error(outcome.content);
+    },
+    [currentGoal, selectedSessionId, stream.controlGoal],
+  );
+
+  const dismissGoalCancel = useCallback(() => {
+    const target = goalCancelTarget;
+    setGoalCancelOpen(false);
+    setGoalCancelTarget(null);
+    if (target) {
+      window.dispatchEvent(
+        new CustomEvent("kimi:goal-cancel-dismissed", {
+          detail: { sessionId: target.sessionId },
+        }),
+      );
+    }
+  }, [goalCancelTarget]);
+
+  const handleGoalCancelOpenChange = useCallback(
+    (open: boolean) => {
+      if (open) {
+        setGoalCancelOpen(true);
+      } else if (!goalCancelPending) {
+        dismissGoalCancel();
+      }
+    },
+    [dismissGoalCancel, goalCancelPending],
+  );
+
+  const confirmGoalCancel = useCallback(async () => {
+    const target = goalCancelTarget;
+    if (!target) return;
+    const liveGoal = useToolEventsStore.getState().currentGoal;
+    const sameGoal = target.goalId
+      ? liveGoal?.goalId === target.goalId
+      : liveGoal?.objective === target.objective;
+    if (selectedSessionId !== target.sessionId || !sameGoal) {
+      toast.error("Goal 已变化，请重新操作");
+      dismissGoalCancel();
+      return;
+    }
+
+    setGoalCancelPending(true);
+    try {
+      const outcome = await stream.controlGoal("cancel");
+      if (outcome?.error) {
+        toast.error(outcome.content);
+        return;
+      }
+      window.dispatchEvent(
+        new CustomEvent("kimi:goal-cancelled", {
+          detail: { sessionId: target.sessionId },
+        }),
+      );
+      setGoalCancelOpen(false);
+      setGoalCancelTarget(null);
+    } catch (error) {
+      toast.error("取消 Goal 失败", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setGoalCancelPending(false);
+    }
+  }, [dismissGoalCancel, goalCancelTarget, selectedSessionId, stream.controlGoal]);
   const userClosedPanelRef = useRef(false);
 
   useEffect(() => {
@@ -193,6 +279,9 @@ export default function App() {
     userClosedPanelRef.current = false;
     setPanelOpen(false);
     setWorkspaceTab("changes");
+    setGoalCancelOpen(false);
+    setGoalCancelPending(false);
+    setGoalCancelTarget(null);
   }, [selectedSessionId]);
 
   const semanticChanges = useMemo(() => deriveChanges(stream.messages), [stream.messages]);
@@ -438,6 +527,7 @@ export default function App() {
             getFile={getSessionFile}
             onApproveAll={handleApproveAll}
             onRejectAll={handleRejectAll}
+            onGoalControl={handleGoalControl}
             onClose={handleClosePanel}
           />
         }
@@ -457,6 +547,7 @@ export default function App() {
             pendingFirstAttachments={pendingFirstAttachments}
             pendingFirstModes={pendingFirstModes}
             onPendingFirstMessageSent={handlePendingFirstMessageSent}
+            onGoalControl={handleGoalControl}
           />
         ) : (
           <NewSessionView
@@ -473,6 +564,13 @@ export default function App() {
         open={showSettings}
         onOpenChange={handleSettingsOpenChange}
         initialTab={settingsInitialTab}
+      />
+      <GoalCancelConfirmation
+        open={goalCancelOpen}
+        objective={goalCancelTarget?.objective}
+        pending={goalCancelPending}
+        onOpenChange={handleGoalCancelOpenChange}
+        onConfirm={() => void confirmGoalCancel()}
       />
       <Toaster position="top-right" style={{ fontFamily: "var(--font-sans)" }} />
     </>

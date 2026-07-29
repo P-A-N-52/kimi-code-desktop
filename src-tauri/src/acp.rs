@@ -7,7 +7,7 @@ use crate::acp_translate::{
     translate_acp_lifecycle_notification, translate_session_update, wire_event_message,
 };
 use crate::wire_events::{emit_wire_message, RestartWorkersSummary, RuntimeStatus};
-use crate::{global_config, session_files, session_store};
+use crate::{global_config, goal_queue, goal_store, session_files, session_store};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -27,6 +27,10 @@ const ACP_RPC_TIMEOUT_DEFAULT_SECS: u64 = 120;
 // generic RPC timeout.
 const ACP_PROMPT_TIMEOUT_DEFAULT_SECS: u64 = 3600;
 const ACP_HELP_TIMEOUT: Duration = Duration::from_secs(5);
+const GOAL_BRIDGE_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const GOAL_BRIDGE_HANDOFF_GRACE: Duration = Duration::from_secs(2);
+const GOAL_TERMINAL_QUIET_PERIOD: Duration = Duration::from_secs(2);
+const GOAL_CANCEL_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn acp_rpc_timeout() -> Duration {
     std::env::var("ACP_RPC_TIMEOUT_SECS")
@@ -619,6 +623,141 @@ impl AcpProcessManager {
         Ok(())
     }
 
+    async fn recover_worker_after_failure(
+        &self,
+        app: &AppHandle,
+        expected: &Arc<AcpWorker>,
+        failure: &str,
+    ) -> String {
+        let session_id = expected.session_id.clone();
+        let connection_id = expected.connection_id.lock().unwrap().clone();
+        let removed = {
+            let mut workers = self.inner.workers.lock().unwrap();
+            if workers
+                .get(&session_id)
+                .is_some_and(|current| Arc::ptr_eq(current, expected))
+            {
+                workers.remove(&session_id)
+            } else {
+                None
+            }
+        };
+
+        let Some(removed) = removed else {
+            return format!(
+                "{failure} The affected ACP worker was already replaced or disconnected."
+            );
+        };
+        stop_worker_async(&removed, "failure_recovery").await;
+
+        match self
+            .connect_with_lease(app, session_id, connection_id)
+            .await
+        {
+            Ok(()) => format!("{failure} The ACP worker was reconnected; retry the operation."),
+            Err(reconnect_error) => format!(
+                "{failure} The failed ACP worker was removed, but reconnecting failed: {reconnect_error}"
+            ),
+        }
+    }
+
+    /// Apply the Goal controls that ACP 0.30 does not expose.
+    ///
+    /// A running goal is paused through ACP `session/cancel`, which makes the
+    /// native Goal engine persist `paused`. Resume is completed by the following
+    /// ACP prompt through the native GetGoal/UpdateGoal tools; restarting the
+    /// worker here would normalize `active` back to `paused`. Cancel appends the
+    /// CLI's canonical `goal.clear` because ACP 0.30 exposes no cancel Goal RPC.
+    pub async fn control_goal(
+        &self,
+        app: &AppHandle,
+        session_id: String,
+        action: String,
+    ) -> Result<Option<Value>, String> {
+        if !matches!(action.as_str(), "pause" | "resume" | "cancel") {
+            return Err(format!("Unsupported Goal control: {action}"));
+        }
+
+        let Some(current_goal) = goal_store::session_goal_snapshot(&session_id)? else {
+            return Ok(None);
+        };
+        let current_status = current_goal.get("status").and_then(Value::as_str);
+        if action == "pause" && matches!(current_status, Some("paused" | "blocked")) {
+            return Ok(Some(current_goal));
+        }
+        if action == "resume" {
+            if current_status == Some("active") {
+                return Ok(Some(current_goal));
+            }
+            if current_status == Some("complete") {
+                return Err(
+                    "A completed Goal cannot be resumed; create a new Goal instead.".into(),
+                );
+            }
+        }
+
+        let worker = {
+            let workers = self.inner.workers.lock().unwrap();
+            workers.get(&session_id).cloned()
+        };
+        let connection_id = worker
+            .as_ref()
+            .and_then(|worker| worker.connection_id.lock().unwrap().clone());
+
+        if let Some(worker) = worker.as_ref() {
+            let has_in_flight_prompt = !worker.in_flight_prompt_ids.lock().unwrap().is_empty();
+            if action == "resume" && has_in_flight_prompt {
+                return Err("Cannot resume a Goal while a prompt is still running.".into());
+            }
+            if has_in_flight_prompt {
+                if let Err(error) = handle_cancel(app, worker, None).await {
+                    return Err(self.recover_worker_after_failure(app, worker, &error).await);
+                }
+            }
+        }
+
+        if action == "resume" {
+            // The caller immediately sends a Goal-aware ACP prompt. Its
+            // UpdateGoal tool call resumes the in-memory native Goal service
+            // without tearing down or duplicating the session owner.
+            return Ok(Some(current_goal));
+        }
+
+        let stopped_worker = {
+            let mut workers = self.inner.workers.lock().unwrap();
+            let is_same_worker = worker.as_ref().is_some_and(|expected| {
+                workers
+                    .get(&session_id)
+                    .is_some_and(|actual| Arc::ptr_eq(actual, expected))
+            });
+            if is_same_worker {
+                workers.remove(&session_id)
+            } else {
+                None
+            }
+        };
+        if let Some(stopped) = stopped_worker.as_ref() {
+            stop_worker_async(stopped, "goal_control").await;
+        }
+
+        if action == "cancel" {
+            goal_store::append_clear(&session_id)?;
+        } else if goal_store::session_goal_snapshot(&session_id)?
+            .as_ref()
+            .and_then(|goal| goal.get("status"))
+            .and_then(Value::as_str)
+            == Some("active")
+        {
+            goal_store::append_pause(&session_id)?;
+        }
+
+        if stopped_worker.is_some() {
+            self.connect_with_lease(app, session_id.clone(), connection_id)
+                .await?;
+        }
+        goal_store::session_goal_snapshot(&session_id)
+    }
+
     pub async fn restart_running_workers(
         &self,
         app: &AppHandle,
@@ -707,15 +846,30 @@ impl AcpProcessManager {
             }
             Some("replay") => handle_replay(app, &worker, id).await,
             Some("prompt") => {
-                handle_prompt(
+                let result = handle_prompt(
                     app,
                     &worker,
                     id,
                     parsed.get("params").cloned().unwrap_or(Value::Null),
                 )
-                .await
+                .await;
+                if let Err(error) = result {
+                    let worker_stopped = worker.status.lock().unwrap().state == "stopped";
+                    if worker_stopped {
+                        return Err(self
+                            .recover_worker_after_failure(app, &worker, &error)
+                            .await);
+                    }
+                    return Err(error);
+                }
+                Ok(())
             }
-            Some("cancel") => handle_cancel(app, &worker, id).await,
+            Some("cancel") => match handle_cancel(app, &worker, id).await {
+                Ok(()) => Ok(()),
+                Err(error) => Err(self
+                    .recover_worker_after_failure(app, &worker, &error)
+                    .await),
+            },
             Some("set_plan_mode") => {
                 handle_set_plan_mode(
                     app,
@@ -976,6 +1130,34 @@ fn set_worker_status(
         status.updated_at = now_ms();
     }
     emit_session_status_wire(app, worker, state, seq, reason, detail);
+}
+
+fn set_worker_idle_if_active(
+    app: &AppHandle,
+    worker: &AcpWorker,
+    reason: &str,
+) -> Result<(), String> {
+    active_worker_rpc(worker)?;
+    let seq = record_worker_idle_if_active(worker, reason)?;
+    emit_session_status_wire(app, worker, "idle", seq, Some(reason), None);
+    Ok(())
+}
+
+fn record_worker_idle_if_active(worker: &AcpWorker, reason: &str) -> Result<u64, String> {
+    let mut status = worker.status.lock().unwrap();
+    if !matches!(status.state.as_str(), "ready" | "running" | "busy" | "idle") {
+        return Err(format!(
+            "ACP worker cannot become idle because it is `{}`.",
+            status.state
+        ));
+    }
+    let seq = worker.status_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    status.state = "idle".to_string();
+    status.seq = seq;
+    status.reason = Some(reason.to_string());
+    status.detail = None;
+    status.updated_at = now_ms();
+    Ok(seq)
 }
 
 fn emit_session_status_wire(
@@ -1569,6 +1751,377 @@ async fn wait_for_session_update_quiescence(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GoalPromptExpectation {
+    Start,
+    Resume,
+    Continue,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct GoalBridgeOutcome {
+    history_resync: bool,
+    completed: bool,
+}
+
+fn goal_prompt_expectation(
+    params: &Value,
+    goal_mode: bool,
+    initial_snapshot: &Option<Value>,
+) -> Option<GoalPromptExpectation> {
+    match params.get("goal_action").and_then(Value::as_str) {
+        Some("create" | "replace") => Some(GoalPromptExpectation::Start),
+        Some("resume") => Some(GoalPromptExpectation::Resume),
+
+        _ if goal_status(initial_snapshot) == Some("active") => {
+            Some(GoalPromptExpectation::Continue)
+        }
+        _ if goal_mode => Some(GoalPromptExpectation::Start),
+        _ => None,
+    }
+}
+
+fn goal_id(snapshot: &Option<Value>) -> Option<&str> {
+    snapshot
+        .as_ref()
+        .and_then(|goal| goal.get("goal_id"))
+        .and_then(Value::as_str)
+}
+
+fn goal_handoff_goal_id(
+    expectation: GoalPromptExpectation,
+    initial_snapshot: &Option<Value>,
+    poll: &goal_store::GoalJournalPoll,
+    baseline_record: u64,
+) -> Option<String> {
+    match expectation {
+        GoalPromptExpectation::Start => poll
+            .last_goal_create_record
+            .filter(|record| *record > baseline_record)
+            .and(poll.last_goal_create_id.clone()),
+        GoalPromptExpectation::Resume => {
+            let initial_goal_id = goal_id(initial_snapshot)?;
+            let active_goal_id = poll.last_goal_active_id.as_deref()?;
+            (poll.last_goal_active_record? > baseline_record && active_goal_id == initial_goal_id)
+                .then(|| initial_goal_id.to_string())
+        }
+        GoalPromptExpectation::Continue => (goal_status(initial_snapshot) == Some("active"))
+            .then(|| goal_id(initial_snapshot).map(str::to_string))
+            .flatten(),
+    }
+}
+
+fn goal_terminal_matches_current(
+    poll: &goal_store::GoalJournalPoll,
+    baseline_record: u64,
+    monitored_goal_id: &str,
+    snapshot: &Option<Value>,
+) -> Result<Option<bool>, String> {
+    let expected_terminal_status = if let Some(goal) = snapshot.as_ref() {
+        let current_goal_id = goal
+            .get("goal_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Native Goal snapshot is missing its goal id.".to_string())?;
+        if current_goal_id != monitored_goal_id {
+            return Err(format!(
+                "Native Goal `{monitored_goal_id}` was replaced by `{current_goal_id}` while it was running."
+            ));
+        }
+        match goal.get("status").and_then(Value::as_str) {
+            Some("active") => return Ok(None),
+            Some(status @ ("paused" | "blocked" | "complete")) => status,
+            Some(status) => {
+                return Err(format!(
+                    "Native Goal `{monitored_goal_id}` entered unsupported status `{status}`."
+                ))
+            }
+            None => return Err("Native Goal snapshot is missing its status.".to_string()),
+        }
+    } else {
+        "clear"
+    };
+
+    let terminal_record = poll
+        .last_goal_terminal_record
+        .filter(|record| *record > baseline_record)
+        .ok_or_else(|| {
+            format!(
+                "Native Goal `{monitored_goal_id}` stopped without a new canonical terminal record."
+            )
+        })?;
+    if poll.last_goal_terminal_goal_id.as_deref() != Some(monitored_goal_id)
+        || poll.last_goal_terminal_status.as_deref() != Some(expected_terminal_status)
+    {
+        return Err(format!(
+            "Native Goal `{monitored_goal_id}` terminal record does not match the current Goal snapshot."
+        ));
+    }
+
+    debug_assert!(terminal_record > baseline_record);
+    Ok(Some(poll.last_goal_terminal_requires_closed_step))
+}
+
+fn goal_terminal_is_settled(
+    poll: &goal_store::GoalJournalPoll,
+    baseline_record: u64,
+    monitored_goal_id: &str,
+    snapshot: &Option<Value>,
+) -> Result<bool, String> {
+    let Some(requires_closed_step) =
+        goal_terminal_matches_current(poll, baseline_record, monitored_goal_id, snapshot)?
+    else {
+        return Ok(false);
+    };
+    if !requires_closed_step {
+        return Ok(true);
+    }
+    let Some(terminal_record) = poll
+        .last_goal_terminal_record
+        .filter(|record| *record > baseline_record)
+    else {
+        return Ok(false);
+    };
+    let Some(step_end_record) = poll
+        .last_step_end_record
+        .filter(|record| *record > terminal_record)
+    else {
+        return Ok(false);
+    };
+    if let Some(step_begin_record) = poll
+        .last_step_begin_record
+        .filter(|record| *record > baseline_record)
+    {
+        return Ok(step_end_record >= step_begin_record);
+    }
+    Ok(true)
+}
+
+fn goal_terminal_was_completed(poll: &goal_store::GoalJournalPoll) -> bool {
+    poll.last_goal_terminal_status.as_deref() == Some("complete")
+        || (poll.last_goal_terminal_status.as_deref() == Some("clear")
+            && poll.last_goal_terminal_requires_closed_step)
+}
+
+fn goal_cancel_ack_observed(
+    poll: &goal_store::GoalJournalPoll,
+    baseline_record: u64,
+    monitored_goal_id: &str,
+    snapshot: &Option<Value>,
+) -> Result<bool, String> {
+    let expected_status = match snapshot.as_ref() {
+        Some(goal) => {
+            let current_goal_id = goal
+                .get("goal_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Native Goal snapshot is missing its goal id.".to_string())?;
+            if current_goal_id != monitored_goal_id {
+                return Err(format!(
+                    "Native Goal `{monitored_goal_id}` was replaced by `{current_goal_id}` while cancellation was pending."
+                ));
+            }
+            match goal.get("status").and_then(Value::as_str) {
+                Some(status @ ("paused" | "blocked")) => status,
+                _ => return Ok(false),
+            }
+        }
+        None => "clear",
+    };
+
+    Ok(poll
+        .last_goal_terminal_record
+        .is_some_and(|record| record > baseline_record)
+        && poll.last_goal_terminal_goal_id.as_deref() == Some(monitored_goal_id)
+        && poll.last_goal_terminal_status.as_deref() == Some(expected_status))
+}
+
+fn emit_goal_refresh(app: &AppHandle, session_id: &str) {
+    emit_wire_message(
+        app,
+        session_id,
+        wire_event_message(
+            "StatusUpdate",
+            json!({
+                "context_usage": null,
+                "goal_refresh": true,
+            }),
+        ),
+    );
+}
+
+fn goal_status(snapshot: &Option<Value>) -> Option<&str> {
+    snapshot
+        .as_ref()
+        .and_then(|goal| goal.get("status"))
+        .and_then(Value::as_str)
+}
+
+/// ACP 0.30 resolves `session/prompt` after the first main-agent turn while
+/// Kimi's native Goal driver may still own continuation turns. Keep the
+/// desktop prompt pending until the canonical Goal journal reaches a settled
+/// state, then ask the frontend to atomically replay the persisted history.
+/// Kimi remains the only Goal loop owner; this bridge never synthesizes turns.
+struct GoalBridgeRequest {
+    cursor: goal_store::GoalJournalCursor,
+    baseline_record: u64,
+    expectation: GoalPromptExpectation,
+    initial_snapshot: Option<Value>,
+    upcoming_goal_id: Option<String>,
+    prompt_started_at: Instant,
+}
+
+async fn bridge_native_goal_continuation(
+    app: &AppHandle,
+    worker: &Arc<AcpWorker>,
+    request: GoalBridgeRequest,
+) -> Result<GoalBridgeOutcome, String> {
+    let GoalBridgeRequest {
+        mut cursor,
+        baseline_record,
+        expectation,
+        initial_snapshot,
+        upcoming_goal_id,
+        prompt_started_at,
+    } = request;
+    let mut poll = cursor.poll()?;
+    if poll.truncated || poll.replaced {
+        return Err("Native Goal journal changed while the prompt was running.".to_string());
+    }
+    if poll.saw_goal_record {
+        emit_goal_refresh(app, &worker.session_id);
+    }
+
+    let handoff_started_at = Instant::now();
+    let monitored_goal_id = loop {
+        if let Some(goal_id) =
+            goal_handoff_goal_id(expectation, &initial_snapshot, &poll, baseline_record)
+        {
+            break goal_id;
+        }
+        if handoff_started_at.elapsed() >= GOAL_BRIDGE_HANDOFF_GRACE {
+            let detail = match expectation {
+                GoalPromptExpectation::Start => "Kimi did not create the requested native Goal.",
+                GoalPromptExpectation::Resume => {
+                    "Kimi did not reactivate the same paused native Goal."
+                }
+                GoalPromptExpectation::Continue => "Kimi did not continue the active native Goal.",
+            };
+            return Err(detail.to_string());
+        }
+
+        tokio::time::sleep(GOAL_BRIDGE_POLL_INTERVAL).await;
+        let next = cursor.poll()?;
+        if next.truncated || next.replaced {
+            return Err("Native Goal journal changed while the prompt was running.".to_string());
+        }
+        if next.saw_goal_record {
+            emit_goal_refresh(app, &worker.session_id);
+        }
+        poll = next;
+    };
+
+    if expectation == GoalPromptExpectation::Start {
+        if let Some(queue_id) = upcoming_goal_id.as_deref() {
+            if let Err(error) = goal_queue::consume_started(&worker.session_id, queue_id) {
+                eprintln!(
+                    "[acp] native Goal was created but upcoming Goal `{queue_id}` could not be consumed: {error}"
+                );
+            }
+        }
+    }
+
+    set_worker_status(app, worker, "busy", Some("goal"), None);
+    emit_goal_refresh(app, &worker.session_id);
+    let mut last_journal_activity = Instant::now();
+
+    loop {
+        // Always poll before testing the quiet window. Otherwise a record that
+        // landed just before the timer check could make an old terminal state
+        // look settled.
+        tokio::time::sleep(GOAL_BRIDGE_POLL_INTERVAL).await;
+        let next = cursor.poll()?;
+        if next.truncated || next.replaced {
+            return Err("Native Goal journal changed while the prompt was running.".to_string());
+        }
+        if next.advanced {
+            last_journal_activity = Instant::now();
+        }
+        if next.saw_goal_record {
+            emit_goal_refresh(app, &worker.session_id);
+        }
+        poll = next;
+
+        let snapshot = cursor.snapshot();
+        if !poll.has_pending_line
+            && goal_terminal_is_settled(&poll, baseline_record, &monitored_goal_id, &snapshot)?
+            && last_journal_activity.elapsed() >= GOAL_TERMINAL_QUIET_PERIOD
+        {
+            // Final incremental barrier: only return if a zero-advance poll
+            // still describes the same Goal and terminal record.
+            let barrier = cursor.poll()?;
+            if barrier.truncated || barrier.replaced {
+                return Err("Native Goal journal changed while the prompt was running.".to_string());
+            }
+            if barrier.saw_goal_record {
+                emit_goal_refresh(app, &worker.session_id);
+            }
+            if barrier.advanced {
+                last_journal_activity = Instant::now();
+                continue;
+            }
+            poll = barrier;
+            let barrier_snapshot = cursor.snapshot();
+            if !poll.has_pending_line
+                && goal_terminal_is_settled(
+                    &poll,
+                    baseline_record,
+                    &monitored_goal_id,
+                    &barrier_snapshot,
+                )?
+                && last_journal_activity.elapsed() >= GOAL_TERMINAL_QUIET_PERIOD
+            {
+                emit_goal_refresh(app, &worker.session_id);
+                let completed = goal_terminal_was_completed(&poll);
+                return Ok(GoalBridgeOutcome {
+                    history_resync: true,
+                    completed,
+                });
+            }
+        }
+
+        if prompt_started_at.elapsed() >= acp_prompt_timeout() {
+            if let Ok(rpc) = active_worker_rpc(worker) {
+                let _ = rpc.notify("session/cancel", json!({ "sessionId": worker.session_id }));
+            }
+            let cancel_deadline = Instant::now() + GOAL_CANCEL_ACK_TIMEOUT;
+            while Instant::now() < cancel_deadline {
+                tokio::time::sleep(GOAL_BRIDGE_POLL_INTERVAL).await;
+                let next = cursor.poll()?;
+                if next.truncated || next.replaced {
+                    return Err(
+                        "Native Goal journal changed while cancellation was pending.".to_string(),
+                    );
+                }
+                if next.saw_goal_record {
+                    emit_goal_refresh(app, &worker.session_id);
+                }
+                let snapshot = cursor.snapshot();
+                if goal_cancel_ack_observed(&next, baseline_record, &monitored_goal_id, &snapshot)?
+                {
+                    return Err("Native Goal continuation timed out and was paused.".to_string());
+                }
+            }
+            stop_worker_async(worker, "goal_timeout").await;
+            return Err(
+                "Native Goal continuation timed out; the unresponsive ACP worker was stopped."
+                    .to_string(),
+            );
+        }
+
+        if active_worker_rpc(worker).is_err() {
+            return Err("ACP worker stopped during native Goal continuation.".to_string());
+        }
+    }
+}
 async fn handle_prompt(
     app: &AppHandle,
     worker: &Arc<AcpWorker>,
@@ -1609,6 +2162,40 @@ async fn handle_prompt(
     };
     let swarm_mode = *worker.swarm_mode.lock().unwrap();
     let goal_mode = *worker.goal_mode.lock().unwrap();
+    let goal_requested = goal_mode
+        || expanded_params
+            .get("goal_action")
+            .and_then(Value::as_str)
+            .is_some_and(|action| matches!(action, "create" | "replace" | "resume"));
+    let upcoming_goal_id = expanded_params
+        .get("upcoming_goal_id")
+        .and_then(Value::as_str)
+        .filter(|goal_id| !goal_id.trim().is_empty())
+        .map(str::to_string);
+    let goal_bridge = if goal_requested {
+        let cursor = match goal_store::GoalJournalCursor::open(&worker.session_id) {
+            Ok(cursor) => cursor,
+            Err(err) => {
+                fail_prompt_in_flight(app, worker, &prompt_id, "goal_journal_error", &err);
+                return Err(err);
+            }
+        };
+        let initial_snapshot = cursor.snapshot();
+        let expectation =
+            goal_prompt_expectation(&expanded_params, goal_mode, &initial_snapshot)
+                .ok_or_else(|| "Missing native Goal action for Goal prompt.".to_string())?;
+        let baseline_record = cursor.record_index();
+        Some(GoalBridgeRequest {
+            cursor,
+            baseline_record,
+            expectation,
+            initial_snapshot,
+            upcoming_goal_id,
+            prompt_started_at,
+        })
+    } else {
+        None
+    };
     // Prefer slash-only prompt so ACP `detectLeadingSlashIntent` sees `/compact`
     // as blocks[0]. Upload expansion otherwise prepends `<uploaded_files>` and
     // the CLI treats the slash as ordinary model text.
@@ -1687,6 +2274,18 @@ async fn handle_prompt(
         return Err(format!("ACP prompt failed: {detail}"));
     }
 
+    let goal_bridge_outcome = if let Some(request) = goal_bridge {
+        match bridge_native_goal_continuation(app, worker, request).await {
+            Ok(outcome) => outcome,
+            Err(detail) => {
+                fail_prompt_in_flight(app, worker, &prompt_id, "goal_continuation_error", &detail);
+                return Err(detail);
+            }
+        }
+    } else {
+        GoalBridgeOutcome::default()
+    };
+
     worker
         .in_flight_prompt_ids
         .lock()
@@ -1705,11 +2304,18 @@ async fn handle_prompt(
         json!({
             "jsonrpc": "2.0",
             "id": id,
-            "result": { "status": status }
+            "result": {
+                "status": status,
+                "goal_history_resync": goal_bridge_outcome.history_resync,
+                "goal_completed": goal_bridge_outcome.completed,
+            }
         })
         .to_string(),
     );
-    set_worker_status(app, worker, "idle", Some(status), None);
+    // A concurrent cancel/control path may have stopped this exact worker
+    // after the in-flight id was removed. Never overwrite that terminal state
+    // with a late idle transition from prompt completion.
+    let _ = set_worker_idle_if_active(app, worker, status);
     emit_usage_status_wire(app, worker, response.result.as_ref());
     Ok(())
 }
@@ -1726,7 +2332,10 @@ fn fail_prompt_in_flight(
         .lock()
         .unwrap()
         .remove(prompt_id);
-    set_worker_status(app, worker, "error", Some(reason), Some(detail));
+    let worker_stopped = worker.status.lock().unwrap().state == "stopped";
+    if !worker_stopped {
+        set_worker_status(app, worker, "error", Some(reason), Some(detail));
+    }
 }
 
 async fn handle_cancel(
@@ -1742,30 +2351,35 @@ async fn handle_cancel(
             rpc.notify("session/cancel", json!({ "sessionId": worker.session_id }))?;
         }
 
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + GOAL_CANCEL_ACK_TIMEOUT;
         loop {
             if worker.in_flight_prompt_ids.lock().unwrap().is_empty() {
                 break;
             }
             if Instant::now() >= deadline {
-                worker.in_flight_prompt_ids.lock().unwrap().clear();
-                break;
+                stop_worker_async(worker, "cancel_timeout").await;
+                return Err(
+                    "ACP did not acknowledge cancellation; the unresponsive worker was stopped."
+                        .to_string(),
+                );
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
-    emit_wire_message(
-        app,
-        &worker.session_id,
-        json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": { "status": "cancelled" }
-        })
-        .to_string(),
-    );
-    set_worker_status(app, worker, "idle", Some("cancelled"), None);
+    set_worker_idle_if_active(app, worker, "cancelled")?;
+    if id.is_some() {
+        emit_wire_message(
+            app,
+            &worker.session_id,
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "status": "cancelled" }
+            })
+            .to_string(),
+        );
+    }
     Ok(())
 }
 
@@ -2353,6 +2967,161 @@ mod tests {
     }
 
     #[test]
+    fn goal_prompt_expectation_uses_explicit_native_actions() {
+        let no_goal = None;
+        assert_eq!(
+            goal_prompt_expectation(&json!({ "goal_action": "create" }), false, &no_goal),
+            Some(GoalPromptExpectation::Start)
+        );
+        assert_eq!(
+            goal_prompt_expectation(&json!({ "goal_action": "resume" }), false, &no_goal),
+            Some(GoalPromptExpectation::Resume)
+        );
+        assert_eq!(
+            goal_prompt_expectation(&json!({}), true, &no_goal),
+            Some(GoalPromptExpectation::Start)
+        );
+        let active_goal = Some(json!({ "goal_id": "g", "status": "active" }));
+        assert_eq!(
+            goal_prompt_expectation(&json!({}), true, &active_goal),
+            Some(GoalPromptExpectation::Continue)
+        );
+    }
+
+    #[test]
+    fn goal_handoff_requires_the_expected_goal_and_record_kind() {
+        let initial = Some(json!({ "goal_id": "g", "status": "paused" }));
+        let mut poll = goal_store::GoalJournalPoll {
+            last_goal_active_record: Some(11),
+            last_goal_active_id: Some("g".to_string()),
+            ..goal_store::GoalJournalPoll::default()
+        };
+        assert_eq!(
+            goal_handoff_goal_id(GoalPromptExpectation::Resume, &initial, &poll, 10),
+            Some("g".to_string())
+        );
+
+        poll.last_goal_active_id = Some("replacement".to_string());
+        assert_eq!(
+            goal_handoff_goal_id(GoalPromptExpectation::Resume, &initial, &poll, 10),
+            None
+        );
+        poll.last_goal_active_id = Some("g".to_string());
+        poll.last_goal_active_record = Some(10);
+        assert_eq!(
+            goal_handoff_goal_id(GoalPromptExpectation::Resume, &initial, &poll, 10),
+            None
+        );
+
+        let initially_active = Some(json!({ "goal_id": "g", "status": "active" }));
+        let no_new_record = goal_store::GoalJournalPoll::default();
+        assert_eq!(
+            goal_handoff_goal_id(
+                GoalPromptExpectation::Resume,
+                &initially_active,
+                &no_new_record,
+                10,
+            ),
+            None,
+            "an already-active snapshot is not a resume acknowledgement"
+        );
+    }
+
+    #[test]
+    fn goal_terminal_waits_for_the_last_step_after_clear() {
+        let mut poll = goal_store::GoalJournalPoll {
+            last_goal_terminal_record: Some(10),
+            last_goal_terminal_status: Some("clear".to_string()),
+            last_goal_terminal_goal_id: Some("g".to_string()),
+            last_goal_terminal_requires_closed_step: true,
+            last_step_begin_record: Some(11),
+            last_step_end_record: Some(9),
+            ..goal_store::GoalJournalPoll::default()
+        };
+        assert!(!goal_terminal_is_settled(&poll, 5, "g", &None).unwrap());
+
+        // A step may end after goal.clear and the native driver can
+        // immediately open one final summary step. That newer begin keeps the
+        // bridge pending until its matching end arrives.
+        poll.last_step_end_record = Some(12);
+        poll.last_step_begin_record = Some(13);
+        assert!(!goal_terminal_is_settled(&poll, 5, "g", &None).unwrap());
+
+        poll.last_step_end_record = Some(14);
+        assert!(goal_terminal_is_settled(&poll, 5, "g", &None).unwrap());
+        assert!(goal_terminal_is_settled(&poll, 10, "g", &None).is_err());
+    }
+
+    #[test]
+    fn only_natural_completion_marks_the_bridge_completed() {
+        let mut poll = goal_store::GoalJournalPoll {
+            last_goal_terminal_status: Some("complete".to_string()),
+            ..goal_store::GoalJournalPoll::default()
+        };
+        assert!(goal_terminal_was_completed(&poll));
+
+        poll.last_goal_terminal_status = Some("clear".to_string());
+        poll.last_goal_terminal_requires_closed_step = true;
+        assert!(goal_terminal_was_completed(&poll));
+
+        poll.last_goal_terminal_requires_closed_step = false;
+        assert!(!goal_terminal_was_completed(&poll));
+        poll.last_goal_terminal_status = Some("paused".to_string());
+        assert!(!goal_terminal_was_completed(&poll));
+        poll.last_goal_terminal_status = Some("blocked".to_string());
+        assert!(!goal_terminal_was_completed(&poll));
+    }
+    #[test]
+    fn paused_or_blocked_goal_settles_without_step_end() {
+        let mut poll = goal_store::GoalJournalPoll {
+            last_goal_terminal_record: Some(10),
+            last_goal_terminal_status: Some("paused".to_string()),
+            last_goal_terminal_goal_id: Some("g".to_string()),
+            last_goal_terminal_requires_closed_step: false,
+            last_step_begin_record: Some(9),
+            last_step_end_record: Some(7),
+            ..goal_store::GoalJournalPoll::default()
+        };
+        let paused = Some(json!({ "goal_id": "g", "status": "paused" }));
+        assert!(goal_terminal_is_settled(&poll, 5, "g", &paused).unwrap());
+
+        poll.last_goal_terminal_status = Some("blocked".to_string());
+        let blocked = Some(json!({ "goal_id": "g", "status": "blocked" }));
+        assert!(goal_terminal_is_settled(&poll, 5, "g", &blocked).unwrap());
+    }
+
+    #[test]
+    fn old_terminal_or_replacement_goal_cannot_settle_current_goal() {
+        let poll = goal_store::GoalJournalPoll {
+            last_goal_terminal_record: Some(10),
+            last_goal_terminal_status: Some("paused".to_string()),
+            last_goal_terminal_goal_id: Some("g".to_string()),
+            ..goal_store::GoalJournalPoll::default()
+        };
+        let active = Some(json!({ "goal_id": "g", "status": "active" }));
+        assert!(!goal_terminal_is_settled(&poll, 5, "g", &active).unwrap());
+
+        let replacement = Some(json!({ "goal_id": "new", "status": "active" }));
+        assert!(goal_terminal_is_settled(&poll, 5, "g", &replacement).is_err());
+    }
+
+    #[test]
+    fn cancel_ack_must_be_a_new_terminal_for_the_same_goal() {
+        let poll = goal_store::GoalJournalPoll {
+            last_goal_terminal_record: Some(10),
+            last_goal_terminal_status: Some("paused".to_string()),
+            last_goal_terminal_goal_id: Some("g".to_string()),
+            ..goal_store::GoalJournalPoll::default()
+        };
+        let paused = Some(json!({ "goal_id": "g", "status": "paused" }));
+        assert!(goal_cancel_ack_observed(&poll, 5, "g", &paused).unwrap());
+        assert!(!goal_cancel_ack_observed(&poll, 10, "g", &paused).unwrap());
+
+        let replacement = Some(json!({ "goal_id": "new", "status": "paused" }));
+        assert!(goal_cancel_ack_observed(&poll, 5, "g", &replacement).is_err());
+    }
+
+    #[test]
     fn acp_rpc_timeout_reads_env_override() {
         std::env::set_var("ACP_RPC_TIMEOUT_SECS", "300");
         assert_eq!(super::acp_rpc_timeout(), Duration::from_secs(300));
@@ -2462,6 +3231,17 @@ mod tests {
         let status = worker.status.lock().unwrap().clone();
         assert_eq!(status.state, "stopped");
         assert_eq!(status.reason.as_deref(), Some("config_update"));
+    }
+
+    #[test]
+    fn late_cancel_completion_cannot_overwrite_stopped_worker_with_idle() {
+        let worker = new_probe_worker();
+        mark_worker_stopped(&worker, "cancel_timeout");
+
+        assert!(record_worker_idle_if_active(&worker, "cancelled").is_err());
+        let status = worker.status.lock().unwrap().clone();
+        assert_eq!(status.state, "stopped");
+        assert_eq!(status.reason.as_deref(), Some("cancel_timeout"));
     }
 
     #[test]

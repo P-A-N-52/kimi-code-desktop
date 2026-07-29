@@ -5,6 +5,8 @@ use crate::acp_desktop::{
 };
 use crate::git_diff;
 use crate::global_config;
+use crate::goal_queue;
+use crate::goal_store;
 use crate::runtime_check;
 use crate::security::{
     validate_http_external_url, validate_local_absolute_path, validate_mcp_config_json,
@@ -59,9 +61,7 @@ fn humanize_acp_error(err: &str) -> String {
         || lower.contains("login")
         || lower.contains("unauthorized")
     {
-        return format!(
-            "{err} 若使用 VPN，请确认网络畅通后重新登录或检查 config.toml 中的凭据。"
-        );
+        return format!("{err} 若使用 VPN，请确认网络畅通后重新登录或检查 config.toml 中的凭据。");
     }
     if lower.contains("timed out") || lower.contains("timeout") {
         return format!("{err} 高延迟或 VPN 可能导致超时，可稍后重试。");
@@ -277,6 +277,60 @@ pub async fn replay_session_history(
     Ok(Value::Array(
         messages.into_iter().map(Value::String).collect(),
     ))
+}
+
+#[tauri::command]
+pub fn get_session_goal_snapshot(session_id: String) -> Result<Option<Value>, String> {
+    goal_store::session_goal_snapshot(&session_id)
+}
+
+#[tauri::command]
+pub fn get_session_goal_queue(session_id: String) -> Result<goal_queue::GoalQueueSnapshot, String> {
+    goal_queue::read(&session_id)
+}
+
+#[tauri::command]
+pub fn append_session_goal_queue(
+    session_id: String,
+    objective: String,
+) -> Result<goal_queue::GoalQueueSnapshot, String> {
+    goal_queue::append(&session_id, &objective)
+}
+
+#[tauri::command]
+pub fn update_session_goal_queue(
+    session_id: String,
+    goal_id: String,
+    objective: String,
+) -> Result<goal_queue::GoalQueueSnapshot, String> {
+    goal_queue::update(&session_id, &goal_id, &objective)
+}
+
+#[tauri::command]
+pub fn remove_session_goal_queue(
+    session_id: String,
+    goal_id: String,
+) -> Result<goal_queue::GoalQueueSnapshot, String> {
+    goal_queue::remove(&session_id, &goal_id)
+}
+
+#[tauri::command]
+pub fn move_session_goal_queue(
+    session_id: String,
+    goal_id: String,
+    direction: goal_queue::GoalQueueMoveDirection,
+) -> Result<goal_queue::GoalQueueSnapshot, String> {
+    goal_queue::move_item(&session_id, &goal_id, direction)
+}
+
+#[tauri::command]
+pub async fn control_session_goal(
+    app: tauri::AppHandle,
+    acp: tauri::State<'_, AcpProcessManager>,
+    session_id: String,
+    action: String,
+) -> Result<Option<Value>, String> {
+    acp.control_goal(&app, session_id, action).await
 }
 
 #[tauri::command]

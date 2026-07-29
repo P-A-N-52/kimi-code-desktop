@@ -1,6 +1,7 @@
 import { isTauri as _isTauri, invoke } from "@tauri-apps/api/core";
 import { type Event, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { SessionFileEntry } from "@/hooks/useSessions";
+import type { GoalItem, GoalStatus } from "@/lib/goal";
 import { stripThinkMarkup } from "@/lib/utils";
 import type {
 	GitDiffStats,
@@ -385,6 +386,168 @@ export async function getSessionRuntimeModes(
 		goalMode: Boolean(raw.goal_mode),
 	};
 }
+
+function optionalGoalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function normalizeGoalSnapshot(raw: unknown): GoalItem | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  const objective = typeof value.objective === "string" ? value.objective.trim() : "";
+  if (!objective) return null;
+  const rawStatus = String(value.status ?? "active");
+  const status: GoalStatus =
+    rawStatus === "paused" || rawStatus === "blocked" || rawStatus === "complete"
+      ? rawStatus
+      : "active";
+  const rawBudget =
+    value.budget && typeof value.budget === "object"
+      ? (value.budget as Record<string, unknown>)
+      : {};
+  return {
+    ...(typeof value.goal_id === "string" ? { goalId: value.goal_id } : {}),
+    objective,
+    ...(typeof value.completion_criterion === "string"
+      ? { completionCriterion: value.completion_criterion }
+      : {}),
+    status,
+    turnsUsed: optionalGoalNumber(value.turns_used) ?? 0,
+    tokensUsed: optionalGoalNumber(value.tokens_used) ?? 0,
+    wallClockMs: optionalGoalNumber(value.wall_clock_ms) ?? 0,
+    ...(typeof value.terminal_reason === "string" ? { terminalReason: value.terminal_reason } : {}),
+    budget: {
+      ...(optionalGoalNumber(rawBudget.token_budget) !== undefined
+        ? { tokenBudget: optionalGoalNumber(rawBudget.token_budget) }
+        : {}),
+      ...(optionalGoalNumber(rawBudget.turn_budget) !== undefined
+        ? { turnBudget: optionalGoalNumber(rawBudget.turn_budget) }
+        : {}),
+      ...(optionalGoalNumber(rawBudget.wall_clock_budget_ms) !== undefined
+        ? { wallClockBudgetMs: optionalGoalNumber(rawBudget.wall_clock_budget_ms) }
+        : {}),
+      ...(optionalGoalNumber(rawBudget.remaining_tokens) !== undefined
+        ? { remainingTokens: optionalGoalNumber(rawBudget.remaining_tokens) }
+        : {}),
+      ...(optionalGoalNumber(rawBudget.remaining_turns) !== undefined
+        ? { remainingTurns: optionalGoalNumber(rawBudget.remaining_turns) }
+        : {}),
+      ...(optionalGoalNumber(rawBudget.remaining_wall_clock_ms) !== undefined
+        ? { remainingWallClockMs: optionalGoalNumber(rawBudget.remaining_wall_clock_ms) }
+        : {}),
+      tokenBudgetReached: Boolean(rawBudget.token_budget_reached),
+      turnBudgetReached: Boolean(rawBudget.turn_budget_reached),
+      wallClockBudgetReached: Boolean(rawBudget.wall_clock_budget_reached),
+      overBudget: Boolean(rawBudget.over_budget),
+    },
+  };
+}
+
+export async function getSessionGoalSnapshot(sessionId: string): Promise<GoalItem | null> {
+  if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+  const raw = await invoke<unknown>("get_session_goal_snapshot", { sessionId });
+  return normalizeGoalSnapshot(raw);
+}
+
+export async function controlSessionGoal(
+  sessionId: string,
+  action: "pause" | "resume" | "cancel",
+): Promise<GoalItem | null> {
+  if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+  const raw = await invoke<unknown>("control_session_goal", { sessionId, action });
+  return normalizeGoalSnapshot(raw);
+}
+
+export type UpcomingGoal = {
+  id: string;
+  objective: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type GoalQueueSnapshot = {
+  goals: UpcomingGoal[];
+};
+
+
+function normalizeUpcomingGoal(raw: unknown): UpcomingGoal | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  const id = typeof value.id === "string" ? value.id : "";
+  const objective = typeof value.objective === "string" ? value.objective.trim() : "";
+  if (!id || !objective) return null;
+  return {
+    id,
+    objective,
+    createdAt: String(value.createdAt ?? value.created_at ?? ""),
+    updatedAt: String(value.updatedAt ?? value.updated_at ?? ""),
+  };
+}
+
+function normalizeGoalQueueSnapshot(raw: unknown): GoalQueueSnapshot {
+  if (!raw || typeof raw !== "object") return { goals: [] };
+  const goals = (raw as Record<string, unknown>).goals;
+  if (!Array.isArray(goals)) return { goals: [] };
+  return {
+    goals: goals.flatMap((goal) => {
+      const normalized = normalizeUpcomingGoal(goal);
+      return normalized ? [normalized] : [];
+    }),
+  };
+}
+
+export async function getSessionGoalQueue(sessionId: string): Promise<GoalQueueSnapshot> {
+  if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+  const raw = await invoke<unknown>("get_session_goal_queue", { sessionId });
+  return normalizeGoalQueueSnapshot(raw);
+}
+
+export async function appendSessionGoalQueue(
+  sessionId: string,
+  objective: string,
+): Promise<GoalQueueSnapshot> {
+  if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+  const raw = await invoke<unknown>("append_session_goal_queue", { sessionId, objective });
+  return normalizeGoalQueueSnapshot(raw);
+}
+
+export async function updateSessionGoalQueue(
+  sessionId: string,
+  goalId: string,
+  objective: string,
+): Promise<GoalQueueSnapshot> {
+  if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+  const raw = await invoke<unknown>("update_session_goal_queue", {
+    sessionId,
+    goalId,
+    objective,
+  });
+  return normalizeGoalQueueSnapshot(raw);
+}
+
+export async function removeSessionGoalQueue(
+  sessionId: string,
+  goalId: string,
+): Promise<GoalQueueSnapshot> {
+  if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+  const raw = await invoke<unknown>("remove_session_goal_queue", { sessionId, goalId });
+  return normalizeGoalQueueSnapshot(raw);
+}
+
+export async function moveSessionGoalQueue(
+  sessionId: string,
+  goalId: string,
+  direction: "up" | "down",
+): Promise<GoalQueueSnapshot> {
+  if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+  const raw = await invoke<unknown>("move_session_goal_queue", {
+    sessionId,
+    goalId,
+    direction,
+  });
+  return normalizeGoalQueueSnapshot(raw);
+}
+
 
 export async function getSessionGoalMode(sessionId: string): Promise<boolean> {
 	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));

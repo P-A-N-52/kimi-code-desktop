@@ -32,12 +32,8 @@ describe("slash-command-catalog", () => {
       "goal",
       "skill:demo",
     ]);
-    expect(filtered.find((c) => c.name === "help")?.description).toContain(
-      "desktop",
-    );
-    expect(filtered.find((c) => c.name === "goal")?.description).toContain(
-      "goal",
-    );
+    expect(filtered.find((c) => c.name === "help")?.description).toContain("desktop");
+    expect(filtered.find((c) => c.name === "goal")?.description).toContain("goal");
   });
 
   it("overrides usage/status descriptions for quota clarity", () => {
@@ -123,7 +119,9 @@ describe("slash-command-catalog", () => {
       kind: "passthrough",
     });
     expect(classifySlashDispatch("/goal soak the GUI", [])).toEqual({
-      kind: "passthrough",
+      kind: "local",
+      name: "goal",
+      args: "soak the GUI",
     });
     expect(classifySlashDispatch("/yolo", advertised).kind).toBe("blocked");
     expect(classifySlashDispatch("/version", advertised).kind).toBe("blocked");
@@ -141,9 +139,7 @@ describe("slash-command-catalog", () => {
   });
 
   it("forwards runtime-advertised skill commands like custom-theme", () => {
-    const advertised = [
-      { name: "custom-theme", description: "Create a theme", aliases: [] },
-    ];
+    const advertised = [{ name: "custom-theme", description: "Create a theme", aliases: [] }];
     expect(classifySlashDispatch("/custom-theme", advertised)).toEqual({
       kind: "passthrough",
     });
@@ -160,11 +156,7 @@ describe("slash-command-catalog", () => {
       { name: "swarm", description: "Denied locally", aliases: [] },
     ];
     const merged = mergeSlashCommands(acp, disk);
-    expect(merged.map((command) => command.name)).toEqual([
-      "skill:demo",
-      "compact",
-      "skill:extra",
-    ]);
+    expect(merged.map((command) => command.name)).toEqual(["skill:demo", "compact", "skill:extra"]);
     expect(merged[0]?.description).toBe("ACP description");
   });
 });

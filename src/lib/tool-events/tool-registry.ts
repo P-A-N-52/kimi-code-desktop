@@ -38,6 +38,7 @@ const PRESENTATIONS: Record<string, Omit<ToolPresentation, "canonicalName">> = {
   CreateGoal: { displayName: "Create Goal", category: "goal" },
   GetGoal: { displayName: "Get Goal", category: "goal" },
   UpdateGoal: { displayName: "Update Goal", category: "goal" },
+  SetGoalBudget: { displayName: "Set Goal Budget", category: "goal" },
   EnterPlanMode: { displayName: "Enter Plan Mode", category: "plan" },
   ExitPlanMode: { displayName: "Exit Plan Mode", category: "plan" },
   Skill: { displayName: "Skill", category: "skill" },

@@ -115,7 +115,11 @@ pub fn legacy_user_input_to_acp_prompt_with_swarm(
         return slash;
     }
     let mut prompt = legacy_user_input_to_acp_prompt(params);
-    if !swarm_mode && !goal_mode {
+    let goal_action = params
+        .get("goal_action")
+        .and_then(Value::as_str)
+        .filter(|action| matches!(*action, "create" | "replace" | "resume"));
+    if !swarm_mode && !goal_mode && goal_action.is_none() {
         return prompt;
     }
 
@@ -133,17 +137,40 @@ pub fn legacy_user_input_to_acp_prompt_with_swarm(
                 ),
             }));
         }
-        if goal_mode {
-            blocks.push(json!({
-                "type": "text",
-                "text": concat!(
-                    "<system-reminder>\n",
-                    "Goal mode is enabled for this turn. Use CreateGoal, UpdateGoal, and GetGoal ",
-                    "to track the active goal and stay aligned with it. Before expanding scope, ",
-                    "confirm the work serves the current goal.\n",
-                    "</system-reminder>"
-                ),
-            }));
+        let goal_instruction = match goal_action {
+            Some("create") => Some(concat!(
+                "<system-reminder>\n",
+                "The user explicitly requested a new Goal. Before doing other work, call ",
+                "CreateGoal with the user's objective and replace=false. Do not merely describe ",
+                "the goal. After it is created, work toward it normally.\n",
+                "</system-reminder>"
+            )),
+            Some("replace") => Some(concat!(
+                "<system-reminder>\n",
+                "The user explicitly requested replacing the current Goal. Before doing other ",
+                "work, call CreateGoal with the user's objective and replace=true. Do not merely ",
+                "describe the replacement.\n",
+                "</system-reminder>"
+            )),
+            Some("resume") => Some(concat!(
+                "<system-reminder>\n",
+                "The user explicitly requested resuming the current Goal. Call GetGoal, then call ",
+                "UpdateGoal with status=active before continuing the work. Do not create a new ",
+                "Goal or stop after merely summarizing the remaining work.\n",
+                "</system-reminder>"
+            )),
+            _ if goal_mode => Some(concat!(
+                "<system-reminder>\n",
+                "Goal mode is enabled for this turn. Call GetGoal before expanding scope. If there ",
+                "is no current goal, call CreateGoal with the user's request as the objective. If a ",
+                "goal exists, use UpdateGoal and GetGoal to stay aligned with it. Do not merely ",
+                "describe goal tracking without using the Goal tools.\n",
+                "</system-reminder>"
+            )),
+            _ => None,
+        };
+        if let Some(instruction) = goal_instruction {
+            blocks.push(json!({ "type": "text", "text": instruction }));
         }
     }
     prompt
@@ -1043,9 +1070,7 @@ pub fn acp_permission_to_legacy_request(
         // the response path when the user submits empty answers.
         let question_options: Vec<Value> = options
             .iter()
-            .filter(|option| {
-                option.get("kind").and_then(Value::as_str) == Some("allow_once")
-            })
+            .filter(|option| option.get("kind").and_then(Value::as_str) == Some("allow_once"))
             .filter_map(|option| {
                 let label = option.get("name").and_then(Value::as_str)?;
                 Some(json!({
@@ -1332,6 +1357,28 @@ mod tests {
             .contains("Goal mode is enabled"));
     }
 
+    #[test]
+    fn explicit_goal_action_requires_the_matching_native_tool_call() {
+        let create = legacy_user_input_to_acp_prompt_with_swarm(
+            &json!({ "user_input": "ship it", "goal_action": "create" }),
+            false,
+            false,
+        );
+        assert!(create[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("CreateGoal with the user's objective and replace=false"));
+
+        let resume = legacy_user_input_to_acp_prompt_with_swarm(
+            &json!({ "user_input": "Resume the active goal.", "goal_action": "resume" }),
+            false,
+            false,
+        );
+        let resume_instruction = resume[1]["text"].as_str().unwrap();
+        assert!(resume_instruction.contains("Call GetGoal"));
+        assert!(resume_instruction.contains("before continuing the work"));
+        assert!(resume_instruction.contains("UpdateGoal with status=active"));
+    }
     #[test]
     fn swarm_compat_prompt_skips_slash_commands() {
         let prompt = legacy_user_input_to_acp_prompt_with_swarm(
