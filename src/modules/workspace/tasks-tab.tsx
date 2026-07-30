@@ -1,7 +1,12 @@
-import { Check, Circle, FilePlus2, Goal, LoaderCircle } from "lucide-react";
+import { Check, Circle, FilePlus2, LoaderCircle } from "lucide-react";
 import { useToolEventsStore } from "@/lib/tool-events/store";
+import { GoalCard } from "./goal-card";
 
-export function TasksTab() {
+export function TasksTab({
+  onGoalControl,
+}: {
+  onGoalControl?: (action: "pause" | "resume" | "cancel") => Promise<unknown>;
+}) {
   const goal = useToolEventsStore((state) => state.currentGoal);
   const todoItems = useToolEventsStore((state) => state.todoItems);
   const newFiles = useToolEventsStore((state) => state.newFiles);
@@ -15,17 +20,7 @@ export function TasksTab() {
 
   return (
     <div className="space-y-4 p-3">
-      {goal && (
-        <section>
-          <h3 className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">
-            <Goal size={12} /> 当前目标
-          </h3>
-          <div className="rounded-r2 border border-line bg-elevated p-2.5">
-            <p className="text-[11.5px] leading-relaxed text-foreground">{goal.objective}</p>
-            <p className="mt-1 font-mono text-[9.5px] uppercase text-faint">{goal.status}</p>
-          </div>
-        </section>
-      )}
+      {goal && <GoalCard goal={goal} onControl={onGoalControl} />}
       {todoItems.length > 0 && (
         <section>
           <h3 className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-faint">

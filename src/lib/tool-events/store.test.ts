@@ -27,6 +27,15 @@ describe("tool event store", () => {
       objective: "Ship event UI coverage",
       completionCriterion: "All focused tests pass",
       status: "complete",
+      turnsUsed: 0,
+      tokensUsed: 0,
+      wallClockMs: 0,
+      budget: {
+        tokenBudgetReached: false,
+        turnBudgetReached: false,
+        wallClockBudgetReached: false,
+        overBudget: false,
+      },
     });
   });
 

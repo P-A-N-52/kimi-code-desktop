@@ -69,17 +69,12 @@ const DESKTOP_SLASH_DENYLIST = new Set([
 ]);
 
 /** Always safe to forward to ACP even before available_commands_update. */
-const ACP_FORWARDABLE_SLASH_COMMANDS = new Set([
-  "compact",
-  "mcp",
-  "tasks",
-  "task",
-  "goal",
-]);
+const ACP_FORWARDABLE_SLASH_COMMANDS = new Set(["compact", "mcp", "tasks", "task"]);
 
 /** Local desktop handlers (not forwarded to ACP as raw prompts). */
 const LOCALLY_HANDLED_SLASH_COMMANDS = new Set([
   "swarm",
+  "goal",
   "usage",
   "status",
   "help",
@@ -109,7 +104,7 @@ const DESKTOP_DESCRIPTION_OVERRIDES: Record<string, string> = {
   compact: "Compact the conversation context",
   mcp: "List MCP servers for this session",
   tasks: "List background tasks (read-only in desktop)",
-  goal: "Create or continue a long-running goal (forwarded to ACP)",
+  goal: "Create, inspect, pause, resume, replace, cancel, or queue a long-running goal",
 };
 
 const DENIED_COMMAND_HINTS: Record<string, string> = {
@@ -160,9 +155,7 @@ export function desktopSlashCommandHint(name: string): string | null {
   return DENIED_COMMAND_HINTS[normalized] ?? null;
 }
 
-export function parseSlashCommandInput(
-  text: string,
-): { name: string; args: string } | null {
+export function parseSlashCommandInput(text: string): { name: string; args: string } | null {
   const trimmed = text.trim();
   if (!trimmed.startsWith("/")) return null;
   const body = trimmed.slice(1).trim();
@@ -176,7 +169,7 @@ export function parseSlashCommandInput(
 
 export type SlashDispatchDecision =
   | { kind: "passthrough" }
-  | { kind: "local"; name: "usage" | "status" | "help" | "swarm"; args: string }
+  | { kind: "local"; name: "usage" | "status" | "help" | "swarm" | "goal"; args: string }
   | { kind: "blocked"; message: string };
 
 /**
@@ -199,6 +192,9 @@ export function classifySlashDispatch(
   }
   if (name === "swarm") {
     return { kind: "local", name: "swarm", args };
+  }
+  if (name === "goal") {
+    return { kind: "local", name: "goal", args };
   }
 
   if (isDeniedDesktopSlashCommand(name)) {
@@ -235,9 +231,7 @@ export function classifySlashDispatch(
   };
 }
 
-export function filterDesktopSlashCommands(
-  commands: SlashCommandDef[],
-): SlashCommandDef[] {
+export function filterDesktopSlashCommands(commands: SlashCommandDef[]): SlashCommandDef[] {
   const seen = new Set<string>();
   const filtered: SlashCommandDef[] = [];
 
@@ -253,26 +247,30 @@ export function filterDesktopSlashCommands(
     seen.add(key);
     filtered.push({
       name,
-      description:
-        DESKTOP_DESCRIPTION_OVERRIDES[key] ?? command.description ?? "",
+      description: DESKTOP_DESCRIPTION_OVERRIDES[key] ?? command.description ?? "",
       aliases: Array.isArray(command.aliases)
         ? command.aliases.filter(
             (alias) =>
-              typeof alias === "string" &&
-              alias.length > 0 &&
-              !isDeniedDesktopSlashCommand(alias),
+              typeof alias === "string" && alias.length > 0 && !isDeniedDesktopSlashCommand(alias),
           )
         : [],
       inputHint: command.inputHint ?? null,
     });
   }
 
+  if (!seen.has("goal")) {
+    filtered.push({
+      name: "goal",
+      description: DESKTOP_DESCRIPTION_OVERRIDES.goal,
+      aliases: [],
+      inputHint: "<objective|status|pause|resume|cancel|next|replace>",
+    });
+  }
+
   return filtered;
 }
 
-export function formatDesktopHelpReport(
-  commands: readonly SlashCommandDef[],
-): string {
+export function formatDesktopHelpReport(commands: readonly SlashCommandDef[]): string {
   const lines = [
     "Desktop slash commands:",
     "- /usage — Show plan quotas (5h / 7d) and session token usage",
@@ -301,9 +299,7 @@ export function formatDesktopHelpReport(
 /**
  * Immediate send for toggles / info commands; insert+edit when args are useful.
  */
-export function shouldExecuteSlashCommandImmediately(
-  command: SlashCommandDef,
-): boolean {
+export function shouldExecuteSlashCommandImmediately(command: SlashCommandDef): boolean {
   const name = normalizeCommandName(command.name);
   if (command.inputHint && command.inputHint.trim().length > 0) {
     return false;

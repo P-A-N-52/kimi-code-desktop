@@ -121,6 +121,17 @@ describe("agent monitor event synchronization", () => {
       payload: {
         session_id: "session-1",
         agent_id: "agent-2",
+        phase: "working",
+      },
+    });
+    expect(useAgentMonitorStore.getState().tasks[0]).toMatchObject({
+      status: "running",
+    });
+    syncAgentMonitorFromSubagentLifecycle({
+      type: "SubagentLifecycle",
+      payload: {
+        session_id: "session-1",
+        agent_id: "agent-2",
         phase: "suspended",
         reason: "Waiting for approval",
       },

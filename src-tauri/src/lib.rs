@@ -4,6 +4,8 @@ pub mod acp_translate;
 pub mod commands;
 pub mod git_diff;
 pub mod global_config;
+pub mod goal_queue;
+pub mod goal_store;
 pub mod managed_usage;
 pub mod mcp_config;
 pub mod native_menu;
@@ -49,6 +51,14 @@ pub fn run() {
             commands::get_session,
             commands::replay_session_history,
             commands::get_session_swarm_mode,
+            commands::get_session_goal_snapshot,
+            commands::get_session_goal_queue,
+            commands::append_session_goal_queue,
+            commands::update_session_goal_queue,
+            commands::remove_session_goal_queue,
+            commands::move_session_goal_queue,
+
+            commands::control_session_goal,
             commands::get_session_goal_mode,
             commands::get_session_runtime_modes,
             commands::migrate_session_swarm_mode,
@@ -68,6 +78,7 @@ pub fn run() {
             commands::get_startup_dir,
             commands::list_available_skills,
             commands::pick_files,
+            commands::pick_folder,
             commands::get_global_config,
             commands::get_config_toml,
             commands::update_config_toml,

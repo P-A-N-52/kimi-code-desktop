@@ -188,4 +188,140 @@ describe("MessageList semantic rendering", () => {
     expect(onRespondApproval).toHaveBeenNthCalledWith(1, "r1", "approve");
     expect(onRespondApproval).toHaveBeenNthCalledWith(2, "r1", "reject");
   });
+
+  it("renders Ask User as QuestionCard and hides the pending tool row", () => {
+    const onRespondQuestion = vi.fn();
+    render(
+      <MessageList
+        messages={[
+          {
+            id: "ask-pending",
+            role: "assistant",
+            variant: "tool",
+            toolCall: {
+              title: "Asking user questions",
+              type: "tool-call" as never,
+              state: "input-available",
+              toolCallId: "1:ask",
+              input: {
+                questions: [
+                  {
+                    question: "Which approach?",
+                    header: "Approach",
+                    options: [{ label: "A", description: "" }],
+                  },
+                ],
+              },
+            },
+          },
+          {
+            id: "ask-question",
+            role: "assistant",
+            variant: "tool",
+            toolCall: {
+              title: "AskUserQuestion",
+              type: "tool-call" as never,
+              state: "question-requested",
+              question: {
+                id: "7",
+                toolCallId: "1:ask:question:0",
+                questions: [
+                  {
+                    question: "Which approach?",
+                    header: "Which approach?",
+                    options: [
+                      { label: "A", description: "" },
+                      { label: "B", description: "" },
+                    ],
+                    multi_select: false,
+                    other_label: "其他",
+                  },
+                ],
+                submitted: false,
+                resolved: false,
+              },
+            },
+          },
+        ]}
+        onRespondApproval={vi.fn()}
+        onRespondQuestion={onRespondQuestion}
+      />,
+    );
+
+    expect(screen.getByText("Kimi 想确认几个问题")).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "其他" })).toBeTruthy();
+    expect(document.querySelector("[data-slot=agent-tool-card]")).toBeNull();
+    expect(screen.queryByText("Asking user questions")).toBeNull();
+  });
+
+  it("keeps completed Ask User as QuestionCard with answers, not raw JSON", () => {
+    renderMessages([
+      {
+        id: "ask-done",
+        role: "assistant",
+        variant: "tool",
+        toolCall: {
+          title: "AskUserQuestion",
+          type: "tool-call" as never,
+          state: "output-available",
+          toolCallId: "1:ask",
+          input: {},
+          output: JSON.stringify({
+            answers: { Approach: "Ship it" },
+          }),
+          question: {
+            id: "7",
+            toolCallId: "1:ask:question:0",
+            questions: [
+              {
+                question: "Which approach?",
+                header: "Approach",
+                options: [
+                  { label: "Ship it", description: "" },
+                  { label: "Keep iterating", description: "" },
+                ],
+                multi_select: false,
+              },
+            ],
+            submitted: true,
+            resolved: true,
+            answers: { Approach: "Ship it" },
+          },
+        },
+      },
+    ]);
+
+    expect(screen.getByText("Kimi 想确认几个问题")).toBeTruthy();
+    expect(screen.getByText("Ship it")).toBeTruthy();
+    expect(screen.getByText("已提交")).toBeTruthy();
+    expect(screen.queryByText(/User dismissed/)).toBeNull();
+    expect(screen.queryByText("等待子代理步骤…")).toBeNull();
+    expect(document.querySelector("[data-slot=subagent-steps]")).toBeNull();
+  });
+
+  it("shows friendly dismissed copy for skipped Ask User", () => {
+    renderMessages([
+      {
+        id: "ask-dismissed",
+        role: "assistant",
+        variant: "tool",
+        toolCall: {
+          title: "AskUserQuestion",
+          type: "tool-call" as never,
+          state: "output-available",
+          toolCallId: "1:ask",
+          input: {},
+          output: JSON.stringify({
+            answers: {},
+            note: "User dismissed the question without answering.",
+          }),
+        },
+      },
+    ]);
+
+    expect(screen.getByText("Kimi 想确认几个问题")).toBeTruthy();
+    expect(screen.getByText("已跳过，未作答")).toBeTruthy();
+    expect(screen.queryByText(/User dismissed/)).toBeNull();
+    expect(screen.queryByText("等待子代理步骤…")).toBeNull();
+  });
 });

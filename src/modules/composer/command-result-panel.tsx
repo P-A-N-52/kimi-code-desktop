@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { cn } from "@/lib/utils";
 
 export type CommandResultPanelState = {
-  command: "usage" | "status" | "help";
+  command: "usage" | "status" | "help" | "goal";
   content: string;
   loading: boolean;
 };
@@ -17,6 +17,7 @@ const TITLES: Record<CommandResultPanelState["command"], string> = {
   usage: "/usage",
   status: "/status",
   help: "/help",
+  goal: "/goal",
 };
 
 export function CommandResultPanel({ result, onClose }: CommandResultPanelProps) {

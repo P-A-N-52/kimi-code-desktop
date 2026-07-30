@@ -151,6 +151,26 @@ function DisplayItem({ item }: { item: DisplayBlock }) {
     }
     case "todo":
       return <TodoItems data={raw} />;
+    case "text": {
+      const record = asRecord(raw);
+      const nested = asRecord(record?.data);
+      const text =
+        typeof raw === "string"
+          ? raw
+          : typeof record?.text === "string"
+            ? record.text
+            : typeof nested?.text === "string"
+              ? nested.text
+              : null;
+      if (text !== null) {
+        return (
+          <pre className="max-h-96 overflow-auto whitespace-pre-wrap p-3 font-mono text-[11.5px] leading-relaxed text-muted">
+            {text}
+          </pre>
+        );
+      }
+      return <JsonFallback value={raw} label="text" />;
+    }
     case "brief": {
       const record = asRecord(item);
       const value = record?.text ?? raw;

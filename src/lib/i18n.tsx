@@ -1,11 +1,11 @@
 import {
   createContext,
+  type ReactNode,
   useCallback,
   useContext,
   useEffect,
   useMemo,
   useState,
-  type ReactNode,
 } from "react";
 
 export type UiLanguage = "system" | "en-US" | "zh-CN";
@@ -64,8 +64,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Clear search": "清空搜索",
   "CLI theme": "CLI 主题",
   "CLI session theme": "CLI 会话主题",
-  "Click the + button in the sidebar to start a new session":
-    "点击侧边栏中的 + 按钮开始新会话",
+  "Click the + button in the sidebar to start a new session": "点击侧边栏中的 + 按钮开始新会话",
   "Click to open in new tab": "点击以在新标签页打开",
   Close: "关闭",
   "Close sessions sidebar": "关闭会话侧边栏",
@@ -86,8 +85,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Copy path": "复制路径",
   Config: "配置",
   "Create a session to begin": "创建一个会话开始使用",
-  "Create or select a session to start working with Kimi.":
-    "创建或选择一个会话，开始使用 Kimi。",
+  "Create or select a session to start working with Kimi.": "创建或选择一个会话，开始使用 Kimi。",
   "Create Directory": "创建目录",
   "Create new session": "创建新会话",
   "Create New Session": "创建新会话",
@@ -158,8 +156,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Fork session from this point": "从此处派生会话",
   Format: "格式化",
   "Forced by model": "由模型强制启用",
-  "Finish login in the terminal, then reload settings.":
-    "请在终端中完成登录，然后重新加载设置。",
+  "Finish login in the terminal, then reload settings.": "请在终端中完成登录，然后重新加载设置。",
   "Full size preview": "全尺寸预览",
   General: "通用",
   "Generated code": "生成的代码",
@@ -190,8 +187,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Kimi Code credentials": "Kimi Code 凭据",
   "Kimi Code login (optional)": "Kimi Code 登录（可选）",
   "Kimi Code needs approval": "Kimi Code 需要批准",
-  "Kimi login is only available in the desktop app":
-    "Kimi 登录只能在桌面应用中使用",
+  "Kimi login is only available in the desktop app": "Kimi 登录只能在桌面应用中使用",
   "Kimi login terminal opened": "Kimi 登录终端已打开",
   "Sign in with a device code in this app. Credentials are saved like `kimi login`.":
     "在本应用内用设备码登录。凭据写入方式与 `kimi login` 相同。",
@@ -200,14 +196,12 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Signed in": "已登录",
   "Sign in again": "重新登录",
   "Starting login…": "正在开始登录…",
-  "Open the link, sign in, and confirm this code:":
-    "打开链接并登录，然后确认以下验证码：",
+  "Open the link, sign in, and confirm this code:": "打开链接并登录，然后确认以下验证码：",
   "Open browser": "打开浏览器",
   "Copy code": "复制验证码",
   Copied: "已复制",
   "Waiting for authorization…": "等待授权中…",
-  "Login successful. Credentials saved for Kimi Code.":
-    "登录成功。已写入 Kimi Code 凭据。",
+  "Login successful. Credentials saved for Kimi Code.": "登录成功。已写入 Kimi Code 凭据。",
   "Logged out. Credentials cleared.": "已退出登录。凭据已清除。",
   "Logging out…": "正在退出…",
   "Device code expired. Start login again.": "设备码已过期，请重新登录。",
@@ -261,8 +255,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "No workspace files": "没有工作区文件",
   Open: "打开",
   "Opening...": "正在打开...",
-  "Optional; env/CLI login can stay empty":
-    "可选；使用环境变量/CLI 登录时可留空",
+  "Optional; env/CLI login can stay empty": "可选；使用环境变量/CLI 登录时可留空",
   "Open in": "打开方式",
   "Open in File Explorer": "在资源管理器中打开",
   "Open in VS Code": "在 VS Code 中打开",
@@ -278,8 +271,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Path copied": "路径已复制",
   Plan: "计划",
   "Plan Preview": "计划预览",
-  "Press Enter to send, @ for files, / for commands.":
-    "按回车发送，@ 提及文件，/ 查看命令。",
+  "Press Enter to send, @ for files, / for commands.": "按回车发送，@ 提及文件，/ 查看命令。",
   "Preferences saved": "偏好设置已保存",
   "Previous branch": "上一个分支",
   "Previous slide": "上一张幻灯片",
@@ -429,7 +421,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Workspace files": "工作区文件",
   "Workspace files indexed.": "工作区文件已索引。",
   "Workspace files unavailable.": "工作区文件不可用。",
-  "Write": "写入",
+  Write: "写入",
   "Writing files...": "正在写入文件...",
   "[models.*] in config.toml": "config.toml 中的 [models.*]",
   "Switch model failed": "切换模型失败",
@@ -503,8 +495,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Enter a path, for example C:\\projects\\foo": "输入路径，如 C:\\projects\\foo",
   Confirm: "确定",
   "Loading…": "加载中…",
-  "The current file has unsaved changes. Discard them?":
-    "当前文件有未保存的更改，确定放弃吗？",
+  "The current file has unsaved changes. Discard them?": "当前文件有未保存的更改，确定放弃吗？",
   "Update default model failed": "更新默认模型失败",
   "Update Thinking failed": "更新 Thinking 失败",
   "Manage app appearance, Kimi Code configuration, MCP servers, usage, and version information.":
@@ -563,6 +554,50 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "No task summary in this session": "当前会话还没有任务摘要",
   "Current goal": "当前目标",
   "Files in this turn": "本轮文件",
+  "Goal changed; please try again": "Goal 已变化，请重新操作",
+  "Failed to cancel Goal": "取消 Goal 失败",
+  "Resize composer": "调整输入框高度",
+  "Subagent progress": "子代理进度",
+  finished: "已结束",
+  "Cancel the current Goal?": "取消当前 Goal？",
+  "Canceling will clear the current Goal and it cannot be restored.":
+    "取消后会清除当前 Goal，之后不能再恢复。",
+  "Keep Goal": "保留 Goal",
+  "Manage Goal queue": "管理 Goal 队列",
+  "Reorder upcoming Goals, edit objectives, or remove Goals you no longer need.":
+    "调整后续 Goal 的顺序、目标内容，或移除不再需要的 Goal。",
+  "No Goals are queued.": "当前没有排队的 Goal。",
+  "Goal queue": "Goal 队列",
+  Created: "创建",
+  "· Updated": "· 更新",
+  "Start Goal": "启动 Goal",
+  "Kimi Code will work toward this objective across turns, check progress, and stop when it completes, pauses, becomes blocked, or reaches its budget.":
+    "Kimi Code 会围绕这个目标跨轮执行、检查进度，并在完成、暂停、阻塞或达到预算时停止。",
+  Currently: "当前为",
+  "; choose the permission mode for this Goal.": "；请选择 Goal 运行时的权限模式。",
+  "Switch to Auto and start": "切换 Auto 并开始",
+  "Keep Manual and start": "保持 Manual 并开始",
+  "Do not start": "不开始",
+  Unanswered: "未作答",
+  "Waiting for subagent steps…": "等待子代理步骤…",
+  "This check is taking longer than expected. A VPN may add delay; you can also continue now and retry later.":
+    "检查时间较长。若正在使用 VPN，可能额外增加延迟；也可以先继续，稍后再重试。",
+  "If you use a VPN or the network is unstable, confirm connectivity before retrying.":
+    "若使用 VPN 或网络不稳定，请确认连通后再重试。",
+  "Loading sessions": "加载会话中",
+  "Loading sessions…": "正在加载会话…",
+  "Failed to open folder picker": "打开文件夹选择器失败",
+  Browse: "浏览",
+  "Goal lifecycle controls": "Goal 生命周期控制",
+  "Pause Goal": "暂停 Goal",
+  "Pause current Goal": "暂停当前 Goal",
+  Pause: "暂停",
+  "Resume Goal": "恢复 Goal",
+  "Resume current Goal": "恢复当前 Goal",
+  Resume: "恢复",
+  "Cancel Goal": "取消 Goal",
+  "Cancel current Goal": "取消当前 Goal",
+  "Completion criterion:": "完成条件：",
 };
 
 const EN_US_RESTORE_TRANSLATIONS = Object.entries(ZH_CN_TRANSLATIONS).reduce<
@@ -572,12 +607,7 @@ const EN_US_RESTORE_TRANSLATIONS = Object.entries(ZH_CN_TRANSLATIONS).reduce<
   return restoreMap;
 }, {});
 
-const TRANSLATABLE_ATTRIBUTES = [
-  "aria-label",
-  "title",
-  "placeholder",
-  "alt",
-] as const;
+const TRANSLATABLE_ATTRIBUTES = ["aria-label", "title", "placeholder", "alt"] as const;
 
 const SKIP_TAGS = new Set([
   "CODE",
@@ -653,10 +683,7 @@ function translateCore(core: string): string | null {
   return null;
 }
 
-export function translateUiString(
-  value: string,
-  language: ResolvedUiLanguage,
-): string {
+export function translateUiString(value: string, language: ResolvedUiLanguage): string {
   if (language !== "zh-CN") {
     return restoreUiString(value);
   }
@@ -691,23 +718,14 @@ function shouldSkipElement(element: Element | null): boolean {
     return true;
   }
 
-  return Boolean(
-    element.closest(
-      "[data-kimi-i18n-skip], code, pre, script, style, textarea",
-    ),
-  );
+  return Boolean(element.closest("[data-kimi-i18n-skip], code, pre, script, style, textarea"));
 }
 
 function shouldSkipAttributeElement(element: Element): boolean {
-  return Boolean(
-    element.closest("[data-kimi-i18n-skip], code, pre, script, style"),
-  );
+  return Boolean(element.closest("[data-kimi-i18n-skip], code, pre, script, style"));
 }
 
-function applyTextNodeTranslation(
-  node: Text,
-  language: ResolvedUiLanguage,
-): void {
+function applyTextNodeTranslation(node: Text, language: ResolvedUiLanguage): void {
   const current = node.nodeValue ?? "";
   if (!current.trim()) {
     return;
@@ -747,18 +765,11 @@ function applyTextNodeTranslation(
   }
 }
 
-function getAttributeRecord(
-  element: Element,
-  attribute: string,
-): AttributeRecord | undefined {
+function getAttributeRecord(element: Element, attribute: string): AttributeRecord | undefined {
   return attributeRecords.get(element)?.get(attribute);
 }
 
-function setAttributeRecord(
-  element: Element,
-  attribute: string,
-  record: AttributeRecord,
-): void {
+function setAttributeRecord(element: Element, attribute: string, record: AttributeRecord): void {
   let records = attributeRecords.get(element);
   if (!records) {
     records = new Map();
@@ -811,10 +822,7 @@ function applyAttributeTranslation(
   }
 }
 
-function applyElementTranslation(
-  root: Element,
-  language: ResolvedUiLanguage,
-): void {
+function applyElementTranslation(root: Element, language: ResolvedUiLanguage): void {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
 
   let currentNode = walker.nextNode();
@@ -835,15 +843,9 @@ function applyElementTranslation(
   }
 }
 
-export function UiLanguageProvider({
-  children,
-}: {
-  children: ReactNode;
-}) {
-  const [uiLanguage, setUiLanguageState] =
-    useState<UiLanguage>(getInitialUiLanguage);
-  const [systemLanguage, setSystemLanguage] =
-    useState<ResolvedUiLanguage>(getSystemLanguage);
+export function UiLanguageProvider({ children }: { children: ReactNode }) {
+  const [uiLanguage, setUiLanguageState] = useState<UiLanguage>(getInitialUiLanguage);
+  const [systemLanguage, setSystemLanguage] = useState<ResolvedUiLanguage>(getSystemLanguage);
 
   const resolvedLanguage = useMemo(
     () => (uiLanguage === "system" ? systemLanguage : uiLanguage),

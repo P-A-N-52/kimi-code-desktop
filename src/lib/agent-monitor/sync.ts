@@ -325,13 +325,13 @@ export function syncAgentMonitorFromSubagentLifecycle(
   const payloadPhase = readString(payload, "phase")?.toLowerCase();
   const kind = eventKind === "lifecycle" ? (payloadPhase ?? eventKind) : eventKind;
   const status =
-    kind === "started"
+    kind === "started" || kind === "working" || kind === "running"
       ? "running"
-      : kind === "suspended"
+      : kind === "suspended" || kind === "paused"
         ? "suspended"
-        : kind === "completed"
+        : kind === "completed" || kind === "success"
           ? "success"
-          : kind === "failed"
+          : kind === "failed" || kind === "error"
             ? "error"
             : kind === "cancelled" || kind === "canceled" || kind === "aborted"
               ? "cancelled"

@@ -106,46 +106,17 @@
  *    Key property: events must be routed to the store entry that *owns* the
  *    connection that produced them.
  */
-import {
-  useState,
-  useCallback,
-  useRef,
-  useEffect,
-  useLayoutEffect,
-} from "react";
+
 import type { ChatStatus, ToolUIPart } from "ai";
-import type { LiveMessage, MessageAttachmentPart, SubagentStep } from "./types";
-import type {
-  SessionStatus,
-  UploadSessionFileResponse,
-} from "@/lib/api/models";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { SessionStatus, UploadSessionFileResponse } from "@/lib/api/models";
 import { getAuthToken } from "@/lib/auth";
 import {
-  type ContentPart,
-  type PermissionMode,
-  type TokenUsage,
-  type WireMessage,
-  type WireEvent,
-  type ToolCallState,
-  type JsonRpcRequest,
-  type JsonRpcResponse,
-  type ApprovalRequestEvent,
-  type ApprovalRequestResolvedEvent,
-  type ApprovalResponseDecision,
-  type QuestionRequestEvent,
-  type SessionStatusPayload,
-  type StepRetryEvent,
-  type SubagentEventWire,
-  type TaskCreatedEvent,
-  type TaskProgressEvent,
-  type TaskCompletedEvent,
-  type SubagentLifecycleEvent,
-  type PlanDisplayEvent,
-  type SlashCommandsUpdateEvent,
-  extractEvent,
-} from "./wireTypes";
-import { createMessageId, getApiBaseUrl } from "./utils";
-import { resolveKimiCliVersion } from "@/lib/version";
+  formatGoalStatus,
+  type GoalPromptAction,
+  goalPromptForCommand,
+  parseGoalCommand,
+} from "@/lib/goal";
 import {
   classifySlashDispatch,
   filterDesktopSlashCommands,
@@ -153,29 +124,61 @@ import {
   parseSlashCommandInput,
   type SlashCommandDef,
 } from "@/lib/slash-command-catalog";
+import { resolveKimiCliVersion } from "@/lib/version";
 import { formatMentionToken } from "@/modules/composer/file-mentions";
+import { resolveAskUserParentToolCallId } from "@/modules/statusbar/permission-mode";
+import type { LiveMessage, MessageAttachmentPart, SubagentStep } from "./types";
+import { createMessageId, getApiBaseUrl } from "./utils";
+import {
+  type ApprovalRequestEvent,
+  type ApprovalRequestResolvedEvent,
+  type ApprovalResponseDecision,
+  type ContentPart,
+  extractEvent,
+  type JsonRpcRequest,
+  type JsonRpcResponse,
+  type PermissionMode,
+  type PlanDisplayEvent,
+  type QuestionRequestEvent,
+  type SessionStatusPayload,
+  type SlashCommandsUpdateEvent,
+  type StepRetryEvent,
+  type SubagentEventWire,
+  type SubagentLifecycleEvent,
+  type TaskCompletedEvent,
+  type TaskCreatedEvent,
+  type TaskProgressEvent,
+  type TokenUsage,
+  type ToolCallState,
+  type WireEvent,
+  type WireMessage,
+} from "./wireTypes";
 
 /**
  * Inline uploaded attachments into the prompt text as CLI-style `@path`
  * mention tokens (absolute pending-upload paths, forward-slashed) instead of
  * wire-level attachment_ids, so the runtime receives them in text form.
  */
-function attachmentMentionTokens(
-  attachments: UploadSessionFileResponse[],
-): string[] {
-  return attachments.map((attachment) =>
-    formatMentionToken(attachment.path.replace(/\\/g, "/")),
-  );
+function attachmentMentionTokens(attachments: UploadSessionFileResponse[]): string[] {
+  return attachments.map((attachment) => formatMentionToken(attachment.path.replace(/\\/g, "/")));
 }
 
-function joinPromptText(
-  text: string,
-  attachments: UploadSessionFileResponse[],
-): string {
+function joinPromptText(text: string, attachments: UploadSessionFileResponse[]): string {
   return [text, ...attachmentMentionTokens(attachments)]
     .filter((part) => part.trim().length > 0)
     .join("\n");
 }
+
+import { v4 as uuidV4 } from "uuid";
+import {
+  completeAgentMonitorTask,
+  completeRunningAgentMonitorTasks,
+  syncAgentMonitorFromSubagentEvent,
+  syncAgentMonitorFromSubagentLifecycle,
+  syncAgentMonitorFromTaskCompleted,
+  syncAgentMonitorFromTaskCreated,
+  syncAgentMonitorFromTaskProgress,
+} from "@/lib/agent-monitor/sync";
 import {
   formatStatusReport,
   formatUsageReport,
@@ -183,10 +186,12 @@ import {
   type SessionUsageContext,
 } from "@/lib/managed-usage";
 import {
+  controlSessionGoal,
   fetchManagedUsage,
   getGlobalConfig,
   getKimiCliVersion,
   getSession,
+  getSessionGoalSnapshot,
   getSessionRuntimeModes,
   isTauri,
   migrateSessionSwarmMode,
@@ -197,31 +202,21 @@ import {
   wireSend,
   wireStatus,
 } from "@/lib/tauri-api";
-import { handleToolResult, useToolEventsStore, type TodoItem } from "@/lib/tool-events/store";
-import {
-  completeAgentMonitorTask,
-  completeRunningAgentMonitorTasks,
-  syncAgentMonitorFromSubagentEvent,
-  syncAgentMonitorFromTaskCreated,
-  syncAgentMonitorFromTaskProgress,
-  syncAgentMonitorFromTaskCompleted,
-  syncAgentMonitorFromSubagentLifecycle,
-} from "@/lib/agent-monitor/sync";
-import { v4 as uuidV4 } from "uuid";
+import { handleToolResult, type TodoItem, useToolEventsStore } from "@/lib/tool-events/store";
 
 // Regex patterns moved to top level for performance
 const DATA_URL_MEDIA_TYPE_REGEX = /^data:([^;,]+)[;,]/;
 const NUMBERED_LIST_ITEM_REGEX = /^\d+\.\s+(.+)$/;
 const IMAGE_TAG_REGEX = /<image\s+path="([^"]+)"\s+content_type="([^"]+)">/i;
 const VIDEO_TAG_REGEX = /<video\s+path="([^"]+)"\s+content_type="([^"]+)">/i;
-const DOCUMENT_TAG_REGEX =
-  /<document\s+path="([^"]+)"\s+content_type="([^"]+)">/i;
+const DOCUMENT_TAG_REGEX = /<document\s+path="([^"]+)"\s+content_type="([^"]+)">/i;
 const LEGACY_UPLOADS_REGEX = /`uploads\/([^`]+)`/;
 const TRAILING_DECIMAL_ZERO_REGEX = /\.0$/;
 const HTTP_TO_WS_REGEX = /^http/;
 const NEWLINE_REGEX = /\r?\n/;
 // Match <image path="..."> or <video path="..."> tags (path attribute only, no content_type required)
-const MEDIA_TAG_PATH_REGEX = /<(?:image|video)\s+[^>]*path="([^"]*\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/uploads\/([^"]+))"/g;
+const MEDIA_TAG_PATH_REGEX =
+  /<(?:image|video)\s+[^>]*path="([^"]*\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/uploads\/([^"]+))"/g;
 const BROWSER_URL_PROTOCOLS = new Set(["http:", "https:", "data:", "blob:"]);
 const WIRE_PROTOCOL_VERSION = "1.10";
 const THINK_OPEN_TAG = "<think>";
@@ -239,8 +234,8 @@ function readLegacySwarmModes(): Record<string, boolean> {
     }
     const stored = JSON.parse(value) as Record<string, unknown>;
     return Object.fromEntries(
-      Object.entries(stored).filter((entry): entry is [string, boolean] =>
-        typeof entry[1] === "boolean"
+      Object.entries(stored).filter(
+        (entry): entry is [string, boolean] => typeof entry[1] === "boolean",
       ),
     );
   } catch {
@@ -302,9 +297,7 @@ type PersistedSessionModes = {
   goalMode: boolean;
 };
 
-async function loadSessionRuntimeModes(
-  sessionId: string,
-): Promise<PersistedSessionModes> {
+async function loadSessionRuntimeModes(sessionId: string): Promise<PersistedSessionModes> {
   const migrated = await migrateLegacySwarmModes();
   const modes = await getSessionRuntimeModes(sessionId);
   if (migrated.has(sessionId)) {
@@ -333,8 +326,7 @@ type InlineThinkSegment = {
   value: string;
 };
 
-const indexOfTag = (value: string, tag: string): number =>
-  value.toLowerCase().indexOf(tag);
+const indexOfTag = (value: string, tag: string): number => value.toLowerCase().indexOf(tag);
 
 const longestSuffixThatCanStartTag = (value: string, tag: string): string => {
   const lowerValue = value.toLowerCase();
@@ -359,10 +351,7 @@ const consumeInlineThinkText = (
     if (state.inThink) {
       const closeIndex = indexOfTag(state.buffer, THINK_CLOSE_TAG);
       if (closeIndex === -1) {
-        const keep = longestSuffixThatCanStartTag(
-          state.buffer,
-          THINK_CLOSE_TAG,
-        );
+        const keep = longestSuffixThatCanStartTag(state.buffer, THINK_CLOSE_TAG);
         const emitLength = state.buffer.length - keep.length;
         if (emitLength > 0) {
           segments.push({
@@ -412,9 +401,7 @@ const consumeInlineThinkText = (
   return segments;
 };
 
-const flushInlineThinkText = (
-  state: InlineThinkParseState,
-): InlineThinkSegment[] => {
+const flushInlineThinkText = (state: InlineThinkParseState): InlineThinkSegment[] => {
   if (!state.buffer) {
     state.inThink = false;
     return [];
@@ -465,9 +452,7 @@ const formatStepRetryStatus = (retry: StepRetryPayload): string =>
   `Retrying after ${formatStepRetryReason(retry)} · attempt ${retry.next_attempt}/${retry.max_attempts} · ${formatRetryWait(retry.wait_s)}`;
 
 const discardSubagentRetryAttempt = (steps: SubagentStep[]): SubagentStep[] => {
-  const next = steps.filter(
-    (step) => !(step.kind === "tool-call" && step.status === "running"),
-  );
+  const next = steps.filter((step) => !(step.kind === "tool-call" && step.status === "running"));
   while (next.length > 0) {
     const last = next[next.length - 1];
     if (last.kind !== "thinking" && last.kind !== "text") {
@@ -581,13 +566,40 @@ type UseSessionStreamOptions = {
 /** UI effect for local info slash commands that stay out of chat history. */
 export type LocalInfoPanelResult = {
   kind: "info-panel";
-  command: "usage" | "status";
+  command: "usage" | "status" | "goal";
   content: string;
+  error?: boolean;
 };
+
+/** Local preflight shown before a Goal is started in Manual or YOLO mode. */
+export type GoalStartConfirmationResult = {
+  kind: "goal-start-confirmation";
+  objective: string;
+  replace: boolean;
+  permissionMode: Exclude<PermissionMode, "auto">;
+  goalSwitchArmed: boolean;
+};
+
+export type SendMessageOptions = {
+  goalStartConfirmed?: boolean;
+  /** Queue item consumed by the backend only after native goal.create is observed. */
+  upcomingGoalId?: string;
+  /** Atomically seed a newly-created session before Goal preflight and mode flush. */
+  initialModes?: {
+    permissionMode: PermissionMode;
+    planMode: boolean;
+    swarmMode: boolean;
+    goalMode: boolean;
+  };
+};
+export type SendMessageResult = LocalInfoPanelResult | GoalStartConfirmationResult | undefined;
 
 type PendingPrompt = {
   text: string;
   attachments: UploadSessionFileResponse[];
+  goalAction?: GoalPromptAction;
+  upcomingGoalId?: string;
+  goalSwitchWasArmed?: boolean;
 };
 
 export type UseSessionStreamReturn = {
@@ -613,13 +625,16 @@ export type UseSessionStreamReturn = {
   tokenUsage: TokenUsage | null;
   /** Current step number */
   currentStep: number;
+  /** Increments only after a canonical native Goal reaches natural completion. */
+  goalCompletionEpoch: number;
   /** Whether connected to the session stream */
   isConnected: boolean;
   /** Send a message to the session (will auto-connect if not connected) */
   sendMessage: (
     text: string,
     attachments?: UploadSessionFileResponse[],
-  ) => Promise<LocalInfoPanelResult | void>;
+    options?: SendMessageOptions,
+  ) => Promise<SendMessageResult>;
   /** Resolve /usage or /status text without writing chat messages */
   runLocalInfoCommand: (command: "usage" | "status") => Promise<string>;
   /** Respond to an approval request */
@@ -629,10 +644,9 @@ export type UseSessionStreamReturn = {
     reason?: string,
   ) => Promise<void>;
   /** Respond to a question request */
-  respondToQuestion: (
-    requestId: string,
-    answers: Record<string, string>,
-  ) => Promise<void>;
+  respondToQuestion: (requestId: string, answers: Record<string, string>) => Promise<void>;
+  /** Control the native Goal lifecycle even while a turn is running. */
+  controlGoal: (action: "pause" | "resume" | "cancel") => Promise<LocalInfoPanelResult | undefined>;
   /** Send a cancel request for the current turn */
   cancel: () => void;
   /** Disconnect from the stream */
@@ -728,9 +742,7 @@ type PromptTiming = {
 /**
  * Hook for connecting to a session's WebSocket stream
  */
-export function useSessionStream(
-  options: UseSessionStreamOptions,
-): UseSessionStreamReturn {
+export function useSessionStream(options: UseSessionStreamOptions): UseSessionStreamReturn {
   const {
     sessionId,
     baseUrl,
@@ -744,9 +756,7 @@ export function useSessionStream(
 
   const [messages, setMessagesInternal] = useState<LiveMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>("ready");
-  const [sessionStatus, setSessionStatus] = useState<SessionStatus | null>(
-    null,
-  );
+  const [sessionStatus, setSessionStatus] = useState<SessionStatus | null>(null);
   const [contextUsage, setContextUsage] = useState(0);
   const [contextTokens, setContextTokens] = useState<number | null>(null);
   const [maxContextTokens, setMaxContextTokens] = useState<number | null>(null);
@@ -755,6 +765,7 @@ export function useSessionStream(
   const [permissionMode, setPermissionMode] = useState<PermissionMode>("manual");
   const [swarmMode, setSwarmMode] = useState(false);
   const [goalMode, setGoalMode] = useState(false);
+  const [goalCompletionEpoch, setGoalCompletionEpoch] = useState(0);
   const [currentStep, setCurrentStep] = useState(0);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setErrorState] = useState<Error | null>(null);
@@ -785,11 +796,20 @@ export function useSessionStream(
    * - Every callback starts with `if (wsRef.current !== ws) return;` to ignore late events.
    */
   const wsRef = useRef<StreamConnection | null>(null);
+  const activeSessionIdRef = useRef(sessionId);
+  activeSessionIdRef.current = sessionId;
+  const goalSnapshotRequestSeqRef = useRef(0);
+  const goalHistoryResyncGenerationRef = useRef(0);
+  const goalHistoryResyncActiveRef = useRef(false);
+  const goalHistoryReplayBufferRef = useRef<{ messages: LiveMessage[] } | null>(null);
+  const latestSessionStatusRef = useRef<SessionStatus | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const connectRef = useRef<() => void>(() => undefined);
   const disconnectRef = useRef<() => void>(() => undefined);
   const reconnectRef = useRef<() => void>(() => undefined);
-  const resetStateRef = useRef<(preserveSlashCommands?: boolean) => void>(() => undefined);
+  const resetStateRef = useRef<
+    (preserveSlashCommands?: boolean, preserveSessionState?: boolean) => void
+  >(() => undefined);
   const handleMessageRef = useRef<(data: string) => void>(() => undefined);
   const historyCompleteTimeoutRef = useRef<number | null>(null);
   const isReplayingRef = useRef(true); // Track if we're still replaying history
@@ -806,6 +826,11 @@ export function useSessionStream(
   const permissionModeRef = useRef<PermissionMode>("manual");
   const swarmModeRef = useRef(false);
   const goalModeRef = useRef(false);
+  const rearmFailedGoalStart = useCallback(() => {
+    pendingModeUpdatesRef.current.goalMode = true;
+    goalModeRef.current = true;
+    setGoalMode(true);
+  }, []);
   const awaitingIdleRef = useRef(false); // Track pending idle after cancel
   const awaitingFirstResponseRef = useRef(false); // Track if waiting for first event of a turn
   const errorRef = useRef<Error | null>(null); // Synchronous guard against later idle snapshots
@@ -857,9 +882,7 @@ export function useSessionStream(
   const streamUpdateFrameRef = useRef<number | null>(null);
   const thinkingCompletedRef = useRef(false);
   const flushBufferedStreamUpdateRef = useRef<() => void>(() => undefined);
-  const flushInlineThinkBufferRef = useRef<(isReplay: boolean) => void>(
-    () => undefined,
-  );
+  const flushInlineThinkBufferRef = useRef<(isReplay: boolean) => void>(() => undefined);
   const currentToolCallsRef = useRef<Map<string, ToolCallState>>(new Map());
   const currentToolCallIdRef = useRef<string | null>(null);
   const thinkingMessageIdRef = useRef<string | null>(null);
@@ -868,12 +891,8 @@ export function useSessionStream(
   // ACP seals blocks at tool-call boundaries, so the "current" refs alone no
   // longer cover all blocks a retry must discard.
   const turnStreamBlockIdsRef = useRef<string[]>([]);
-  const pendingApprovalRequestsRef = useRef<Map<string, PendingApprovalEntry>>(
-    new Map(),
-  );
-  const pendingQuestionRequestsRef = useRef<Map<string, PendingQuestionEntry>>(
-    new Map(),
-  );
+  const pendingApprovalRequestsRef = useRef<Map<string, PendingApprovalEntry>>(new Map());
+  const pendingQuestionRequestsRef = useRef<Map<string, PendingQuestionEntry>>(new Map());
   const optimisticUserMessagesRef = useRef<OptimisticUserMessage[]>([]);
   const promptRequestIdsRef = useRef<Set<string>>(new Set());
   const cancelRequestIdsRef = useRef<Set<string>>(new Set());
@@ -897,8 +916,14 @@ export function useSessionStream(
   // Track the temporary StepRetry status so the next attempt can replace it.
   const stepRetryStatusMessageIdRef = useRef<string | null>(null);
 
-  // Wrapped setMessages
+  // Wrapped setMessages. Goal continuation history is rebuilt offscreen and
+  // committed once, so replay never duplicates the already-rendered first turn.
   const setMessages: typeof setMessagesInternal = useCallback((action) => {
+    const replayBuffer = goalHistoryReplayBufferRef.current;
+    if (replayBuffer) {
+      replayBuffer.messages = typeof action === "function" ? action(replayBuffer.messages) : action;
+      return;
+    }
     setMessagesInternal(action);
   }, []);
 
@@ -926,9 +951,7 @@ export function useSessionStream(
       console.info("[SessionStream][TTFR]", {
         sessionId,
         workerReadyMs: rounded(
-          timing.workerReadyAt === undefined
-            ? undefined
-            : timing.workerReadyAt - timing.startedAt,
+          timing.workerReadyAt === undefined ? undefined : timing.workerReadyAt - timing.startedAt,
         ),
         promptSubmittedMs: rounded(
           timing.promptSubmittedAt === undefined
@@ -936,9 +959,7 @@ export function useSessionStream(
             : timing.promptSubmittedAt - timing.startedAt,
         ),
         firstEventMs: rounded(
-          timing.firstEventAt === undefined
-            ? undefined
-            : timing.firstEventAt - timing.startedAt,
+          timing.firstEventAt === undefined ? undefined : timing.firstEventAt - timing.startedAt,
         ),
         firstVisibleResponseMs: rounded(firstVisibleResponseAt - timing.startedAt),
         modelWaitMs: rounded(
@@ -1059,10 +1080,12 @@ export function useSessionStream(
         return;
       }
       lastStatusSeqRef.current = normalized.seq;
+      latestSessionStatusRef.current = normalized;
       setSessionStatus(normalized);
       onSessionStatus?.(normalized);
 
-      const explicitReplayInProgress = replayIdRef.current !== null;
+      const explicitReplayInProgress =
+        replayIdRef.current !== null || goalHistoryResyncActiveRef.current;
 
       switch (normalized.state) {
         case "busy": {
@@ -1088,9 +1111,7 @@ export function useSessionStream(
         }
         case "stopped": {
           if (explicitReplayInProgress) {
-            setStatus((current) =>
-              current === "streaming" ? current : "submitted",
-            );
+            setStatus((current) => (current === "streaming" ? current : "submitted"));
             break;
           }
 
@@ -1103,9 +1124,7 @@ export function useSessionStream(
         }
         case "idle": {
           if (explicitReplayInProgress) {
-            setStatus((current) =>
-              current === "streaming" ? current : "submitted",
-            );
+            setStatus((current) => (current === "streaming" ? current : "submitted"));
             break;
           }
 
@@ -1113,10 +1132,7 @@ export function useSessionStream(
           // pending prompt can still be waiting to be sent (or for its RPC
           // response) at that point, so treating this as terminal would clear
           // its request id before the real completion arrives.
-          if (
-            pendingMessageRef.current !== null ||
-            promptRequestIdsRef.current.size > 0
-          ) {
+          if (pendingMessageRef.current !== null || promptRequestIdsRef.current.size > 0) {
             setStatus("submitted");
             break;
           }
@@ -1166,10 +1182,7 @@ export function useSessionStream(
         applySessionStatus(sessionStatusToPayload(statusSnapshot));
         return true;
       } catch (err) {
-        console.warn(
-          `[SessionStream] Failed to sync Tauri status after ${source}:`,
-          err,
-        );
+        console.warn(`[SessionStream] Failed to sync Tauri status after ${source}:`, err);
         return false;
       }
     },
@@ -1179,9 +1192,7 @@ export function useSessionStream(
   const updateMessageById = useCallback(
     (messageId: string, transform: (message: LiveMessage) => LiveMessage) => {
       setMessages((prev) =>
-        prev.map((message) =>
-          message.id === messageId ? transform(message) : message,
-        ),
+        prev.map((message) => (message.id === messageId ? transform(message) : message)),
       );
     },
     [setMessages],
@@ -1203,16 +1214,13 @@ export function useSessionStream(
 
   type ParsedUserInput = { text: string; attachments: MessageAttachmentPart[] };
 
-  const parseMediaTypeFromDataUrl = useCallback(
-    (url: string): string | null => {
+  const parseMediaTypeFromDataUrl = useCallback((url: string): string | null => {
       if (!url.startsWith("data:")) {
         return null;
       }
       const match = DATA_URL_MEDIA_TYPE_REGEX.exec(url);
       return match?.[1] ?? null;
-    },
-    [],
-  );
+  }, []);
 
   const getSessionUploadUrl = useCallback(
     (filename?: string): string | undefined => {
@@ -1248,12 +1256,7 @@ export function useSessionStream(
           return false;
         }
         const filePath = match[1].trim();
-        if (
-          !(
-            filePath &&
-            (filePath.startsWith("/") || filePath.startsWith("uploads/"))
-          )
-        ) {
+        if (!(filePath && (filePath.startsWith("/") || filePath.startsWith("uploads/")))) {
           return false;
         }
         uploadedFilePaths.push(filePath);
@@ -1402,9 +1405,7 @@ export function useSessionStream(
         }
 
         if (part.type === "image_url") {
-          const inferredMediaType = parseMediaTypeFromDataUrl(
-            part.image_url.url,
-          );
+          const inferredMediaType = parseMediaTypeFromDataUrl(part.image_url.url);
           attachments.push({
             type: "file",
             mediaType: pendingMediaType ?? inferredMediaType ?? "image/*",
@@ -1416,9 +1417,7 @@ export function useSessionStream(
         }
 
         if (part.type === "video_url") {
-          const inferredMediaType = parseMediaTypeFromDataUrl(
-            part.video_url.url,
-          );
+          const inferredMediaType = parseMediaTypeFromDataUrl(part.video_url.url);
           attachments.push({
             type: "file",
             mediaType: pendingMediaType ?? inferredMediaType ?? "video/*",
@@ -1442,10 +1441,7 @@ export function useSessionStream(
           if (!filename) {
             continue;
           }
-          if (
-            existingFilenames.has(filename) ||
-            seenUploadedFilenames.has(filename)
-          ) {
+          if (existingFilenames.has(filename) || seenUploadedFilenames.has(filename)) {
             continue;
           }
           attachments.push({
@@ -1596,9 +1592,7 @@ export function useSessionStream(
 
         if (textMessageIdRef.current) {
           setMessages((prev) => {
-            const textIndex = prev.findIndex(
-              (message) => message.id === textMessageIdRef.current,
-            );
+            const textIndex = prev.findIndex((message) => message.id === textMessageIdRef.current);
             if (textIndex === -1) {
               return [...prev, thinkingMsg];
             }
@@ -1637,9 +1631,7 @@ export function useSessionStream(
         thinkingCompletedRef.current = true;
         setMessages((prev) =>
           prev.map((msg) =>
-            msg.id === thinkingMessageIdRef.current
-              ? { ...msg, isStreaming: false }
-              : msg,
+            msg.id === thinkingMessageIdRef.current ? { ...msg, isStreaming: false } : msg,
           ),
         );
       }
@@ -1652,8 +1644,7 @@ export function useSessionStream(
           id: textMessageIdRef.current,
           role: "assistant",
           variant: "text",
-          turnIndex:
-            turnCounterRef.current > 0 ? turnCounterRef.current - 1 : undefined,
+          turnIndex: turnCounterRef.current > 0 ? turnCounterRef.current - 1 : undefined,
           content: currentTextRef.current,
           isStreaming: !isReplay,
         });
@@ -1686,10 +1677,7 @@ export function useSessionStream(
 
   const flushInlineThinkBuffer = useCallback(
     (isReplay: boolean) => {
-      appendInlineThinkSegments(
-        flushInlineThinkText(inlineThinkParserRef.current),
-        isReplay,
-      );
+      appendInlineThinkSegments(flushInlineThinkText(inlineThinkParserRef.current), isReplay);
     },
     [appendInlineThinkSegments],
   );
@@ -1752,9 +1740,7 @@ export function useSessionStream(
       if (existingMessageId) {
         setMessages((prev) =>
           prev.map((msg) =>
-            msg.id === existingMessageId
-              ? { ...msg, content, isStreaming: !isReplay }
-              : msg,
+            msg.id === existingMessageId ? { ...msg, content, isStreaming: !isReplay } : msg,
           ),
         );
         return;
@@ -1829,7 +1815,13 @@ export function useSessionStream(
   }, [resetStepState, setMessages]);
 
   // Reset all state
-  const resetState = useCallback((preserveSlashCommands = false) => {
+  const resetState = useCallback(
+    (preserveSlashCommands = false, preserveSessionState = false) => {
+      if (!preserveSessionState) {
+        goalHistoryResyncGenerationRef.current += 1;
+        goalHistoryResyncActiveRef.current = false;
+        goalHistoryReplayBufferRef.current = null;
+      }
     resetStepState();
     stepRetryStatusMessageIdRef.current = null;
     currentToolCallsRef.current?.clear();
@@ -1847,6 +1839,7 @@ export function useSessionStream(
     setContextTokens(null);
     setMaxContextTokens(null);
     setTokenUsage(null);
+      if (!preserveSessionState) {
     setPlanMode(false);
     planModeRef.current = false;
     setPermissionMode("manual");
@@ -1855,18 +1848,25 @@ export function useSessionStream(
     swarmModeRef.current = false;
     setGoalMode(false);
     goalModeRef.current = false;
-    setError(null);
     setSessionStatus(null);
+        latestSessionStatusRef.current = null;
     lastStatusSeqRef.current = null;
+      }
+      if (!preserveSessionState) {
+        setError(null);
+      }
     initializeIdRef.current = null;
     replayIdRef.current = null;
     initializeRetryCountRef.current = 0;
     isReplayingRef.current = true;
     setIsReplayingHistory(true);
     setAwaitingFirstResponse(false);
-    // Reset first turn tracking
+      if (!preserveSessionState) {
+        // Reset first turn tracking only when ownership changes. A Goal
+        // catch-up replay must not trigger auto-rename a second time.
     hasTurnStartedRef.current = false;
     firstTurnCompleteCalledRef.current = false;
+      }
     // Reset turn counter
     turnCounterRef.current = 0;
     // Clear history_complete timeout
@@ -1882,7 +1882,9 @@ export function useSessionStream(
     } else if (slashCommandsLenRef.current > 0) {
       usingCachedCommandsRef.current = true;
     }
-  }, [resetStepState, setAwaitingFirstResponse, setError]);
+    },
+    [resetStepState, setAwaitingFirstResponse, setError],
+  );
 
   // Process a SubagentEvent: accumulate inner events into parent Agent tool's subagentSteps
   const processSubagentEvent = useCallback(
@@ -1904,15 +1906,11 @@ export function useSessionStream(
 
       setMessages((prev) => {
         // Find the parent Agent tool message by toolCallId
-        const parentIdx = prev.findIndex(
-          (msg) => msg.toolCall?.toolCallId === parentToolCallId,
-        );
+        const parentIdx = prev.findIndex((msg) => msg.toolCall?.toolCallId === parentToolCallId);
         if (parentIdx === -1) return prev;
 
         const parentMsg = prev[parentIdx];
-        const steps: SubagentStep[] = [
-          ...(parentMsg.toolCall?.subagentSteps ?? []),
-        ];
+        const steps: SubagentStep[] = [...(parentMsg.toolCall?.subagentSteps ?? [])];
 
         switch (innerType) {
           case "ContentPart": {
@@ -2004,10 +2002,7 @@ export function useSessionStream(
             };
             for (let i = steps.length - 1; i >= 0; i--) {
               const step = steps[i];
-              if (
-                step.kind === "tool-call" &&
-                step.toolCallId === tr.tool_call_id
-              ) {
+              if (step.kind === "tool-call" && step.toolCallId === tr.tool_call_id) {
                 const outputStr = Array.isArray(tr.return_value.output)
                   ? tr.return_value.output
                       .map((p) => p.text ?? "")
@@ -2055,10 +2050,8 @@ export function useSessionStream(
             subagentSteps: steps,
             subagentRunning: true,
             // Preserve existing values; only set if provided and not yet set
-            subagentType:
-              parentMsg.toolCall?.subagentType ?? subagentType,
-            subagentAgentId:
-              parentMsg.toolCall?.subagentAgentId ?? agentId,
+            subagentType: parentMsg.toolCall?.subagentType ?? subagentType,
+            subagentAgentId: parentMsg.toolCall?.subagentAgentId ?? agentId,
           },
         };
         return next;
@@ -2067,6 +2060,21 @@ export function useSessionStream(
     [sessionId, setMessages],
   );
 
+  const syncGoalSnapshot = useCallback(
+    async (targetSessionId = sessionId) => {
+      if (!targetSessionId || !isTauri()) return null;
+      const requestSeq = ++goalSnapshotRequestSeqRef.current;
+      const snapshot = await getSessionGoalSnapshot(targetSessionId);
+      if (
+        requestSeq === goalSnapshotRequestSeqRef.current &&
+        targetSessionId === activeSessionIdRef.current
+      ) {
+        useToolEventsStore.getState().setCurrentGoal(snapshot);
+      }
+      return snapshot;
+    },
+    [sessionId],
+  );
   // Process a single wire event
   const processEvent = useCallback(
     (event: WireEvent, isReplay = false, rpcMessageId?: string | number) => {
@@ -2103,8 +2111,7 @@ export function useSessionStream(
 
           // Check if this is a /clear or /reset command (needs UI clear)
           const userText = parsedUserInput.text.trim();
-          pendingClearRef.current =
-            userText === "/clear" || userText === "/reset";
+          pendingClearRef.current = userText === "/clear" || userText === "/reset";
           const slash = parseSlashCommandInput(userText);
           if (slash?.name === "compact") {
             // Slash compaction is a command, not a chat turn — keep the
@@ -2205,10 +2212,7 @@ export function useSessionStream(
             appendThinkingContent(event.payload.think, isReplay);
           } else if (event.payload.type === "text" && event.payload.text) {
             appendInlineThinkSegments(
-              consumeInlineThinkText(
-                inlineThinkParserRef.current,
-                event.payload.text,
-              ),
+              consumeInlineThinkText(inlineThinkParserRef.current, event.payload.text),
               isReplay,
             );
           } else if (
@@ -2228,9 +2232,7 @@ export function useSessionStream(
                 const completedTextId = textMessageIdRef.current;
                 setMessages((prev) =>
                   prev.map((message) =>
-                    message.id === completedTextId
-                      ? { ...message, isStreaming: false }
-                      : message,
+                    message.id === completedTextId ? { ...message, isStreaming: false } : message,
                   ),
                 );
                 textMessageIdRef.current = null;
@@ -2252,10 +2254,7 @@ export function useSessionStream(
                 id: getNextMessageId("assistant"),
                 role: "assistant",
                 variant: "text",
-                turnIndex:
-                  turnCounterRef.current > 0
-                    ? turnCounterRef.current - 1
-                    : undefined,
+                turnIndex: turnCounterRef.current > 0 ? turnCounterRef.current - 1 : undefined,
                 content: "",
                 attachments: [
                   {
@@ -2331,9 +2330,7 @@ export function useSessionStream(
 
         case "ToolCallPart": {
           if (currentToolCallIdRef.current) {
-            const tc = currentToolCallsRef.current.get(
-              currentToolCallIdRef.current,
-            );
+            const tc = currentToolCallsRef.current.get(currentToolCallIdRef.current);
             if (tc) {
               tc.arguments += event.payload.arguments_part;
 
@@ -2385,7 +2382,10 @@ export function useSessionStream(
           let mediaParts: Array<{ type: "image_url" | "video_url"; url: string }> = [];
           if (Array.isArray(return_value.output)) {
             mediaParts = return_value.output
-              .filter((part: Record<string, unknown>) => part.type === "image_url" || part.type === "video_url")
+              .filter(
+                (part: Record<string, unknown>) =>
+                  part.type === "image_url" || part.type === "video_url",
+              )
               .map((part: Record<string, unknown>) => ({
                 type: part.type as "image_url" | "video_url",
                 url: extractMediaUrl(part),
@@ -2405,7 +2405,9 @@ export function useSessionStream(
               const basePath = baseUrl ?? getApiBaseUrl();
               for (const match of textOutput.matchAll(MEDIA_TAG_PATH_REGEX)) {
                 const [, , sid, filename] = match;
-                apiUrls.push(`${basePath}/api/sessions/${sid}/uploads/${encodeURIComponent(filename)}`);
+                apiUrls.push(
+                  `${basePath}/api/sessions/${sid}/uploads/${encodeURIComponent(filename)}`,
+                );
               }
               if (apiUrls.length > 0) {
                 let apiIdx = 0;
@@ -2420,8 +2422,15 @@ export function useSessionStream(
           }
 
           const messageStr = return_value.message;
+          const extrasRecord =
+            return_value.extras && typeof return_value.extras === "object"
+              ? (return_value.extras as Record<string, unknown>)
+              : undefined;
+          // ACP tool_call_update status=in_progress is translated to ToolResult with
+          // extras.in_progress. That is a progress tick — not terminal completion.
+          const toolStillInProgress = extrasRecord?.in_progress === true;
 
-          if (tc) {
+          if (tc && !toolStillInProgress) {
             tc.argumentsComplete = true;
             tc.result = {
               isError: return_value.is_error,
@@ -2437,15 +2446,16 @@ export function useSessionStream(
           setMessages((prev) =>
             prev.map((msg) => {
               if (msg.toolCall?.toolCallId !== tool_call_id) return msg;
-              if (msg.toolCall?.subagentRunning || msg.toolCall?.subagentSteps?.length) {
+              if (
+                !toolStillInProgress &&
+                (msg.toolCall?.subagentRunning || msg.toolCall?.subagentSteps?.length)
+              ) {
                 const taskId = msg.toolCall.subagentAgentId ?? msg.toolCall.toolCallId;
                 if (taskId) {
                   completeAgentMonitorTask(
                     taskId,
                     return_value.is_error ? "error" : "success",
-                    return_value.is_error
-                      ? messageStr || "Subagent failed"
-                      : "Completed",
+                    return_value.is_error ? messageStr || "Subagent failed" : "Completed",
                     sessionId ?? undefined,
                   );
                 }
@@ -2456,50 +2466,56 @@ export function useSessionStream(
                   ...msg.toolCall,
                   state: return_value.is_error
                     ? ("output-error" as ToolUIPart["state"])
-                    : ("output-available" as ToolUIPart["state"]),
+                    : toolStillInProgress
+                      ? ("input-available" as ToolUIPart["state"])
+                      : ("output-available" as ToolUIPart["state"]),
                   // Aligned with backend ToolReturnValue
                   output: outputStr || undefined,
                   message: messageStr || undefined,
                   display: return_value.display,
                   extras: return_value.extras,
                   isError: return_value.is_error,
-                  errorText: return_value.is_error
-                    ? messageStr || undefined
-                    : undefined,
+                  errorText: return_value.is_error ? messageStr || undefined : undefined,
                   mediaParts: mediaParts.length > 0 ? mediaParts : undefined,
-                  // Mark subagent as complete when its parent Agent tool receives result
-                  subagentRunning: msg.toolCall.subagentSteps
-                    ? false
-                    : msg.toolCall.subagentRunning,
+                  // Only keep subagentRunning for tools that already have subagent
+                  // activity. ACP in_progress ticks hit every tool — must not mark
+                  // Bash/Edit/Read as subagent or GenericToolCard shows agent UI.
+                  subagentRunning: toolStillInProgress
+                    ? Boolean(msg.toolCall.subagentRunning || msg.toolCall.subagentSteps?.length)
+                    : false,
                 },
-                isStreaming: false,
+                isStreaming: toolStillInProgress ? msg.isStreaming : false,
               };
             }),
           );
 
-          if (currentToolCallIdRef.current === tool_call_id) {
+          if (!toolStillInProgress && currentToolCallIdRef.current === tool_call_id) {
             currentToolCallIdRef.current = null;
           }
 
           // Handle tool-specific events (e.g., WriteFile → new files notification)
-          if (tc) {
-            handleToolResult(
-              tc.name,
-              tc.arguments,
-              return_value.is_error,
-              isReplay,
-            );
+          if (tc && !toolStillInProgress) {
+            handleToolResult(tc.name, tc.arguments, return_value.is_error, isReplay);
+          }
+
+          if (
+            tc &&
+            !toolStillInProgress &&
+            !isReplay &&
+            ["creategoal", "getgoal", "updategoal", "setgoalbudget"].includes(tc.name.toLowerCase())
+          ) {
+            void syncGoalSnapshot().catch((error) => {
+              console.warn("[SessionStream] Failed to refresh Goal state:", error);
+            });
           }
 
           // Extract todo list from display blocks
           if (!isReplay && Array.isArray(return_value.display)) {
-            const todoBlock = return_value.display.find(
-              (d: { type: string }) => d.type === "todo",
-            );
+            const todoBlock = return_value.display.find((d: { type: string }) => d.type === "todo");
             if (todoBlock) {
-              useToolEventsStore.getState().setTodoItems(
-                (todoBlock as unknown as { type: string; items: TodoItem[] }).items,
-              );
+              useToolEventsStore
+                .getState()
+                .setTodoItems((todoBlock as unknown as { type: string; items: TodoItem[] }).items);
             }
           }
           break;
@@ -2533,9 +2549,7 @@ export function useSessionStream(
         }
 
         const messageId = tc?.messageId;
-        const approvalDisplay = payload.display?.length
-          ? payload.display
-          : undefined;
+            const approvalDisplay = payload.display?.length ? payload.display : undefined;
         if (messageId) {
           updateMessageById(messageId, (message) =>
             message.toolCall
@@ -2597,17 +2611,12 @@ export function useSessionStream(
               messageId: undefined,
               approval: approvalState,
             };
-            currentToolCallsRef.current.set(
-              payload.tool_call_id,
-              fallbackState,
-            );
+            currentToolCallsRef.current.set(payload.tool_call_id, fallbackState);
           }
 
           let messageId = tc?.messageId;
 
-          const approvalDisplay = payload.display?.length
-            ? payload.display
-            : undefined;
+          const approvalDisplay = payload.display?.length ? payload.display : undefined;
 
           if (messageId) {
             updateMessageById(messageId, (message) => {
@@ -2621,8 +2630,11 @@ export function useSessionStream(
                   ...message.toolCall,
                   state: "approval-requested",
                   approval: approvalState,
-                  // Show approval preview (diff/command) if tool has no display yet
-                  display: message.toolCall.display ?? approvalDisplay,
+                  // Prefer permission-request preview (plan markdown / diff).
+                  display:
+                    approvalDisplay && approvalDisplay.length > 0
+                      ? approvalDisplay
+                      : message.toolCall.display,
                 },
               };
             });
@@ -2748,8 +2760,7 @@ export function useSessionStream(
           }
 
           const messageId = tc?.messageId ?? pending?.messageId;
-          const nextState =
-            approved === false ? "output-denied" : "input-available";
+          const nextState = approved === false ? "output-denied" : "input-available";
           const nextStreaming = approved !== false;
 
           if (messageId) {
@@ -2805,7 +2816,15 @@ export function useSessionStream(
             clearAwaitingFirstResponse();
           }
           const qPayload = (event as QuestionRequestEvent).payload;
-          const qtc = currentToolCallsRef.current.get(qPayload.tool_call_id);
+          // ACP ask-user permission ids are `${parentId}:question:N`; prefer the
+          // already-streamed AskUserQuestion tool card so we don't leave a
+          // dangling Agent/Generic row beside the QuestionCard.
+          const parentToolCallId = resolveAskUserParentToolCallId(qPayload.tool_call_id);
+          const qtc =
+            currentToolCallsRef.current.get(qPayload.tool_call_id) ??
+            (parentToolCallId !== qPayload.tool_call_id
+              ? currentToolCallsRef.current.get(parentToolCallId)
+              : undefined);
 
       if (isReplay) {
         const questionState = {
@@ -2826,6 +2845,7 @@ export function useSessionStream(
                   isStreaming: false,
                   toolCall: {
                     ...message.toolCall,
+                    title: "AskUserQuestion",
                     state: "question-responded",
                     question: questionState,
                   },
@@ -2873,6 +2893,7 @@ export function useSessionStream(
                 isStreaming: false,
                 toolCall: {
                   ...message.toolCall,
+                  title: "AskUserQuestion",
                   state: "question-requested",
                   question: questionState,
                 },
@@ -2907,6 +2928,19 @@ export function useSessionStream(
             qMessageId = fallbackMessageId;
           }
 
+          // Alias permission toolCallId → parent message so respond/result stay linked.
+          if (parentToolCallId !== qPayload.tool_call_id && qtc?.messageId) {
+            currentToolCallsRef.current.set(qPayload.tool_call_id, {
+              ...(currentToolCallsRef.current.get(qPayload.tool_call_id) ?? {
+                id: qPayload.tool_call_id,
+                name: "AskUserQuestion",
+                arguments: "",
+                argumentsComplete: false,
+              }),
+              messageId: qtc.messageId,
+            });
+          }
+
           pendingQuestionRequestsRef.current.set(qPayload.id, {
             requestId: qPayload.id,
             toolCallId: qPayload.tool_call_id,
@@ -2923,7 +2957,7 @@ export function useSessionStream(
           // Wire 1.6 uses parent_tool_call_id; fall back to legacy task_tool_call_id
           const parentToolCallId =
             subPayload.parent_tool_call_id ??
-            (subPayload as Record<string, unknown>).task_tool_call_id as string | undefined;
+            ((subPayload as Record<string, unknown>).task_tool_call_id as string | undefined);
           if (parentToolCallId) {
             processSubagentEvent(
               parentToolCallId,
@@ -2988,8 +3022,7 @@ export function useSessionStream(
           }
 
           const rawPermissionMode = event.payload.permission_mode;
-          const nextPermissionMode =
-            rawPermissionMode === "ask" ? "manual" : rawPermissionMode;
+          const nextPermissionMode = rawPermissionMode === "ask" ? "manual" : rawPermissionMode;
           if (
             (nextPermissionMode === "manual" ||
               nextPermissionMode === "auto" ||
@@ -3007,6 +3040,12 @@ export function useSessionStream(
           ) {
             setSwarmMode(nextSwarmMode);
             swarmModeRef.current = nextSwarmMode;
+          }
+
+          if (event.payload.goal_refresh && !isReplay) {
+            void syncGoalSnapshot().catch((error) => {
+              console.warn("[SessionStream] Failed to refresh native Goal:", error);
+            });
           }
 
           const nextGoalMode = event.payload.goal_mode;
@@ -3091,10 +3130,7 @@ export function useSessionStream(
                 };
               }
               // Update pending approval tool states to denied
-              if (
-                msg.variant === "tool" &&
-                msg.toolCall?.state === "approval-requested"
-              ) {
+              if (msg.variant === "tool" && msg.toolCall?.state === "approval-requested") {
                 return {
                   ...updated,
                   toolCall: {
@@ -3114,10 +3150,7 @@ export function useSessionStream(
                 };
               }
               // Update pending question tool states to responded
-              if (
-                msg.variant === "tool" &&
-                msg.toolCall?.state === "question-requested"
-              ) {
+              if (msg.variant === "tool" && msg.toolCall?.state === "question-requested") {
                 return {
                   ...updated,
                   toolCall: {
@@ -3236,24 +3269,30 @@ export function useSessionStream(
 
         case "PlanDisplay": {
           const planPayload = (event as PlanDisplayEvent).payload;
+          const planBody = planPayload.content?.trim() ?? "";
+          const planPath = planPayload.file_path?.trim() ?? "";
+          if (!planBody && !planPath) {
+            break;
+          }
           const planMessageId = getNextMessageId("assistant");
+          const content = planPath
+            ? planBody
+              ? `Plan saved to: ${planPath}\n\n${planBody}`
+              : `Plan saved to: ${planPath}`
+            : planBody;
           upsertMessage({
             id: planMessageId,
             role: "assistant",
             variant: "text",
-            turnIndex:
-              turnCounterRef.current > 0
-                ? turnCounterRef.current - 1
-                : undefined,
-            content: planPayload.content,
+            turnIndex: turnCounterRef.current > 0 ? turnCounterRef.current - 1 : undefined,
+            content,
             isStreaming: false,
           });
           break;
         }
 
         case "SlashCommandsUpdate": {
-          const commands =
-            (event as SlashCommandsUpdateEvent).payload.slash_commands ?? [];
+          const commands = (event as SlashCommandsUpdateEvent).payload.slash_commands ?? [];
           const incoming = normalizeIncomingSlashCommands(commands);
           setSlashCommands((prev) => {
             const nextCommands = mergeSlashCommandsByName(prev, incoming);
@@ -3287,6 +3326,7 @@ export function useSessionStream(
       flushInlineThinkBuffer,
       sealOpenStreamBlocks,
       sessionId,
+      syncGoalSnapshot,
     ],
   );
 
@@ -3412,8 +3452,7 @@ export function useSessionStream(
     }
   }, []);
 
-  const flushPendingModeUpdates = useCallback(
-    async (connection: StreamConnection) => {
+  const flushPendingModeUpdates = useCallback(async (connection: StreamConnection) => {
       const runFlush = async () => {
         // Drain until empty so updates queued while we were sending are not dropped.
         for (;;) {
@@ -3423,10 +3462,7 @@ export function useSessionStream(
             | ["set_plan_mode" | "set_swarm_mode" | "set_goal_mode", { enabled: boolean }]
           > = [];
           if (pending.permissionMode) {
-            updates.push([
-              "set_permission_mode",
-              { mode: pending.permissionMode },
-            ]);
+          updates.push(["set_permission_mode", { mode: pending.permissionMode }]);
           }
           if (typeof pending.planMode === "boolean") {
             updates.push(["set_plan_mode", { enabled: pending.planMode }]);
@@ -3441,36 +3477,15 @@ export function useSessionStream(
             return;
           }
 
-          // Clear only the keys we are about to send; concurrent setters may
-          // add newer values while we await wire_send.
           const sentPermission = pending.permissionMode;
           const sentPlan = pending.planMode;
           const sentSwarm = pending.swarmMode;
           const sentGoal = pending.goalMode;
-          if (sentPermission) {
-            delete pendingModeUpdatesRef.current.permissionMode;
-            permissionModeRef.current = sentPermission;
-            setPermissionMode(sentPermission);
-          }
-          if (typeof sentPlan === "boolean") {
-            delete pendingModeUpdatesRef.current.planMode;
-            planModeRef.current = sentPlan;
-            setPlanMode(sentPlan);
-          }
-          if (typeof sentSwarm === "boolean") {
-            delete pendingModeUpdatesRef.current.swarmMode;
-            swarmModeRef.current = sentSwarm;
-            setSwarmMode(sentSwarm);
-          }
-          if (typeof sentGoal === "boolean") {
-            delete pendingModeUpdatesRef.current.goalMode;
-            goalModeRef.current = sentGoal;
-            setGoalMode(sentGoal);
-          }
 
-          try {
             // Permission before plan: plan recovery uses the worker's permission
             // snapshot; sending plan first with stale Manual writes `default`.
+        // Pending values are only deleted below, so a failed write remains
+        // queued for a later retry.
             for (const [method, params] of updates) {
               await Promise.resolve(
                 connection.send(
@@ -3483,21 +3498,22 @@ export function useSessionStream(
                 ),
               );
             }
-          } catch (error) {
-            for (const [method, params] of updates) {
-              if (method === "set_permission_mode") {
-                pendingModeUpdatesRef.current.permissionMode = params.mode;
-              } else {
-                pendingModeUpdatesRef.current[
-                  method === "set_plan_mode"
-                    ? "planMode"
-                    : method === "set_swarm_mode"
-                      ? "swarmMode"
-                      : "goalMode"
-                ] = params.enabled;
+
+        // Keep each value pending until its backend write has completed.
+        // A newer click made while awaiting the write wins and is drained by
+        // the next loop iteration.
+        const current = pendingModeUpdatesRef.current;
+        if (sentPermission && current.permissionMode === sentPermission) {
+          delete current.permissionMode;
               }
+        if (typeof sentPlan === "boolean" && current.planMode === sentPlan) {
+          delete current.planMode;
             }
-            throw error;
+        if (typeof sentSwarm === "boolean" && current.swarmMode === sentSwarm) {
+          delete current.swarmMode;
+        }
+        if (typeof sentGoal === "boolean" && current.goalMode === sentGoal) {
+          delete current.goalMode;
           }
         }
       };
@@ -3508,9 +3524,7 @@ export function useSessionStream(
         () => undefined,
       );
       await next;
-    },
-    [],
-  );
+  }, []);
 
   // Helper to send pending message
   const sendPendingMessage = useCallback(
@@ -3535,6 +3549,8 @@ export function useSessionStream(
           plan_mode: planModeRef.current,
           swarm_mode: swarmModeRef.current,
           goal_mode: goalModeRef.current,
+          ...(pendingMessage.goalAction ? { goal_action: pendingMessage.goalAction } : {}),
+          ...(pendingMessage.upcomingGoalId ? { upcoming_goal_id: pendingMessage.upcomingGoalId } : {}),
         },
       };
 
@@ -3549,16 +3565,19 @@ export function useSessionStream(
         // event cannot mistake an already-finished prompt for an unsent one.
         pendingMessageRef.current = null;
         await Promise.resolve(ws.send(JSON.stringify(message)));
-        console.log(
-          "[SessionStream] Sent pending message after connect:",
-          pendingMessage.text,
-        );
+        console.log("[SessionStream] Sent pending message after connect:", pendingMessage.text);
       } catch (err) {
         if (pendingMessageRef.current === null) {
           pendingMessageRef.current = pendingMessage;
         }
         promptRequestIdsRef.current.delete(messageId);
         optimisticUserMessagesRef.current.shift();
+        if (
+          pendingMessage.goalSwitchWasArmed &&
+          useToolEventsStore.getState().currentGoal === null
+        ) {
+          rearmFailedGoalStart();
+        }
         const error = err instanceof Error ? err : new Error(String(err));
         setError(error);
         onError?.(error);
@@ -3567,9 +3586,105 @@ export function useSessionStream(
         throw error;
       }
     },
-    [flushPendingModeUpdates, onError, setAwaitingFirstResponse, setError],
+    [flushPendingModeUpdates, onError, rearmFailedGoalStart, setAwaitingFirstResponse, setError],
   );
 
+  const resyncGoalHistory = useCallback(
+    (targetSessionId: string) => {
+      const generation = ++goalHistoryResyncGenerationRef.current;
+      const connection = wsRef.current;
+      const sessionStatusSeqAtStart = latestSessionStatusRef.current?.seq ?? null;
+      goalHistoryResyncActiveRef.current = true;
+      isReplayingRef.current = true;
+      setIsReplayingHistory(true);
+      setStatus("submitted");
+
+      void (async () => {
+        let replayBuffer: { messages: LiveMessage[] } | null = null;
+        const isCurrent = () =>
+          generation === goalHistoryResyncGenerationRef.current &&
+          activeSessionIdRef.current === targetSessionId &&
+          wsRef.current === connection;
+
+        try {
+          const history = await replaySessionHistory(targetSessionId);
+          if (!isCurrent()) return;
+
+          replayBuffer = { messages: [] };
+          goalHistoryReplayBufferRef.current = replayBuffer;
+          resetStateRef.current(true, true);
+          await replayHistoryMessagesInBatches(
+            history,
+            (message) => handleMessageRef.current(message),
+            () => !isCurrent(),
+          );
+          if (!isCurrent()) return;
+
+          flushInlineThinkBufferRef.current(true);
+          flushBufferedStreamUpdateRef.current();
+          if (!isCurrent()) return;
+
+          try {
+            await syncGoalSnapshot(targetSessionId);
+          } catch (error) {
+            console.warn("[SessionStream] Failed to sync Goal after continuation replay:", error);
+          }
+          if (!isCurrent()) return;
+
+          if (goalHistoryReplayBufferRef.current === replayBuffer) {
+            goalHistoryReplayBufferRef.current = null;
+          }
+          setMessagesInternal(replayBuffer.messages);
+          // StatusUpdate records replayed from the journal (or received from
+          // the worker while replay was in flight) are canonical. Do not put
+          // the stale mode snapshot from resync start back over them. The only
+          // local value that may intentionally outrank replay is a still
+          // pending one-shot Goal arm.
+          if (pendingModeUpdatesRef.current.goalMode === true) {
+            setGoalMode(true);
+            goalModeRef.current = true;
+          }
+          goalHistoryResyncActiveRef.current = false;
+          isReplayingRef.current = false;
+          setIsReplayingHistory(false);
+          const latestSessionStatus = latestSessionStatusRef.current;
+          const hasNewerSessionStatus =
+            latestSessionStatus !== null && latestSessionStatus.seq !== sessionStatusSeqAtStart;
+          if (errorRef.current || (hasNewerSessionStatus && latestSessionStatus.state === "error")) {
+            setStatus("error");
+          } else if (hasNewerSessionStatus && latestSessionStatus.state === "busy") {
+            setStatus("streaming");
+          } else if (hasNewerSessionStatus && latestSessionStatus.state === "restarting") {
+            setStatus("submitted");
+          } else {
+            // A finished prompt with no newer busy/restarting/error snapshot,
+            // including canonical idle/stopped, is ready for another turn.
+            setStatus("ready");
+          }
+        } catch (error) {
+          if (!isCurrent()) return;
+          if (replayBuffer && goalHistoryReplayBufferRef.current === replayBuffer) {
+            goalHistoryReplayBufferRef.current = null;
+          }
+          goalHistoryResyncActiveRef.current = false;
+          isReplayingRef.current = false;
+          setIsReplayingHistory(false);
+          const historyError = error instanceof Error ? error : new Error(String(error));
+          setError(historyError);
+          onError?.(historyError);
+          setStatus("error");
+          void syncGoalSnapshot(targetSessionId).catch((syncError) => {
+            console.warn("[SessionStream] Failed to sync Goal after replay error:", syncError);
+          });
+        } finally {
+          if (replayBuffer && goalHistoryReplayBufferRef.current === replayBuffer && !isCurrent()) {
+            goalHistoryReplayBufferRef.current = null;
+          }
+        }
+      })();
+    },
+    [onError, setError, syncGoalSnapshot],
+  );
   // Handle incoming stream message
   const handleMessage = useCallback(
     (data: string) => {
@@ -3616,7 +3731,10 @@ export function useSessionStream(
             awaitingIdleRef.current = false;
             if (pendingMessageRef.current && wsRef.current?.readyState === STREAM_OPEN) {
               void sendPendingMessage(wsRef.current).catch((sendErr) => {
-                console.warn("[SessionStream] Failed to send pending message after replay error:", sendErr);
+                console.warn(
+                  "[SessionStream] Failed to send pending message after replay error:",
+                  sendErr,
+                );
               });
             } else {
               setStatus("ready");
@@ -3631,7 +3749,7 @@ export function useSessionStream(
             clearStepRetryStatus();
             setAwaitingFirstResponse(false);
             awaitingIdleRef.current = false;
-            setStatus("ready");
+            setStatus(goalHistoryResyncActiveRef.current ? "submitted" : "ready");
             completeStreamingMessages();
             return;
           }
@@ -3665,7 +3783,9 @@ export function useSessionStream(
         }
 
         const replayId = message.id ? String(message.id) : null;
-        const replayResult = message.result as { status?: string; events?: number; requests?: number } | undefined;
+        const replayResult = message.result as
+          | { status?: string; events?: number; requests?: number }
+          | undefined;
         if (replayId && replayId === replayIdRef.current && replayResult) {
           console.log("[SessionStream] Replay complete", replayResult);
           if (historyCompleteTimeoutRef.current) {
@@ -3676,6 +3796,9 @@ export function useSessionStream(
           isReplayingRef.current = false;
           setIsReplayingHistory(false);
           awaitingIdleRef.current = false;
+          void syncGoalSnapshot().catch((error) => {
+            console.warn("[SessionStream] Failed to restore Goal after replay:", error);
+          });
           if (pendingMessageRef.current && wsRef.current?.readyState === STREAM_OPEN) {
             void sendPendingMessage(wsRef.current).catch((err) => {
               console.warn("[SessionStream] Failed to send pending message after replay:", err);
@@ -3690,17 +3813,28 @@ export function useSessionStream(
         if (promptResultId && promptRequestIdsRef.current.has(promptResultId)) {
           promptRequestIdsRef.current.delete(promptResultId);
           optimisticUserMessagesRef.current.shift();
-          const result = message.result as { status?: string } | undefined;
+          const result = message.result as
+            | {
+                status?: string;
+                goal_history_resync?: boolean;
+                goal_completed?: boolean;
+              }
+            | undefined;
+          if (result?.goal_completed === true) setGoalCompletionEpoch((epoch) => epoch + 1);
+          const shouldGoalResync =
+            result?.goal_history_resync === true && Boolean(sessionId) && isTauri();
           const finishedWithoutVisibleResponse =
-            result?.status === "finished" && awaitingFirstResponseRef.current;
+            result?.status === "finished" && awaitingFirstResponseRef.current && !shouldGoalResync;
           if (result?.status === "finished" || result?.status === "cancelled") {
             console.log(`[SessionStream] Stream ${result.status}`);
           }
           clearStepRetryStatus();
           setAwaitingFirstResponse(false);
           awaitingIdleRef.current = false;
+          if (!shouldGoalResync) {
           isReplayingRef.current = false;
           setIsReplayingHistory(false);
+          }
           completeStreamingMessages();
           if (pendingCompactRef.current) {
             pendingCompactRef.current = false;
@@ -3711,14 +3845,19 @@ export function useSessionStream(
                 role: "assistant",
                 variant: "status",
                 content:
-                  result?.status === "cancelled"
-                    ? "Compaction cancelled."
-                    : "Context compacted.",
+                  result?.status === "cancelled" ? "Compaction cancelled." : "Context compacted.",
                 isStreaming: false,
               },
             ]);
             setStatus("ready");
             setError(null);
+            return;
+          }
+          if (shouldGoalResync && sessionId) {
+            if (result?.status === "finished") {
+              triggerFirstTurnComplete();
+            }
+            resyncGoalHistory(sessionId);
             return;
           }
           if (finishedWithoutVisibleResponse) {
@@ -3742,24 +3881,21 @@ export function useSessionStream(
           if (result?.status === "finished" || result?.status === "cancelled") {
             console.log(`[SessionStream] Cancel ${result.status}`);
           }
-          setStatus("ready");
+          setStatus(goalHistoryResyncActiveRef.current ? "submitted" : "ready");
           clearStepRetryStatus();
           setAwaitingFirstResponse(false);
           awaitingIdleRef.current = false;
+          if (!goalHistoryResyncActiveRef.current) {
           isReplayingRef.current = false;
           setIsReplayingHistory(false);
+          }
           completeStreamingMessages();
           return;
         }
 
         // Check for finished or cancelled status from legacy transports
-        if (
-          message.result?.status === "finished" ||
-          message.result?.status === "cancelled"
-        ) {
-          console.log(
-            `[SessionStream] Stream ${message.result.status}`,
-          );
+        if (message.result?.status === "finished" || message.result?.status === "cancelled") {
+          console.log(`[SessionStream] Stream ${message.result.status}`);
           setStatus("ready");
           clearStepRetryStatus();
           setAwaitingFirstResponse(false);
@@ -3786,9 +3922,7 @@ export function useSessionStream(
         // Check for history_complete - history loaded but environment not ready yet
         // This allows showing history while SSH connection is being established
         if (message.method === "history_complete") {
-          console.log(
-            "[SessionStream] History loaded, waiting for environment...",
-          );
+          console.log("[SessionStream] History loaded, waiting for environment...");
           isReplayingRef.current = false;
           // Keep status as "submitted" - input stays disabled until session_status
           setStatus((current) => (current === "ready" ? current : "submitted"));
@@ -3804,10 +3938,7 @@ export function useSessionStream(
                 console.warn(
                   "[SessionStream] session_status timeout after history_complete, syncing Tauri status...",
                 );
-                void syncTauriStatusSnapshot(
-                  currentWs,
-                  "history_complete timeout",
-                );
+                void syncTauriStatusSnapshot(currentWs, "history_complete timeout");
                 return;
               }
               console.warn(
@@ -3878,11 +4009,7 @@ export function useSessionStream(
           processEvent(event, isReplayingRef.current);
         }
       } catch (err) {
-        console.warn(
-          "[SessionStream] Failed to parse stream message:",
-          data,
-          err,
-        );
+        console.warn("[SessionStream] Failed to parse stream message:", data, err);
       }
     },
     [
@@ -3898,6 +4025,9 @@ export function useSessionStream(
       syncTauriStatusSnapshot,
       triggerFirstTurnComplete,
       setError,
+      syncGoalSnapshot,
+      resyncGoalHistory,
+      sessionId,
     ],
   );
   handleMessageRef.current = handleMessage;
@@ -3918,18 +4048,14 @@ export function useSessionStream(
         }
         if (wsRef.current.readyState !== STREAM_OPEN) return;
         const elapsed = Date.now() - lastWsMessageTimeRef.current;
-        const hasUnsubmittedApproval = Array.from(
-          pendingApprovalRequestsRef.current.values(),
-        ).some((e) => !e.submitted);
-        const hasUnsubmittedQuestion = Array.from(
-          pendingQuestionRequestsRef.current.values(),
-        ).some((e) => !e.submitted);
+        const hasUnsubmittedApproval = Array.from(pendingApprovalRequestsRef.current.values()).some(
+          (e) => !e.submitted,
+        );
+        const hasUnsubmittedQuestion = Array.from(pendingQuestionRequestsRef.current.values()).some(
+          (e) => !e.submitted,
+        );
         const hasPendingInteraction = hasUnsubmittedApproval || hasUnsubmittedQuestion;
-        if (
-          elapsed > 45_000 &&
-          statusRef.current === "streaming" &&
-          !hasPendingInteraction
-        ) {
+        if (elapsed > 45_000 && statusRef.current === "streaming" && !hasPendingInteraction) {
           if (isTauri()) {
             lastWsMessageTimeRef.current = Date.now();
             console.warn(
@@ -3955,6 +4081,9 @@ export function useSessionStream(
         return;
       }
 
+      goalHistoryResyncGenerationRef.current += 1;
+      goalHistoryResyncActiveRef.current = false;
+      goalHistoryReplayBufferRef.current = null;
       console.log("[SessionStream] Disconnected:", code ?? 1000, reason ?? "");
       setIsConnected(false);
       wsRef.current = null;
@@ -3973,6 +4102,7 @@ export function useSessionStream(
       awaitingIdleRef.current = false;
       setAwaitingFirstResponse(false);
       setSessionStatus(null);
+      latestSessionStatusRef.current = null;
       lastStatusSeqRef.current = null;
       setIsReplayingHistory(false);
       isReplayingRef.current = false;
@@ -3995,13 +4125,7 @@ export function useSessionStream(
       completeStreamingMessages();
       setStatus(errorRef.current ? "error" : "ready");
     },
-    [
-      clearStepRetryStatus,
-      completeStreamingMessages,
-      onError,
-      setAwaitingFirstResponse,
-      setError,
-    ],
+    [clearStepRetryStatus, completeStreamingMessages, onError, setAwaitingFirstResponse, setError],
   );
 
   // Build WebSocket URL. WebSocket handshakes cannot attach Authorization headers
@@ -4026,11 +4150,7 @@ export function useSessionStream(
   );
 
   const respondToApproval = useCallback(
-    async (
-      requestId: string,
-      response: ApprovalResponseDecision,
-      reason?: string,
-    ) => {
+    async (requestId: string, response: ApprovalResponseDecision, reason?: string) => {
       const ws = wsRef.current;
       if (!ws || ws.readyState !== STREAM_OPEN) {
         throw new Error("Not connected to session stream");
@@ -4046,9 +4166,7 @@ export function useSessionStream(
       }
 
       const trimmedReason =
-        typeof reason === "string" && reason.trim().length > 0
-          ? reason.trim()
-          : undefined;
+        typeof reason === "string" && reason.trim().length > 0 ? reason.trim() : undefined;
 
       const isApproved = response !== "reject";
       const rejectionReason = response === "reject" ? trimmedReason : undefined;
@@ -4058,9 +4176,7 @@ export function useSessionStream(
         result: {
           request_id: pending.requestId ?? requestId,
           response,
-          ...(response === "reject" && trimmedReason
-            ? { feedback: trimmedReason }
-            : {}),
+          ...(response === "reject" && trimmedReason ? { feedback: trimmedReason } : {}),
         },
       };
 
@@ -4158,7 +4274,9 @@ export function useSessionStream(
       pending.submitted = true;
       pendingQuestionRequestsRef.current.set(requestId, pending);
 
-      const tc = currentToolCallsRef.current.get(pending.toolCallId);
+      const tc =
+        currentToolCallsRef.current.get(pending.toolCallId) ??
+        currentToolCallsRef.current.get(resolveAskUserParentToolCallId(pending.toolCallId));
 
       if (tc?.messageId) {
         updateMessageById(tc.messageId, (message) => {
@@ -4219,12 +4337,35 @@ export function useSessionStream(
       initializeRetryCountRef.current = 0;
       setError(null);
       setSessionStatus(null);
+      latestSessionStatusRef.current = null;
       lastStatusSeqRef.current = null;
       isReplayingRef.current = false;
       setIsReplayingHistory(false);
     } else {
-      resetState(true);  // preserve slashCommands on reconnect
+      resetState(true); // preserve slashCommands on reconnect
       setMessages([]);
+
+      // A lazy connection can be triggered while the new-session Goal
+      // confirmation is open (for example, when the user declines it). Keep
+      // the locally selected modes visible until their queued backend writes
+      // finish instead of flashing back to the persisted defaults.
+      const pendingModes = pendingModeUpdatesRef.current;
+      if (typeof pendingModes.planMode === "boolean") {
+        setPlanMode(pendingModes.planMode);
+        planModeRef.current = pendingModes.planMode;
+      }
+      if (pendingModes.permissionMode) {
+        setPermissionMode(pendingModes.permissionMode);
+        permissionModeRef.current = pendingModes.permissionMode;
+      }
+      if (typeof pendingModes.swarmMode === "boolean") {
+        setSwarmMode(pendingModes.swarmMode);
+        swarmModeRef.current = pendingModes.swarmMode;
+      }
+      if (typeof pendingModes.goalMode === "boolean") {
+        setGoalMode(pendingModes.goalMode);
+        goalModeRef.current = pendingModes.goalMode;
+      }
     }
     setStatus(skipReplay ? "ready" : "submitted");
     setAwaitingFirstResponse(Boolean(pendingMessageRef.current));
@@ -4238,6 +4379,7 @@ export function useSessionStream(
           return;
         }
         console.error("[SessionStream] Failed to connect Tauri wire:", err);
+        const failedPendingMessage = pendingMessageRef.current;
         const connectionError = err instanceof Error ? err : new Error(String(err));
         setError(connectionError);
         onError?.(connectionError);
@@ -4246,6 +4388,12 @@ export function useSessionStream(
         setStatus("error");
         clearStepRetryStatus();
         pendingMessageRef.current = null;
+        if (
+          failedPendingMessage?.goalSwitchWasArmed &&
+          useToolEventsStore.getState().currentGoal === null
+        ) {
+          rearmFailedGoalStart();
+        }
         promptRequestIdsRef.current.clear();
         cancelRequestIdsRef.current.clear();
         initializeIdRef.current = null;
@@ -4311,13 +4459,15 @@ export function useSessionStream(
             replayIdRef.current = replayId;
             isReplayingRef.current = true;
             setIsReplayingHistory(true);
-            await Promise.resolve(connection.send(
+            await Promise.resolve(
+              connection.send(
               JSON.stringify({
                 jsonrpc: "2.0",
                 method: "replay",
                 id: replayId,
               }),
-            ));
+              ),
+            );
             const currentConnection = connection;
             if (historyCompleteTimeoutRef.current) {
               window.clearTimeout(historyCompleteTimeoutRef.current);
@@ -4330,7 +4480,10 @@ export function useSessionStream(
                 setIsReplayingHistory(false);
                 if (pendingMessageRef.current && currentConnection.readyState === STREAM_OPEN) {
                   void sendPendingMessage(currentConnection).catch((err) => {
-                    console.warn("[SessionStream] Failed to send pending message after replay timeout:", err);
+                    console.warn(
+                      "[SessionStream] Failed to send pending message after replay timeout:",
+                      err,
+                    );
                   });
                 } else {
                   setStatus("ready");
@@ -4413,8 +4566,7 @@ export function useSessionStream(
       };
     } catch (err) {
       console.error("[SessionStream] Failed to connect:", err);
-      const connectionError =
-        err instanceof Error ? err : new Error(String(err));
+      const connectionError = err instanceof Error ? err : new Error(String(err));
       setError(connectionError);
       onError?.(connectionError);
       awaitingIdleRef.current = false;
@@ -4434,6 +4586,7 @@ export function useSessionStream(
     getWebSocketUrl,
     handleMessage,
     onError,
+    rearmFailedGoalStart,
     sendInitialize,
     flushPendingModeUpdates,
     sendPendingMessage,
@@ -4445,6 +4598,9 @@ export function useSessionStream(
   // Send cancel message to server
   // Disconnect
   const disconnect = useCallback(() => {
+    goalHistoryResyncGenerationRef.current += 1;
+    goalHistoryResyncActiveRef.current = false;
+    goalHistoryReplayBufferRef.current = null;
     if (reconnectTimeoutRef.current !== null) {
       window.clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
@@ -4474,6 +4630,7 @@ export function useSessionStream(
     setIsConnected(false);
     setStatus("ready");
     setSessionStatus(null);
+    latestSessionStatusRef.current = null;
     lastStatusSeqRef.current = null;
     setIsReplayingHistory(false);
     isReplayingRef.current = false;
@@ -4491,12 +4648,7 @@ export function useSessionStream(
 
     // Mark all streaming/subagent messages as complete
     completeStreamingMessages();
-  }, [
-    clearStepRetryStatus,
-    completeStreamingMessages,
-    setAwaitingFirstResponse,
-    setMessages,
-  ]);
+  }, [clearStepRetryStatus, completeStreamingMessages, setAwaitingFirstResponse, setMessages]);
 
   // Send cancel request or disconnect if stream not ready
   const cancel = useCallback(() => {
@@ -4505,17 +4657,13 @@ export function useSessionStream(
       promptRequestIdsRef.current.size > 0 ||
       (status === "streaming" && !isReplayingRef.current);
     if (!hasActivePrompt) {
-      console.log(
-        "[SessionStream] Ignoring cancel without an active prompt",
-      );
+      console.log("[SessionStream] Ignoring cancel without an active prompt");
       return;
     }
 
     const ws = wsRef.current;
     if (!ws || ws.readyState !== STREAM_OPEN) {
-      console.log(
-        "[SessionStream] Cancel requested before stream is ready, disconnecting instead",
-      );
+      console.log("[SessionStream] Cancel requested before stream is ready, disconnecting instead");
       awaitingIdleRef.current = false;
       pendingMessageRef.current = null;
       // Clear pending approval/question requests and update message states
@@ -4525,10 +4673,7 @@ export function useSessionStream(
       cancelRequestIdsRef.current.clear();
       setMessages((prev) =>
         prev.map((msg) => {
-          if (
-            msg.variant === "tool" &&
-            msg.toolCall?.state === "approval-requested"
-          ) {
+          if (msg.variant === "tool" && msg.toolCall?.state === "approval-requested") {
             return {
               ...msg,
               isStreaming: false,
@@ -4547,10 +4692,7 @@ export function useSessionStream(
               },
             };
           }
-          if (
-            msg.variant === "tool" &&
-            msg.toolCall?.state === "question-requested"
-          ) {
+          if (msg.variant === "tool" && msg.toolCall?.state === "question-requested") {
             return {
               ...msg,
               isStreaming: false,
@@ -4570,8 +4712,7 @@ export function useSessionStream(
           // Mark still-running tool calls as interrupted
           if (
             msg.variant === "tool" &&
-            (msg.toolCall?.state === "input-streaming" ||
-              msg.toolCall?.state === "input-available")
+            (msg.toolCall?.state === "input-streaming" || msg.toolCall?.state === "input-available")
           ) {
             return {
               ...msg,
@@ -4598,10 +4739,7 @@ export function useSessionStream(
     // Always update messages (consistent with StepInterrupted handler)
     setMessages((prev) =>
       prev.map((msg) => {
-        if (
-          msg.variant === "tool" &&
-          msg.toolCall?.state === "approval-requested"
-        ) {
+        if (msg.variant === "tool" && msg.toolCall?.state === "approval-requested") {
           return {
             ...msg,
             isStreaming: false,
@@ -4620,10 +4758,7 @@ export function useSessionStream(
             },
           };
         }
-        if (
-          msg.variant === "tool" &&
-          msg.toolCall?.state === "question-requested"
-        ) {
+        if (msg.variant === "tool" && msg.toolCall?.state === "question-requested") {
           return {
             ...msg,
             isStreaming: false,
@@ -4643,8 +4778,7 @@ export function useSessionStream(
         // Mark still-running tool calls as interrupted
         if (
           msg.variant === "tool" &&
-          (msg.toolCall?.state === "input-streaming" ||
-            msg.toolCall?.state === "input-available")
+          (msg.toolCall?.state === "input-streaming" || msg.toolCall?.state === "input-available")
         ) {
           return {
             ...msg,
@@ -4694,14 +4828,7 @@ export function useSessionStream(
       onError?.(error);
       setStatus("error");
     }
-  }, [
-    status,
-    disconnect,
-    onError,
-    setAwaitingFirstResponse,
-    setMessages,
-    setError,
-  ]);
+  }, [status, disconnect, onError, setAwaitingFirstResponse, setMessages, setError]);
 
   // Reconnect
   const reconnect = useCallback(() => {
@@ -4725,10 +4852,7 @@ export function useSessionStream(
   tokenUsageRef.current = tokenUsage;
 
   const sendModeUpdate = useCallback(
-    (
-      key: "planMode" | "swarmMode" | "goalMode",
-      enabled: boolean,
-    ): boolean => {
+    (key: "planMode" | "swarmMode" | "goalMode", enabled: boolean): boolean => {
       if (!sessionId) {
         return false;
       }
@@ -4929,19 +5053,130 @@ export function useSessionStream(
     async (
       text: string,
       attachments: UploadSessionFileResponse[] = [],
-    ): Promise<LocalInfoPanelResult | void> => {
+      options: SendMessageOptions = {},
+    ): Promise<SendMessageResult> => {
       if (!text.trim() && attachments.length === 0) return;
 
-      const trimmedText = text.trim();
-      const slashDecision = classifySlashDispatch(
-        trimmedText,
-        slashCommandsRef.current ?? [],
-      );
+      const initialModes = options.initialModes;
+      if (initialModes) {
+        pendingModeUpdatesRef.current = {
+          planMode: initialModes.planMode,
+          permissionMode: initialModes.permissionMode,
+          swarmMode: initialModes.swarmMode,
+          goalMode: initialModes.goalMode,
+        };
+        planModeRef.current = initialModes.planMode;
+        permissionModeRef.current = initialModes.permissionMode;
+        swarmModeRef.current = initialModes.swarmMode;
+        goalModeRef.current = initialModes.goalMode;
+        setPlanMode(initialModes.planMode);
+        setPermissionMode(initialModes.permissionMode);
+        setSwarmMode(initialModes.swarmMode);
+        setGoalMode(initialModes.goalMode);
+      }
 
+      const trimmedText = text.trim();
+      const slashDecision = classifySlashDispatch(trimmedText, slashCommandsRef.current ?? []);
+
+      let promptText = trimmedText;
+      let goalAction: GoalPromptAction | undefined;
+      let isGoalPrompt = false;
+      if (slashDecision.kind === "local" && slashDecision.name === "goal") {
+        const goalCommand = parseGoalCommand(slashDecision.args);
+        if (goalCommand.kind === "status") {
+          try {
+            const snapshot = await syncGoalSnapshot();
+            return {
+              kind: "info-panel",
+              command: "goal",
+              content: formatGoalStatus(snapshot),
+            };
+          } catch (err) {
+            return {
+              kind: "info-panel",
+              command: "goal",
+              content: err instanceof Error ? err.message : "Failed to read Goal status",
+              error: true,
+            };
+          }
+        }
+        if (goalCommand.kind === "invalid") {
+          return {
+            kind: "info-panel",
+            command: "goal",
+            content: goalCommand.message,
+          };
+        }
+        if (
+          goalCommand.kind === "pause" ||
+          goalCommand.kind === "resume" ||
+          goalCommand.kind === "cancel"
+        ) {
+          if (!sessionId || !isTauri()) {
+            return {
+              kind: "info-panel",
+              command: "goal",
+              content: "Goal controls require a Kimi Code desktop session.",
+              error: true,
+            };
+          }
+          try {
+            // A lifecycle command is authoritative over any older in-flight
+            // goal_refresh read. Invalidate both before and after the IPC so a
+            // late active snapshot cannot resurrect a cancelled Goal.
+            goalSnapshotRequestSeqRef.current += 1;
+            const snapshot = await controlSessionGoal(sessionId, goalCommand.kind);
+            goalSnapshotRequestSeqRef.current += 1;
+            if (activeSessionIdRef.current === sessionId) {
+              useToolEventsStore.getState().setCurrentGoal(snapshot);
+            }
+            if (goalCommand.kind !== "resume") {
+              return {
+                kind: "info-panel",
+                command: "goal",
+                content:
+                  goalCommand.kind === "cancel" && !snapshot
+                    ? "Goal cancelled and cleared."
+                    : formatGoalStatus(snapshot),
+              };
+            }
+            if (!snapshot) {
+              return {
+                kind: "info-panel",
+                command: "goal",
+                content: "No current Goal to resume.",
+                error: true,
+              };
+            }
+            // Resume is performed by the following Goal-aware ACP prompt:
+            // Kimi's native GetGoal/UpdateGoal tools reactivate the existing
+            // state, then its own multi-turn Goal driver continues the work.
+          } catch (err) {
+            return {
+              kind: "info-panel",
+              command: "goal",
+              content: err instanceof Error ? err.message : `Failed to ${goalCommand.kind} Goal`,
+              error: true,
+            };
+          }
+        }
+
+        const goalPrompt = goalPromptForCommand(goalCommand);
+        if (!goalPrompt) {
+          return {
+            kind: "info-panel",
+            command: "goal",
+            content: "Unsupported Goal command.",
+            error: true,
+          };
+        }
+        promptText = goalPrompt.text;
+        goalAction = goalPrompt.action;
+        isGoalPrompt = true;
+      }
       if (slashDecision.kind === "local" && slashDecision.name === "swarm") {
         const arg = slashDecision.args.trim().toLowerCase();
-        const nextMode =
-          arg === "on" ? true : arg === "off" ? false : !swarmModeRef.current;
+        const nextMode = arg === "on" ? true : arg === "off" ? false : !swarmModeRef.current;
         if (!sendSetSwarmMode(nextMode)) {
           throw new Error("No session selected");
         }
@@ -4964,7 +5199,7 @@ export function useSessionStream(
         return;
       }
 
-      if (slashDecision.kind === "local") {
+      if (slashDecision.kind === "local" && !isGoalPrompt) {
         if (slashDecision.name === "usage" || slashDecision.name === "status") {
           try {
             const content = await runLocalInfoCommand(slashDecision.name);
@@ -4977,10 +5212,7 @@ export function useSessionStream(
             return {
               kind: "info-panel",
               command: slashDecision.name,
-              content:
-                err instanceof Error
-                  ? err.message
-                  : `Failed to run /${slashDecision.name}`,
+              content: err instanceof Error ? err.message : `Failed to run /${slashDecision.name}`,
             };
           }
         }
@@ -4991,10 +5223,7 @@ export function useSessionStream(
         try {
           content = formatDesktopHelpReport(slashCommandsRef.current ?? []);
         } catch (err) {
-          content =
-            err instanceof Error
-              ? err.message
-              : `Failed to run /${slashDecision.name}`;
+          content = err instanceof Error ? err.message : `Failed to run /${slashDecision.name}`;
         }
         setMessages((prev) => [
           ...prev,
@@ -5011,6 +5240,25 @@ export function useSessionStream(
 
       const compactSlash = parseSlashCommandInput(trimmedText);
       const isCompactCommand = compactSlash?.name === "compact";
+      if (
+        !goalAction &&
+        !compactSlash &&
+        goalModeRef.current &&
+        useToolEventsStore.getState().currentGoal === null
+      ) {
+        goalAction = "create";
+      }
+
+      const startsGoal = goalAction === "create" || goalAction === "replace";
+      if (startsGoal && !options.goalStartConfirmed && permissionModeRef.current !== "auto") {
+        return {
+          kind: "goal-start-confirmation",
+          objective: promptText,
+          replace: goalAction === "replace",
+          permissionMode: permissionModeRef.current,
+          goalSwitchArmed: goalModeRef.current,
+        };
+      }
 
       // Defense against double-fire from StrictMode effects, unstable effect
       // deps, or rapid double Enter/click before React re-renders `busy`.
@@ -5021,10 +5269,16 @@ export function useSessionStream(
         statusRef.current === "submitted" ||
         statusRef.current === "streaming"
       ) {
-        console.warn(
-          "[SessionStream] Ignoring duplicate send while a prompt is in flight",
-        );
+        console.warn("[SessionStream] Ignoring duplicate send while a prompt is in flight");
         return;
+      }
+
+      // The bottom Goal switch arms exactly one Goal, matching the CLI's
+      // one-shot `/goal <objective>` entry point rather than becoming a
+      // persistent "turn every future prompt into a Goal" mode.
+      const goalSwitchWasArmed = startsGoal && goalModeRef.current;
+      if (goalSwitchWasArmed) {
+        sendSetGoalMode(false);
       }
 
       clearStepRetryStatus();
@@ -5050,9 +5304,7 @@ export function useSessionStream(
       const startedAt = performance.now();
       promptTimingRef.current = {
         startedAt,
-        ...(wsRef.current?.readyState === STREAM_OPEN
-          ? { workerReadyAt: startedAt }
-          : {}),
+        ...(wsRef.current?.readyState === STREAM_OPEN ? { workerReadyAt: startedAt } : {}),
       };
       setAwaitingFirstResponse(true);
       setStatus("submitted");
@@ -5064,8 +5316,11 @@ export function useSessionStream(
         }
 
         pendingMessageRef.current = {
-          text: trimmedText,
+          text: promptText,
           attachments,
+          ...(goalAction ? { goalAction } : {}),
+          ...(options.upcomingGoalId ? { upcomingGoalId: options.upcomingGoalId } : {}),
+          ...(goalSwitchWasArmed ? { goalSwitchWasArmed: true } : {}),
         };
         preserveMessagesOnConnectRef.current = true;
         if (wsRef.current?.readyState === STREAM_CONNECTING) {
@@ -5081,7 +5336,23 @@ export function useSessionStream(
       try {
         await flushPendingModeUpdates(connection);
       } catch (err) {
-        console.warn("[SessionStream] Failed to flush modes before prompt:", err);
+        if (pendingCompactRef.current) {
+          pendingCompactRef.current = false;
+          const compactMsgId = compactionMessageIdRef.current;
+          compactionMessageIdRef.current = null;
+          if (compactMsgId) {
+            setMessages((prev) => prev.filter((message) => message.id !== compactMsgId));
+          }
+        } else {
+          optimisticUserMessagesRef.current.shift();
+        }
+        if (goalSwitchWasArmed) rearmFailedGoalStart();
+        const error = err instanceof Error ? err : new Error(String(err));
+        setError(error);
+        onError?.(error);
+        setAwaitingFirstResponse(false);
+        setStatus("error");
+        throw error;
       }
 
       const messageId = uuidV4();
@@ -5091,12 +5362,12 @@ export function useSessionStream(
         method: "prompt",
         id: messageId,
         params: {
-          user_input:
-            joinPromptText(trimmedText, attachments) ||
-            "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE",
+          user_input: joinPromptText(promptText, attachments) || "KIMI_FILE_UPLOAD_WITHOUT_MESSAGE",
           plan_mode: planModeRef.current,
           swarm_mode: swarmModeRef.current,
           goal_mode: goalModeRef.current,
+          ...(goalAction ? { goal_action: goalAction } : {}),
+          ...(options.upcomingGoalId ? { upcoming_goal_id: options.upcomingGoalId } : {}),
         },
       };
 
@@ -5116,12 +5387,16 @@ export function useSessionStream(
               const compactMsgId = compactionMessageIdRef.current;
               compactionMessageIdRef.current = null;
               if (compactMsgId) {
-                setMessages((prev) =>
-                  prev.filter((m) => m.id !== compactMsgId),
-                );
+                setMessages((prev) => prev.filter((m) => m.id !== compactMsgId));
               }
             } else {
               optimisticUserMessagesRef.current.shift();
+            }
+            if (
+              goalSwitchWasArmed &&
+              useToolEventsStore.getState().currentGoal === null
+            ) {
+              rearmFailedGoalStart();
             }
             const error = err instanceof Error ? err : new Error(String(err));
             setError(error);
@@ -5141,6 +5416,9 @@ export function useSessionStream(
         } else {
           optimisticUserMessagesRef.current.shift();
         }
+        if (goalSwitchWasArmed && useToolEventsStore.getState().currentGoal === null) {
+          rearmFailedGoalStart();
+        }
         const error = err instanceof Error ? err : new Error(String(err));
         setError(error);
         onError?.(error);
@@ -5154,16 +5432,27 @@ export function useSessionStream(
       connect,
       onError,
       sendSetSwarmMode,
+      sendSetGoalMode,
       runLocalInfoCommand,
       setAwaitingFirstResponse,
       addOptimisticUserMessage,
       clearStepRetryStatus,
       resetStepState,
+      rearmFailedGoalStart,
       setError,
       getNextMessageId,
       setMessages,
       flushPendingModeUpdates,
+      syncGoalSnapshot,
     ],
+  );
+
+  const controlGoal = useCallback(
+    async (action: "pause" | "resume" | "cancel") => {
+      const outcome = await sendMessage(`/goal ${action}`);
+      return outcome?.kind === "info-panel" ? outcome : undefined;
+    },
+    [sendMessage],
   );
 
   useEffect(() => {
@@ -5172,8 +5461,8 @@ export function useSessionStream(
 
   // Clear messages
   const clearMessages = useCallback(() => {
-    setMessages([]);
     resetStateRef.current(true);
+    setMessages([]);
   }, [setMessages]);
 
   // Auto-connect when sessionId changes
@@ -5202,6 +5491,7 @@ export function useSessionStream(
     // Reset state for the new session. Swarm is loaded from Kimi's per-session
     // state below; localStorage is only consulted for one-time migration.
     pendingModeUpdatesRef.current = {};
+    setGoalCompletionEpoch(0);
     resetStateRef.current(true);
     setSwarmMode(false);
     swarmModeRef.current = false;
@@ -5219,6 +5509,15 @@ export function useSessionStream(
         return;
       }
 
+      if (isTauri()) {
+        try {
+          await syncGoalSnapshot(sessionId);
+          if (cancelled) return;
+        } catch (error) {
+          console.warn("[SessionStream] Failed to restore Goal state:", error);
+        }
+      }
+
       let persistedModes: PersistedSessionModes = {
         planMode: false,
         permissionMode: "manual",
@@ -5231,19 +5530,8 @@ export function useSessionStream(
           if (cancelled) {
             return;
           }
-          setPlanMode(persistedModes.planMode);
-          planModeRef.current = persistedModes.planMode;
-          setPermissionMode(persistedModes.permissionMode);
-          permissionModeRef.current = persistedModes.permissionMode;
-          setSwarmMode(persistedModes.swarmMode);
-          swarmModeRef.current = persistedModes.swarmMode;
-          setGoalMode(persistedModes.goalMode);
-          goalModeRef.current = persistedModes.goalMode;
         } catch (error) {
-          console.warn(
-            "[SessionStream] Failed to load session runtime modes:",
-            error,
-          );
+          console.warn("[SessionStream] Failed to load session runtime modes:", error);
         }
       }
 
@@ -5295,6 +5583,9 @@ export function useSessionStream(
           }
           flushInlineThinkBufferRef.current(true);
           flushBufferedStreamUpdateRef.current();
+          void syncGoalSnapshot(sessionId).catch((error) => {
+            console.warn("[SessionStream] Failed to restore Goal after history replay:", error);
+          });
           isReplayingRef.current = false;
           setIsReplayingHistory(false);
           // Lazy connect: only spawn `kimi acp` for a pending prompt (or when
@@ -5338,11 +5629,14 @@ export function useSessionStream(
       cancelled = true;
       disconnectRef.current();
     };
-  }, [onError, sessionId, setMessages, setError]);
+  }, [onError, sessionId, setMessages, setError, syncGoalSnapshot]);
 
   // Cleanup on unmount
   useEffect(
     () => () => {
+      goalHistoryResyncGenerationRef.current += 1;
+      goalHistoryResyncActiveRef.current = false;
+      goalHistoryReplayBufferRef.current = null;
       if (reconnectTimeoutRef.current !== null) {
         window.clearTimeout(reconnectTimeoutRef.current);
       }
@@ -5365,17 +5659,17 @@ export function useSessionStream(
     status,
     sessionStatus,
     isAwaitingFirstResponse,
-    canCancel:
-      !isReplayingHistory &&
-      (isAwaitingFirstResponse || status === "streaming"),
+    canCancel: !isReplayingHistory && (isAwaitingFirstResponse || status === "streaming"),
     contextUsage,
     contextTokens,
     maxContextTokens,
     tokenUsage,
     currentStep,
+    goalCompletionEpoch,
     isConnected,
     isReplayingHistory,
     sendMessage,
+    controlGoal,
     runLocalInfoCommand,
     respondToApproval,
     respondToQuestion,

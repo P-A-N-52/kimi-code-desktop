@@ -43,7 +43,13 @@ describe("derivePendingApprovals", () => {
         title: "Bash",
         type: "tool-Bash" as never,
         state: "approval-requested",
-        approval: { id: "r1", action: "Bash", description: "x", sender: "kimi" },
+        approval: {
+          id: "r1",
+          action: "Bash",
+          description: "x",
+          sender: "kimi",
+          toolKind: "execute",
+        },
       },
     } as LiveMessage;
     const resolved: LiveMessage = {
@@ -59,6 +65,12 @@ describe("derivePendingApprovals", () => {
     } as LiveMessage;
     const list = derivePendingApprovals([pending, resolved]);
     expect(list.map((a) => a.id)).toEqual(["r1"]);
+    expect(list[0]).toMatchObject({
+      id: "r1",
+      toolTitle: "Bash",
+      toolKind: "execute",
+      description: "x",
+    });
   });
 });
 

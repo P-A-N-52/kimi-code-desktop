@@ -152,6 +152,8 @@ export type StatusUpdateEvent = {
     permission_mode?: PermissionMode | "ask" | null;
     swarm_mode?: boolean | null;
     goal_mode?: boolean | null;
+    /** Native Goal journal changed outside ACP's first-turn subscription. */
+    goal_refresh?: boolean;
   };
 };
 
@@ -215,10 +217,7 @@ export type ApprovalRequestResolvedEvent = {
   };
 };
 
-export type ApprovalResponseDecision =
-  | "approve"
-  | "approve_for_session"
-  | "reject";
+export type ApprovalResponseDecision = "approve" | "approve_for_session" | "reject";
 
 export type QuestionOption = {
   label: string;
@@ -398,23 +397,19 @@ export type WireEvent =
 // Parsed wire message
 export type WireMessage = {
   jsonrpc: "2.0";
-  method?:
-    | "event"
-    | "prompt"
-    | "history_complete"
-    | "request"
-    | "response"
-    | "session_status";
+  method?: "event" | "prompt" | "history_complete" | "request" | "response" | "session_status";
   id?: string | number;
   params?:
     | {
-      type?: string;
-      payload?: unknown;
-      user_input?: string;
-      plan_mode?: boolean;
-      swarm_mode?: boolean;
-      goal_mode?: boolean;
-    }
+        type?: string;
+        payload?: unknown;
+        user_input?: string;
+        plan_mode?: boolean;
+        swarm_mode?: boolean;
+        goal_mode?: boolean;
+        goal_action?: "create" | "replace" | "resume";
+        upcoming_goal_id?: string;
+      }
     | SessionStatusPayload;
   result?: {
     status?: string;

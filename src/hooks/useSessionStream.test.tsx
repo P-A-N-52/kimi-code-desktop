@@ -1,10 +1,13 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useToolEventsStore } from "@/lib/tool-events/store";
 import { mergeSlashCommandsByName, useSessionStream } from "./useSessionStream";
 
 let wireMessageHandler: ((message: string) => void) | null = null;
 
 const mocks = vi.hoisted(() => ({
+  controlSessionGoal: vi.fn(),
+  getSessionGoalSnapshot: vi.fn(),
 	getSessionRuntimeModes: vi.fn(),
 	isTauri: vi.fn(),
 	migrateSessionSwarmMode: vi.fn(),
@@ -21,6 +24,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/tauri-api", () => ({
+  controlSessionGoal: mocks.controlSessionGoal,
+  getSessionGoalSnapshot: mocks.getSessionGoalSnapshot,
 	getSessionRuntimeModes: mocks.getSessionRuntimeModes,
 	isTauri: mocks.isTauri,
 	migrateSessionSwarmMode: mocks.migrateSessionSwarmMode,
@@ -49,9 +54,7 @@ async function flushPromises() {
 }
 
 function completeReplay() {
-	const sentMessages = mocks.wireSend.mock.calls.map(([, rawMessage]) =>
-		JSON.parse(rawMessage),
-	);
+  const sentMessages = mocks.wireSend.mock.calls.map(([, rawMessage]) => JSON.parse(rawMessage));
 	const initialize = sentMessages.find((message) => message.method === "initialize");
 	const replay = sentMessages.find((message) => message.method === "replay");
 	expect(initialize).toBeDefined();
@@ -92,6 +95,7 @@ describe("useSessionStream Tauri watchdog", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		window.localStorage.clear();
+    useToolEventsStore.getState().clearCurrentGoal();
 		mocks.isTauri.mockReturnValue(true);
 		mocks.onWireMessage.mockImplementation(
 			(_sessionId: string, handler: (message: string) => void) => {
@@ -100,6 +104,8 @@ describe("useSessionStream Tauri watchdog", () => {
 			},
 		);
 		mocks.replaySessionHistory.mockResolvedValue([]);
+    mocks.getSessionGoalSnapshot.mockResolvedValue(null);
+    mocks.controlSessionGoal.mockResolvedValue(null);
 		mocks.getSessionRuntimeModes.mockResolvedValue({
 			planMode: false,
 			permissionMode: "manual",
@@ -191,9 +197,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		});
 		await flushPromises();
 
-		const sentMessages = mocks.wireSend.mock.calls.map(([, message]) =>
-			JSON.parse(message),
-		);
+    const sentMessages = mocks.wireSend.mock.calls.map(([, message]) => JSON.parse(message));
 		expect(sentMessages).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
@@ -241,9 +245,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		});
 		await flushPromises();
 
-		const sentMessages = mocks.wireSend.mock.calls.map(([, message]) =>
-			JSON.parse(message),
-		);
+    const sentMessages = mocks.wireSend.mock.calls.map(([, message]) => JSON.parse(message));
 		expect(sentMessages).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
@@ -273,6 +275,359 @@ describe("useSessionStream Tauri watchdog", () => {
 		expect(result.current.goalMode).toBe(false);
 	});
 
+  it("refreshes the native Goal snapshot when the ACP bridge reports journal progress", async () => {
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: true,
+      }),
+    );
+
+    await flushPromises();
+    completeReplay();
+    await flushPromises();
+    mocks.getSessionGoalSnapshot.mockClear();
+    mocks.getSessionGoalSnapshot.mockResolvedValue({
+      objective: "Ship the release",
+      status: "active",
+      turnsUsed: 3,
+      tokensUsed: 1200,
+      wallClockMs: 5000,
+      budget: {
+        tokenBudgetReached: false,
+        turnBudgetReached: false,
+        wallClockBudgetReached: false,
+        overBudget: false,
+      },
+    });
+
+    act(() => {
+      wireMessageHandler?.(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method: "event",
+          params: {
+            type: "StatusUpdate",
+            payload: { context_usage: null, goal_refresh: true },
+          },
+        }),
+      );
+    });
+    await flushPromises();
+
+    expect(mocks.getSessionGoalSnapshot).toHaveBeenCalledWith("session-1");
+    expect(result.current.status).toBe("ready");
+  });
+
+  it("does not restore an older active Goal after a newer terminal refresh", async () => {
+    renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: true,
+      }),
+    );
+
+    await flushPromises();
+    completeReplay();
+    await flushPromises();
+    mocks.getSessionGoalSnapshot.mockClear();
+
+    let resolveStaleActive: ((value: unknown) => void) | undefined;
+    const staleActive = new Promise((resolve) => {
+      resolveStaleActive = resolve;
+    });
+    mocks.getSessionGoalSnapshot
+      .mockImplementationOnce(() => staleActive)
+      .mockResolvedValueOnce(null);
+
+    const goalRefresh = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "event",
+      params: {
+        type: "StatusUpdate",
+        payload: { context_usage: null, goal_refresh: true },
+      },
+    });
+    act(() => {
+      wireMessageHandler?.(goalRefresh);
+      wireMessageHandler?.(goalRefresh);
+    });
+    await flushPromises();
+
+    expect(mocks.getSessionGoalSnapshot).toHaveBeenCalledTimes(2);
+    expect(useToolEventsStore.getState().currentGoal).toBeNull();
+
+    await act(async () => {
+      resolveStaleActive?.({
+        objective: "Stale active Goal",
+        status: "active",
+        turnsUsed: 1,
+        tokensUsed: 10,
+        wallClockMs: 100,
+      });
+      await flushPromises();
+    });
+
+    expect(useToolEventsStore.getState().currentGoal).toBeNull();
+  });
+  it("keeps cancel authoritative over an older in-flight Goal refresh", async () => {
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: true,
+      }),
+    );
+
+    await flushPromises();
+    completeReplay();
+    await flushPromises();
+    mocks.getSessionGoalSnapshot.mockClear();
+
+    let resolveStaleActive: ((value: unknown) => void) | undefined;
+    mocks.getSessionGoalSnapshot.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveStaleActive = resolve;
+        }),
+    );
+    mocks.controlSessionGoal.mockResolvedValueOnce(null);
+
+    act(() => {
+      wireMessageHandler?.(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method: "event",
+          params: {
+            type: "StatusUpdate",
+            payload: { context_usage: null, goal_refresh: true },
+          },
+        }),
+      );
+    });
+    await act(async () => {
+      await result.current.sendMessage("/goal cancel");
+    });
+    expect(useToolEventsStore.getState().currentGoal).toBeNull();
+
+    await act(async () => {
+      resolveStaleActive?.({
+        objective: "Stale active Goal",
+        status: "active",
+        turnsUsed: 1,
+        tokensUsed: 10,
+        wallClockMs: 100,
+      });
+      await flushPromises();
+    });
+
+    expect(useToolEventsStore.getState().currentGoal).toBeNull();
+  });
+  it("does not let a stale status acknowledgement flicker the Goal switch off", async () => {
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: true,
+      }),
+    );
+
+    await flushPromises();
+    completeReplay();
+    await flushPromises();
+
+    let resolveGoalWrite: (() => void) | undefined;
+    const goalWrite = new Promise<void>((resolve) => {
+      resolveGoalWrite = resolve;
+    });
+    mocks.wireSend.mockImplementation((_sessionId, rawMessage) => {
+      const message = JSON.parse(rawMessage);
+      return message.method === "set_goal_mode" ? goalWrite : Promise.resolve();
+    });
+
+    act(() => {
+      expect(result.current.sendSetGoalMode(true)).toBe(true);
+    });
+    await flushPromises();
+    expect(result.current.goalMode).toBe(true);
+
+    act(() => {
+      wireMessageHandler?.(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method: "event",
+          params: {
+            type: "StatusUpdate",
+            payload: { goal_mode: false },
+          },
+        }),
+      );
+    });
+    expect(result.current.goalMode).toBe(true);
+
+    resolveGoalWrite?.();
+    await flushPromises();
+  });
+  it("asks before consuming the one-shot Goal switch in Manual mode", async () => {
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: true,
+      }),
+    );
+
+    await flushPromises();
+    completeReplay();
+    await flushPromises();
+
+    act(() => {
+      expect(result.current.sendSetGoalMode(true)).toBe(true);
+    });
+    await flushPromises();
+    mocks.wireSend.mockClear();
+
+    let outcome: Awaited<ReturnType<typeof result.current.sendMessage>>;
+    await act(async () => {
+      outcome = await result.current.sendMessage("Ship the release");
+    });
+
+    expect(outcome).toEqual({
+      kind: "goal-start-confirmation",
+      objective: "Ship the release",
+      replace: false,
+      permissionMode: "manual",
+      goalSwitchArmed: true,
+    });
+    expect(
+      mocks.wireSend.mock.calls.some(([, message]) => JSON.parse(message).method === "prompt"),
+    ).toBe(false);
+    expect(result.current.goalMode).toBe(true);
+
+    await act(async () => {
+      await result.current.sendMessage("Ship the release", [], {
+        goalStartConfirmed: true,
+      });
+    });
+
+    const sentMessages = mocks.wireSend.mock.calls.map(([, message]) => JSON.parse(message));
+    expect(sentMessages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: "set_goal_mode",
+          params: { enabled: false },
+        }),
+      ]),
+    );
+    const prompt = sentMessages.find((message) => message.method === "prompt");
+    expect(prompt.params).toEqual(
+      expect.objectContaining({
+        user_input: "Ship the release",
+        goal_mode: false,
+        goal_action: "create",
+      }),
+    );
+    expect(result.current.goalMode).toBe(false);
+  });
+  it("keeps atomically supplied first-prompt modes over a stale persisted snapshot", async () => {
+    let resolveModes:
+      | ((modes: {
+          planMode: boolean;
+          permissionMode: "manual";
+          swarmMode: boolean;
+          goalMode: boolean;
+        }) => void)
+      | undefined;
+    mocks.getSessionRuntimeModes.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveModes = resolve;
+        }),
+    );
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: false,
+      }),
+    );
+    await flushPromises();
+
+    let outcome: Awaited<ReturnType<typeof result.current.sendMessage>>;
+    await act(async () => {
+      outcome = await result.current.sendMessage("Ship with YOLO", [], {
+        initialModes: {
+          permissionMode: "yolo",
+          planMode: false,
+          swarmMode: false,
+          goalMode: true,
+        },
+      });
+    });
+    expect(outcome).toEqual(
+      expect.objectContaining({
+        kind: "goal-start-confirmation",
+        permissionMode: "yolo",
+        goalSwitchArmed: true,
+      }),
+    );
+
+    await act(async () => {
+      resolveModes?.({
+        planMode: false,
+        permissionMode: "manual",
+        swarmMode: false,
+        goalMode: false,
+      });
+      await flushPromises();
+    });
+    expect(result.current.permissionMode).toBe("yolo");
+    expect(result.current.goalMode).toBe(true);
+
+    // Declining the confirmation disables the one-shot Goal switch. That
+    // write lazily connects a brand-new session; the reconnect reset must not
+    // flash the selected permission mode back to Manual.
+    act(() => {
+      expect(result.current.sendSetGoalMode(false)).toBe(true);
+    });
+    expect(result.current.permissionMode).toBe("yolo");
+    expect(result.current.goalMode).toBe(false);
+  });
+
+  it("rejects a failed mode flush and rearms the one-shot Goal switch", async () => {
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: true,
+      }),
+    );
+    await flushPromises();
+    completeReplay();
+    await flushPromises();
+
+    act(() => {
+      expect(result.current.sendSetGoalMode(true)).toBe(true);
+    });
+    await flushPromises();
+    mocks.wireSend.mockImplementation((_sessionId, rawMessage) => {
+      const message = JSON.parse(rawMessage);
+      if (message.method === "set_goal_mode" && message.params?.enabled === false) {
+        return Promise.reject(new Error("mode write failed"));
+      }
+      return Promise.resolve();
+    });
+
+    await act(async () => {
+      await expect(
+        result.current.sendMessage("Ship the release", [], { goalStartConfirmed: true }),
+      ).rejects.toThrow("mode write failed");
+    });
+    expect(result.current.goalMode).toBe(true);
+    expect(result.current.status).toBe("error");
+  });
 	it("loads permission / plan / swarm / goal modes from the Kimi session state", async () => {
 		mocks.getSessionRuntimeModes.mockResolvedValue({
 			planMode: true,
@@ -295,11 +650,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		expect(result.current.permissionMode).toBe("yolo");
 		expect(result.current.swarmMode).toBe(true);
 		expect(result.current.goalMode).toBe(true);
-		expect(
-			window.localStorage.getItem(
-				"kimi-code-desktop.swarm-mode-by-session.v1",
-			),
-		).toBeNull();
+    expect(window.localStorage.getItem("kimi-code-desktop.swarm-mode-by-session.v1")).toBeNull();
 	});
 
 	it("migrates the legacy local Swarm value into the Kimi session state", async () => {
@@ -323,22 +674,12 @@ describe("useSessionStream Tauri watchdog", () => {
 
 		await flushPromises();
 
-		expect(mocks.migrateSessionSwarmMode).toHaveBeenCalledWith(
-			"session-1",
-			true,
-		);
-		expect(mocks.migrateSessionSwarmMode).toHaveBeenCalledWith(
-			"session-2",
-			false,
-		);
+    expect(mocks.migrateSessionSwarmMode).toHaveBeenCalledWith("session-1", true);
+    expect(mocks.migrateSessionSwarmMode).toHaveBeenCalledWith("session-2", false);
 		expect(mocks.getSessionRuntimeModes).toHaveBeenCalledWith("session-1");
 		expect(result.current.permissionMode).toBe("auto");
 		expect(result.current.swarmMode).toBe(true);
-		expect(
-			window.localStorage.getItem(
-				"kimi-code-desktop.swarm-mode-by-session.v1",
-			),
-		).toBeNull();
+    expect(window.localStorage.getItem("kimi-code-desktop.swarm-mode-by-session.v1")).toBeNull();
 	});
 
 	it("syncs permission mode from the backend and sends independent updates", async () => {
@@ -543,20 +884,218 @@ describe("useSessionStream Tauri watchdog", () => {
 		});
 		await flushPromises();
 
-		const sentMessages = mocks.wireSend.mock.calls.map(([, message]) =>
-			JSON.parse(message),
-		);
-		expect(sentMessages.some((message) => message.method === "prompt")).toBe(
-			false,
-		);
+    const sentMessages = mocks.wireSend.mock.calls.map(([, message]) => JSON.parse(message));
+    expect(sentMessages.some((message) => message.method === "prompt")).toBe(false);
 		expect(sentMessages).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ method: "set_swarm_mode" }),
-			]),
+      expect.arrayContaining([expect.objectContaining({ method: "set_swarm_mode" })]),
 		);
 		expect(result.current.swarmMode).toBe(true);
 	});
 
+  it("resumes the native Goal and sends the continuation prompt", async () => {
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: true,
+      }),
+    );
+
+    await flushPromises();
+    completeReplay();
+    await flushPromises();
+    mocks.wireSend.mockClear();
+    mocks.controlSessionGoal.mockResolvedValue({
+      objective: "Ship Goal controls",
+      status: "active",
+      turnsUsed: 1,
+      tokensUsed: 100,
+      wallClockMs: 1_000,
+      budget: {
+        tokenBudgetReached: false,
+        turnBudgetReached: false,
+        wallClockBudgetReached: false,
+        overBudget: false,
+      },
+    });
+
+    let outcome: Awaited<ReturnType<typeof result.current.sendMessage>>;
+    await act(async () => {
+      outcome = await result.current.sendMessage("/goal resume");
+    });
+
+    expect(mocks.controlSessionGoal).toHaveBeenCalledWith("session-1", "resume");
+    expect(outcome).toBeUndefined();
+    expect(
+      mocks.wireSend.mock.calls
+        .map(([, message]) => JSON.parse(message))
+        .find((message) => message.method === "prompt")?.params,
+    ).toEqual(
+      expect.objectContaining({
+        user_input: "Resume the active goal.",
+        goal_action: "resume",
+      }),
+    );
+  });
+
+  it("pauses the native Goal without forwarding a prompt", async () => {
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: true,
+      }),
+    );
+
+    await flushPromises();
+    completeReplay();
+    await flushPromises();
+    mocks.wireSend.mockClear();
+    mocks.controlSessionGoal.mockResolvedValue({
+      objective: "Ship Goal controls",
+      status: "paused",
+      turnsUsed: 1,
+      tokensUsed: 100,
+      wallClockMs: 1_000,
+      budget: {
+        tokenBudgetReached: false,
+        turnBudgetReached: false,
+        wallClockBudgetReached: false,
+        overBudget: false,
+      },
+    });
+
+    let outcome: Awaited<ReturnType<typeof result.current.sendMessage>>;
+    await act(async () => {
+      outcome = await result.current.sendMessage("/goal pause");
+    });
+
+    expect(mocks.controlSessionGoal).toHaveBeenCalledWith("session-1", "pause");
+    expect(outcome).toEqual(expect.objectContaining({ kind: "info-panel", command: "goal" }));
+    expect(
+      mocks.wireSend.mock.calls.some(([, message]) => JSON.parse(message).method === "prompt"),
+    ).toBe(false);
+  });
+  it("asks before explicit Goal creation in Manual mode", async () => {
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: true,
+      }),
+    );
+
+    await flushPromises();
+    completeReplay();
+    await flushPromises();
+    mocks.wireSend.mockClear();
+
+    let outcome: Awaited<ReturnType<typeof result.current.sendMessage>>;
+    await act(async () => {
+      outcome = await result.current.sendMessage("/goal ship the desktop");
+    });
+
+    expect(outcome).toEqual(
+      expect.objectContaining({
+        kind: "goal-start-confirmation",
+        objective: "ship the desktop",
+        permissionMode: "manual",
+        goalSwitchArmed: false,
+      }),
+    );
+    expect(
+      mocks.wireSend.mock.calls.some(([, message]) => JSON.parse(message).method === "prompt"),
+    ).toBe(false);
+
+    await act(async () => {
+      await result.current.sendMessage("/goal ship the desktop", [], {
+        goalStartConfirmed: true,
+      });
+    });
+    const prompt = mocks.wireSend.mock.calls
+      .map(([, message]) => JSON.parse(message))
+      .find((message) => message.method === "prompt");
+    expect(prompt.params).toEqual(
+      expect.objectContaining({
+        user_input: "ship the desktop",
+        goal_action: "create",
+      }),
+    );
+  });
+
+  it("asks before explicit Goal creation in YOLO mode", async () => {
+    mocks.getSessionRuntimeModes.mockResolvedValue({
+      planMode: false,
+      permissionMode: "yolo",
+      swarmMode: false,
+      goalMode: false,
+    });
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: true,
+      }),
+    );
+
+    await flushPromises();
+    completeReplay();
+    await flushPromises();
+    mocks.wireSend.mockClear();
+
+    let outcome: Awaited<ReturnType<typeof result.current.sendMessage>> = undefined;
+    await act(async () => {
+      outcome = await result.current.sendMessage("/goal ship the desktop");
+    });
+
+    expect(outcome).toEqual(
+      expect.objectContaining({
+        kind: "goal-start-confirmation",
+        permissionMode: "yolo",
+      }),
+    );
+    expect(
+      mocks.wireSend.mock.calls.some(([, message]) => JSON.parse(message).method === "prompt"),
+    ).toBe(false);
+  });
+
+  it("starts explicit Goal creation directly in Auto mode", async () => {
+    mocks.getSessionRuntimeModes.mockResolvedValue({
+      planMode: false,
+      permissionMode: "auto",
+      swarmMode: false,
+      goalMode: false,
+    });
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: true,
+      }),
+    );
+
+    await flushPromises();
+    completeReplay();
+    await flushPromises();
+    mocks.wireSend.mockClear();
+
+    let outcome: Awaited<ReturnType<typeof result.current.sendMessage>>;
+    await act(async () => {
+      outcome = await result.current.sendMessage("/goal ship the desktop");
+    });
+
+    expect(outcome).toBeUndefined();
+    expect(
+      mocks.wireSend.mock.calls
+        .map(([, message]) => JSON.parse(message))
+        .find((message) => message.method === "prompt")?.params,
+    ).toEqual(
+      expect.objectContaining({
+        user_input: "ship the desktop",
+        goal_action: "create",
+      }),
+    );
+  });
 	it("returns /usage and /status as info-panel results without chat messages", async () => {
 		const { result } = renderHook(() =>
 			useSessionStream({
@@ -606,9 +1145,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		);
 		expect(result.current.messages).toHaveLength(messageCountBefore);
 		expect(
-			mocks.wireSend.mock.calls.some(([, message]) =>
-				JSON.parse(message).method === "prompt",
-			),
+      mocks.wireSend.mock.calls.some(([, message]) => JSON.parse(message).method === "prompt"),
 		).toBe(false);
 	});
 
@@ -632,8 +1169,7 @@ describe("useSessionStream Tauri watchdog", () => {
 
 		expect(
 			result.current.messages.some(
-				(message) =>
-					message.role === "user" && message.content === "/compact keep APIs",
+        (message) => message.role === "user" && message.content === "/compact keep APIs",
 			),
 		).toBe(false);
 		expect(result.current.messages.at(-1)).toEqual(
@@ -695,9 +1231,7 @@ describe("useSessionStream Tauri watchdog", () => {
 			await result.current.sendMessage("Hello from the user");
 		});
 
-		expect(
-			result.current.messages.filter((message) => message.role === "user"),
-		).toEqual([
+    expect(result.current.messages.filter((message) => message.role === "user")).toEqual([
 			expect.objectContaining({ content: "Hello from the user" }),
 		]);
 
@@ -714,9 +1248,7 @@ describe("useSessionStream Tauri watchdog", () => {
 			);
 		});
 
-		expect(
-			result.current.messages.filter((message) => message.role === "user"),
-		).toHaveLength(1);
+    expect(result.current.messages.filter((message) => message.role === "user")).toHaveLength(1);
 	});
 
 	it("inlines selected files as text tokens and supports an attachment-only prompt", async () => {
@@ -772,15 +1304,14 @@ describe("useSessionStream Tauri watchdog", () => {
 		await flushPromises();
 		completeReplay();
 
-		const literalText =
-			"<system-reminder>this is user-authored text</system-reminder>";
+    const literalText = "<system-reminder>this is user-authored text</system-reminder>";
 		await act(async () => {
 			await result.current.sendMessage(literalText);
 		});
 
-		expect(
-			result.current.messages.filter((message) => message.role === "user"),
-		).toEqual([expect.objectContaining({ content: literalText })]);
+    expect(result.current.messages.filter((message) => message.role === "user")).toEqual([
+      expect.objectContaining({ content: literalText }),
+    ]);
 	});
 
 	it("renders SteerInput as an additional instruction in the active turn", async () => {
@@ -867,9 +1398,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		["image_url", "https://example.com/result.png", "image/*"],
 		["video_url", "https://example.com/result.mp4", "video/*"],
 		["audio_url", "https://example.com/result.mp3", "audio/*"],
-	] as const)(
-		"renders %s content parts as message attachments",
-		async (partType, url, mediaType) => {
+  ] as const)("renders %s content parts as message attachments", async (partType, url, mediaType) => {
 			const { result } = renderHook(() =>
 				useSessionStream({
 					sessionId: "session-1",
@@ -909,8 +1438,7 @@ describe("useSessionStream Tauri watchdog", () => {
 					],
 				}),
 			]);
-		},
-	);
+  });
 
 	it("replays local history without spawning ACP until a prompt is sent", async () => {
 		const { result } = renderHook(() =>
@@ -970,8 +1498,7 @@ describe("useSessionStream Tauri watchdog", () => {
 				.map(([, rawMessage]) => JSON.parse(rawMessage))
 				.some(
 					(message) =>
-						message.method === "prompt" &&
-						message.params.user_input === "Send after idle replay",
+            message.method === "prompt" && message.params.user_input === "Send after idle replay",
 				),
 		).toBe(true);
 	});
@@ -1025,6 +1552,7 @@ describe("useSessionStream Tauri watchdog", () => {
 
 		expect(result.current.slashCommands.map((command) => command.name).sort()).toEqual([
 			"compact",
+      "goal",
 			"help",
 			"skill:demo",
 		]);
@@ -1034,7 +1562,7 @@ describe("useSessionStream Tauri watchdog", () => {
 				expect.objectContaining({ name: "skill:demo", description: "Skill" }),
 			]),
 		);
-		expect(result.current.slashCommands).toHaveLength(3);
+    expect(result.current.slashCommands).toHaveLength(4);
 	});
 
 	it("reports connection, dispatch, first-event, and first-visible-response timing", async () => {
@@ -1196,9 +1724,7 @@ describe("useSessionStream Tauri watchdog", () => {
 				isStreaming: false,
 			}),
 		);
-		expect(assistantMessages[2]).toEqual(
-			expect.objectContaining({ thinking: "second thought" }),
-		);
+    expect(assistantMessages[2]).toEqual(expect.objectContaining({ thinking: "second thought" }));
 	});
 
 	it("turns a failed prompt status into a persistent error report", async () => {
@@ -1321,9 +1847,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		});
 		await flushPromises();
 
-		const sentMessages = mocks.wireSend.mock.calls.map(([, rawMessage]) =>
-			JSON.parse(rawMessage),
-		);
+    const sentMessages = mocks.wireSend.mock.calls.map(([, rawMessage]) => JSON.parse(rawMessage));
 		expect(sentMessages).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
@@ -1334,9 +1858,7 @@ describe("useSessionStream Tauri watchdog", () => {
 				}),
 			]),
 		);
-		expect(sentMessages.some((message) => message.method === "replay")).toBe(
-			false,
-		);
+    expect(sentMessages.some((message) => message.method === "replay")).toBe(false);
 	});
 
 	it("stays ready when idle arrives before the pending Tauri invoke resolves", async () => {
@@ -1479,9 +2001,317 @@ describe("useSessionStream Tauri watchdog", () => {
 			.filter((message) => message.method === "prompt");
 		expect(prompts).toHaveLength(1);
 		expect(prompts[0]?.params?.user_input).toBe("First prompt");
+    expect(result.current.messages.filter((message) => message.role === "user")).toHaveLength(1);
+  });
+
+  it("atomically replaces live Goal output with the complete native continuation history", async () => {
+    const replayEvent = (type: string, payload: unknown) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: { type, payload },
+      });
+    mocks.replaySessionHistory.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      replayEvent("TurnBegin", { user_input: "Finish the native Goal" }),
+      replayEvent("StepBegin", { n: 1 }),
+      replayEvent("ContentPart", { type: "text", text: "FIRST_FROM_JOURNAL" }),
+      replayEvent("StepEnd", { n: 1 }),
+      replayEvent("StepBegin", { n: 2 }),
+      replayEvent("ContentPart", {
+        type: "text",
+        text: "CONTINUATION_FROM_JOURNAL",
+      }),
+      replayEvent("StepEnd", { n: 2 }),
+    ]);
+    const onFirstTurnComplete = vi.fn();
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: false,
+        onFirstTurnComplete,
+      }),
+    );
+
+    await flushPromises();
+    await act(async () => {
+      await result.current.sendMessage("Finish the native Goal");
+    });
+    await flushPromises();
+
+    const prompt = mocks.wireSend.mock.calls
+      .map(([, rawMessage]) => JSON.parse(rawMessage))
+      .find((message) => message.method === "prompt");
+    expect(prompt).toBeDefined();
+
+    act(() => {
+      emitVisibleText("FIRST_LIVE_ONLY");
+      wireMessageHandler?.(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: prompt.id,
+          result: { status: "finished", goal_history_resync: true, goal_completed: true },
+        }),
+      );
+    });
+    await flushPromises();
+
+    expect(mocks.replaySessionHistory).toHaveBeenCalledTimes(2);
+    expect(mocks.replaySessionHistory).toHaveBeenLastCalledWith("session-1");
 		expect(
-			result.current.messages.filter((message) => message.role === "user"),
-		).toHaveLength(1);
+      result.current.messages
+        .filter((message) => message.role === "assistant" && message.variant === "text")
+        .map((message) => message.content),
+    ).toEqual(["FIRST_FROM_JOURNAL", "CONTINUATION_FROM_JOURNAL"]);
+    expect(result.current.messages.some((message) => message.content === "FIRST_LIVE_ONLY")).toBe(
+      false,
+    );
+    expect(result.current.status).toBe("ready");
+    expect(result.current.goalCompletionEpoch).toBe(1);
+    expect(result.current.isReplayingHistory).toBe(false);
+    expect(onFirstTurnComplete).toHaveBeenCalledTimes(1);
+  });
+  it("keeps replayed canonical modes instead of restoring the resync-start snapshot", async () => {
+    const replayEvent = (type: string, payload: unknown) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: { type, payload },
+      });
+    mocks.replaySessionHistory.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      replayEvent("StatusUpdate", {
+        plan_mode: true,
+        permission_mode: "auto",
+        swarm_mode: true,
+        goal_mode: false,
+      }),
+    ]);
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: false,
+      }),
+    );
+
+    await flushPromises();
+    await act(async () => {
+      await result.current.sendMessage("Refresh canonical modes");
+    });
+    await flushPromises();
+
+    const prompt = mocks.wireSend.mock.calls
+      .map(([, rawMessage]) => JSON.parse(rawMessage))
+      .find((message) => message.method === "prompt");
+    expect(prompt).toBeDefined();
+
+    act(() => {
+      wireMessageHandler?.(
+        replayEvent("StatusUpdate", {
+          plan_mode: false,
+          permission_mode: "manual",
+          swarm_mode: false,
+          goal_mode: true,
+        }),
+      );
+      wireMessageHandler?.(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: prompt.id,
+          result: { status: "finished", goal_history_resync: true },
+        }),
+      );
+    });
+    await flushPromises();
+
+    expect(result.current.planMode).toBe(true);
+    expect(result.current.permissionMode).toBe("auto");
+    expect(result.current.swarmMode).toBe(true);
+    expect(result.current.goalMode).toBe(false);
+  });
+
+  it("keeps a still-pending local one-shot Goal arm during history resync", async () => {
+    const replayEvent = (type: string, payload: unknown) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: { type, payload },
+      });
+    let resolveGoalReplay: ((messages: string[]) => void) | undefined;
+    mocks.replaySessionHistory.mockResolvedValueOnce([]).mockImplementationOnce(
+      () =>
+        new Promise<string[]>((resolve) => {
+          resolveGoalReplay = resolve;
+        }),
+    );
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: false,
+      }),
+    );
+
+    await flushPromises();
+    await act(async () => {
+      await result.current.sendMessage("Start a delayed resync");
+    });
+    await flushPromises();
+
+    const prompt = mocks.wireSend.mock.calls
+      .map(([, rawMessage]) => JSON.parse(rawMessage))
+      .find((message) => message.method === "prompt");
+    act(() => {
+      wireMessageHandler?.(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: prompt.id,
+          result: { status: "finished", goal_history_resync: true },
+        }),
+      );
+    });
+    await flushPromises();
+    expect(mocks.replaySessionHistory).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      expect(result.current.sendSetGoalMode(true)).toBe(true);
+      resolveGoalReplay?.([
+        replayEvent("StatusUpdate", {
+          plan_mode: false,
+          permission_mode: "manual",
+          swarm_mode: false,
+          goal_mode: false,
+        }),
+      ]);
+    });
+    await flushPromises();
+
+    expect(result.current.goalMode).toBe(true);
+  });
+
+  it("does not clear a same-session worker error when Goal history resync finishes", async () => {
+    let resolveGoalReplay: ((messages: string[]) => void) | undefined;
+    mocks.replaySessionHistory.mockResolvedValueOnce([]).mockImplementationOnce(
+      () =>
+        new Promise<string[]>((resolve) => {
+          resolveGoalReplay = resolve;
+        }),
+    );
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: false,
+      }),
+    );
+
+    await flushPromises();
+    await act(async () => {
+      await result.current.sendMessage("Resync while the worker fails");
+    });
+    await flushPromises();
+
+    const prompt = mocks.wireSend.mock.calls
+      .map(([, rawMessage]) => JSON.parse(rawMessage))
+      .find((message) => message.method === "prompt");
+    act(() => {
+      wireMessageHandler?.(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: prompt.id,
+          result: { status: "finished", goal_history_resync: true },
+        }),
+      );
+    });
+    await flushPromises();
+
+    act(() => {
+      wireMessageHandler?.(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          method: "session_status",
+          params: {
+            session_id: "session-1",
+            state: "error",
+            seq: 99,
+            detail: "worker stopped during resync",
+            updated_at: "2026-01-01T00:00:01Z",
+          },
+        }),
+      );
+      resolveGoalReplay?.([]);
+    });
+    await flushPromises();
+
+    expect(result.current.sessionStatus?.state).toBe("error");
+    expect(result.current.error?.message).toBe("worker stopped during resync");
+    expect(result.current.status).toBe("error");
+    expect(result.current.isReplayingHistory).toBe(false);
+  });
+
+  it("ignores an old Goal resync after reconnecting the same session", async () => {
+    const staleReplayMessage = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "event",
+      params: {
+        type: "ContentPart",
+        payload: { type: "text", text: "STALE_RESYNC_OUTPUT" },
+      },
+    });
+    let resolveGoalReplay: ((messages: string[]) => void) | undefined;
+    mocks.replaySessionHistory.mockResolvedValueOnce([]).mockImplementationOnce(
+      () =>
+        new Promise<string[]>((resolve) => {
+          resolveGoalReplay = resolve;
+        }),
+    );
+    const { result } = renderHook(() =>
+      useSessionStream({
+        sessionId: "session-1",
+        baseUrl: "http://localhost:5173",
+        autoConnect: false,
+      }),
+    );
+
+    await flushPromises();
+    await act(async () => {
+      await result.current.sendMessage("Reconnect during resync");
+    });
+    await flushPromises();
+
+    const prompt = mocks.wireSend.mock.calls
+      .map(([, rawMessage]) => JSON.parse(rawMessage))
+      .find((message) => message.method === "prompt");
+    act(() => {
+      wireMessageHandler?.(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: prompt.id,
+          result: { status: "finished", goal_history_resync: true },
+        }),
+      );
+    });
+    await flushPromises();
+
+    await act(async () => {
+      result.current.reconnect();
+      await vi.advanceTimersByTimeAsync(100);
+      await Promise.resolve();
+    });
+    expect(result.current.status).toBe("submitted");
+    expect(result.current.isReplayingHistory).toBe(true);
+
+    await act(async () => {
+      resolveGoalReplay?.([staleReplayMessage]);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.status).toBe("submitted");
+    expect(result.current.isReplayingHistory).toBe(true);
+    expect(
+      result.current.messages.some((message) => message.content === "STALE_RESYNC_OUTPUT"),
+    ).toBe(false);
 	});
 
 	it("auto-renames only after the first prompt response, not the connection idle status", async () => {

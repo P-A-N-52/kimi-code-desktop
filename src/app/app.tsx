@@ -5,25 +5,27 @@ import { useGitDiffStats } from "@/hooks/useGitDiffStats";
 import { useSessionStream } from "@/hooks/useSessionStream";
 import { DirectoryNotFoundError, useSessions } from "@/hooks/useSessions";
 import { getApiBaseUrl, hasPlatformModifier } from "@/hooks/utils";
-import { useDomTranslations, useI18n } from "@/lib/i18n";
 import type { SessionStatus, UploadSessionFileResponse } from "@/lib/api/models";
+import { useDomTranslations, useI18n } from "@/lib/i18n";
 import { classifyIdleReason } from "@/lib/idle-turn";
 import { openKimiCodeWebsite } from "@/lib/kimi-code-link";
 import { shouldPauseForRuntimeReadiness } from "@/lib/runtime-readiness";
 import {
   checkRuntimeReadiness,
   isTauri,
+  listenEvent,
   type RuntimeReadiness,
   sendNotification,
   setNativeUiLanguage,
   showWindow,
-  listenEvent,
 } from "@/lib/tauri-api";
+import { useToolEventsStore } from "@/lib/tool-events/store";
 import { ConversationView } from "@/modules/conversation/conversation-view";
+import { GoalCancelConfirmation } from "@/modules/conversation/goal-cancel-confirmation";
 import { ReadinessOverlay } from "@/modules/readiness/readiness-overlay";
 import { AppSidebar } from "@/modules/sessions/app-sidebar";
 import { SettingsDialog, type SettingsTab } from "@/modules/settings/settings-dialog";
-import type { SessionModeDraft } from "@/modules/statusbar/permission-mode";
+import { type SessionModeDraft, shouldAutoApprove } from "@/modules/statusbar/permission-mode";
 import { Topbar } from "@/modules/topbar/topbar";
 import { ChangesPanel, type WorkspaceTab } from "@/modules/workspace/changes-panel";
 import {
@@ -33,6 +35,15 @@ import {
 } from "@/modules/workspace/derive-changes";
 import { AppShell } from "./app-shell";
 import { NewSessionView } from "./new-session-view";
+
+type GoalCancelTarget = {
+  sessionId: string;
+  goalId?: string;
+  objective: string;
+};
+
+/** Wait for YOLO auto-approve / quick resolve before surfacing a system toast. */
+const APPROVAL_NOTIFICATION_DELAY_MS = 400;
 
 export default function App() {
   useTheme();
@@ -65,6 +76,10 @@ export default function App() {
   const [runtimeCheckError, setRuntimeCheckError] = useState<string | null>(null);
   const [isCheckingRuntime, setIsCheckingRuntime] = useState(() => isTauri());
   const [hasAcknowledgedRuntime, setHasAcknowledgedRuntime] = useState(() => !isTauri());
+  const [goalCancelOpen, setGoalCancelOpen] = useState(false);
+  const [goalCancelPending, setGoalCancelPending] = useState(false);
+  const [goalCancelTarget, setGoalCancelTarget] = useState<GoalCancelTarget | null>(null);
+  const currentGoal = useToolEventsStore((state) => state.currentGoal);
 
   const runRuntimeReadinessCheck = useCallback(async () => {
     if (!isTauri()) {
@@ -121,6 +136,8 @@ export default function App() {
     loadMoreArchivedSessions,
     hasMoreSessions,
     hasMoreArchivedSessions,
+    isLoading,
+    isLoadingArchived,
     isLoadingMore,
     isLoadingMoreArchived,
     searchQuery,
@@ -159,20 +176,14 @@ export default function App() {
       }
       const classified = classifyIdleReason(reason);
       if (!classified.isTurnComplete) return;
-      if (
-        isTauri() &&
-        !document.hasFocus() &&
-        classified.wouldNotifySuccess
-      ) {
+      if (isTauri() && !document.hasFocus() && classified.wouldNotifySuccess) {
         const body = classified.isCancelled ? t("任务已取消") : t("任务已完成");
-        const completedSession = sessions.find(
-          (session) => session.sessionId === status.sessionId,
-        );
+        const completedSession = sessions.find((session) => session.sessionId === status.sessionId);
         void sendNotification(completedSession?.title || "Kimi Code", body).catch(() => {});
       }
       refreshSession(status.sessionId);
     },
-    [applySessionStatus, refreshSession, sessions],
+    [applySessionStatus, refreshSession, sessions, t],
   );
 
   const handleStreamError = useCallback((error: Error) => {
@@ -188,6 +199,89 @@ export default function App() {
   });
   const gitDiff = useGitDiffStats(selectedSessionId || null);
 
+  const handleGoalControl = useCallback(
+    async (action: "pause" | "resume" | "cancel") => {
+      if (action === "cancel") {
+        if (!selectedSessionId || !currentGoal || currentGoal.status === "complete") return;
+        const target: GoalCancelTarget = {
+          sessionId: selectedSessionId,
+          goalId: currentGoal.goalId,
+          objective: currentGoal.objective,
+        };
+        setGoalCancelTarget(target);
+        window.dispatchEvent(
+          new CustomEvent("kimi:goal-cancel-pending", {
+            detail: { sessionId: target.sessionId },
+          }),
+        );
+        setGoalCancelOpen(true);
+        return;
+      }
+      const outcome = await stream.controlGoal(action);
+      if (outcome?.error) toast.error(outcome.content);
+    },
+    [currentGoal, selectedSessionId, stream.controlGoal],
+  );
+
+  const dismissGoalCancel = useCallback(() => {
+    const target = goalCancelTarget;
+    setGoalCancelOpen(false);
+    setGoalCancelTarget(null);
+    if (target) {
+      window.dispatchEvent(
+        new CustomEvent("kimi:goal-cancel-dismissed", {
+          detail: { sessionId: target.sessionId },
+        }),
+      );
+    }
+  }, [goalCancelTarget]);
+
+  const handleGoalCancelOpenChange = useCallback(
+    (open: boolean) => {
+      if (open) {
+        setGoalCancelOpen(true);
+      } else if (!goalCancelPending) {
+        dismissGoalCancel();
+      }
+    },
+    [dismissGoalCancel, goalCancelPending],
+  );
+
+  const confirmGoalCancel = useCallback(async () => {
+    const target = goalCancelTarget;
+    if (!target) return;
+    const liveGoal = useToolEventsStore.getState().currentGoal;
+    const sameGoal = target.goalId
+      ? liveGoal?.goalId === target.goalId
+      : liveGoal?.objective === target.objective;
+    if (selectedSessionId !== target.sessionId || !sameGoal) {
+      toast.error("Goal 已变化，请重新操作");
+      dismissGoalCancel();
+      return;
+    }
+
+    setGoalCancelPending(true);
+    try {
+      const outcome = await stream.controlGoal("cancel");
+      if (outcome?.error) {
+        toast.error(outcome.content);
+        return;
+      }
+      window.dispatchEvent(
+        new CustomEvent("kimi:goal-cancelled", {
+          detail: { sessionId: target.sessionId },
+        }),
+      );
+      setGoalCancelOpen(false);
+      setGoalCancelTarget(null);
+    } catch (error) {
+      toast.error("取消 Goal 失败", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setGoalCancelPending(false);
+    }
+  }, [dismissGoalCancel, goalCancelTarget, selectedSessionId, stream.controlGoal]);
   const userClosedPanelRef = useRef(false);
 
   useEffect(() => {
@@ -195,6 +289,9 @@ export default function App() {
     userClosedPanelRef.current = false;
     setPanelOpen(false);
     setWorkspaceTab("changes");
+    setGoalCancelOpen(false);
+    setGoalCancelPending(false);
+    setGoalCancelTarget(null);
   }, [selectedSessionId]);
 
   const semanticChanges = useMemo(() => deriveChanges(stream.messages), [stream.messages]);
@@ -207,16 +304,42 @@ export default function App() {
     [stream.messages],
   );
   const notifiedApprovalsRef = useRef(new Set<string>());
+  const pendingApprovalsRef = useRef(pendingApprovals);
+  pendingApprovalsRef.current = pendingApprovals;
+  const permissionMode = stream.permissionMode;
 
   useEffect(() => {
     if (!isTauri() || document.hasFocus()) return;
+
+    const timers: ReturnType<typeof setTimeout>[] = [];
     for (const approval of pendingApprovals) {
+      // YOLO/auto will approve these client-side — never toast "需要批准".
+      if (shouldAutoApprove(permissionMode, approval.toolTitle, approval.toolKind)) {
+        continue;
+      }
       const notificationKey = `${selectedSessionId}:${approval.id}`;
       if (notifiedApprovalsRef.current.has(notificationKey)) continue;
-      notifiedApprovalsRef.current.add(notificationKey);
-      void sendNotification(t("Kimi Code 需要批准"), approval.description).catch(() => {});
+      // Delay so auto-approve / cancel / resolve can clear the request first.
+      timers.push(
+        setTimeout(() => {
+          if (notifiedApprovalsRef.current.has(notificationKey)) return;
+          if (document.hasFocus()) return;
+          const stillNeedsUser = pendingApprovalsRef.current.some(
+            (item) =>
+              item.id === approval.id &&
+              !shouldAutoApprove(permissionMode, item.toolTitle, item.toolKind),
+          );
+          if (!stillNeedsUser) return;
+          notifiedApprovalsRef.current.add(notificationKey);
+          void sendNotification(t("Kimi Code 需要批准"), approval.description).catch(() => {});
+        }, APPROVAL_NOTIFICATION_DELAY_MS),
+      );
     }
-  }, [pendingApprovals, selectedSessionId, t]);
+
+    return () => {
+      for (const timer of timers) clearTimeout(timer);
+    };
+  }, [pendingApprovals, permissionMode, selectedSessionId, t]);
 
   useEffect(() => {
     if (changes.length > 0 && !userClosedPanelRef.current) {
@@ -393,6 +516,8 @@ export default function App() {
             hasLoadedArchived={hasLoadedArchivedSessions}
             hasMoreActive={hasMoreSessions}
             hasMoreArchived={hasMoreArchivedSessions}
+            isLoadingActive={isLoading}
+            isLoadingArchived={isLoadingArchived}
             isLoadingMoreActive={isLoadingMore}
             isLoadingMoreArchived={isLoadingMoreArchived}
           />
@@ -423,6 +548,7 @@ export default function App() {
             getFile={getSessionFile}
             onApproveAll={handleApproveAll}
             onRejectAll={handleRejectAll}
+            onGoalControl={handleGoalControl}
             onClose={handleClosePanel}
           />
         }
@@ -442,6 +568,7 @@ export default function App() {
             pendingFirstAttachments={pendingFirstAttachments}
             pendingFirstModes={pendingFirstModes}
             onPendingFirstMessageSent={handlePendingFirstMessageSent}
+            onGoalControl={handleGoalControl}
           />
         ) : (
           <NewSessionView
@@ -458,6 +585,13 @@ export default function App() {
         open={showSettings}
         onOpenChange={handleSettingsOpenChange}
         initialTab={settingsInitialTab}
+      />
+      <GoalCancelConfirmation
+        open={goalCancelOpen}
+        objective={goalCancelTarget?.objective}
+        pending={goalCancelPending}
+        onOpenChange={handleGoalCancelOpenChange}
+        onConfirm={() => void confirmGoalCancel()}
       />
       <Toaster position="top-right" style={{ fontFamily: "var(--font-sans)" }} />
     </>

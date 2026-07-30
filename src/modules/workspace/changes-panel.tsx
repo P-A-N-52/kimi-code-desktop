@@ -34,6 +34,7 @@ type ChangesPanelProps = {
   getFile: (sessionId: string, path: string) => Promise<Blob>;
   onApproveAll: () => void;
   onRejectAll: () => void;
+  onGoalControl: (action: "pause" | "resume" | "cancel") => Promise<unknown>;
   onClose: () => void;
 };
 
@@ -141,21 +142,23 @@ export function ChangesPanel({
   getFile,
   onApproveAll,
   onRejectAll,
+  onGoalControl,
   onClose,
 }: ChangesPanelProps) {
   const agentCount = useAgentMonitorStore(
     (state) => state.tasks.filter((task) => task.sessionId === sessionId).length,
   );
   const todoCount = useToolEventsStore((state) => state.todoItems.length);
+  const goalCount = useToolEventsStore((state) => (state.currentGoal ? 1 : 0));
   const newFileCount = useToolEventsStore((state) => state.newFiles.length);
   const counts = useMemo<Record<WorkspaceTab, number>>(
     () => ({
       changes: changes.length,
       files: newFileCount,
       agents: agentCount,
-      tasks: todoCount,
+      tasks: todoCount + goalCount,
     }),
-    [agentCount, changes.length, newFileCount, todoCount],
+    [agentCount, changes.length, goalCount, newFileCount, todoCount],
   );
 
   return (
@@ -203,7 +206,7 @@ export function ChangesPanel({
         )}
         {activeTab === "tasks" && (
           <div className="h-full overflow-y-auto">
-            <TasksTab />
+            <TasksTab onGoalControl={onGoalControl} />
           </div>
         )}
       </div>

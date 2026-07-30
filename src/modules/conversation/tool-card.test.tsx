@@ -86,11 +86,11 @@ describe("ToolCard", () => {
     );
 
     expect(document.querySelector("[data-slot=agent-tool-card]")).not.toBeNull();
+    expect(document.querySelector("[data-slot=agent-badge]")?.textContent).toBe("AGENT");
     expect(document.querySelector("[data-slot=agent-type-chip]")?.textContent).toBe("explore");
     expect(screen.queryByText(/agent_id: agent-0/)).toBeNull();
     expect(screen.getByRole("img", { name: "agent.png" })).toBeTruthy();
-    expect(screen.getByText(/Explore agent completed/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /Explore agent completed/ }));
+    expect(document.querySelector("[data-slot=agent-subagent-progress]")).not.toBeNull();
     expect(screen.getByText("Inspecting files")).toBeTruthy();
     expect(screen.getByText("ReadFile")).toBeTruthy();
   });
@@ -171,5 +171,53 @@ describe("ToolCard", () => {
     );
 
     expect(document.querySelector("[data-slot=swarm-tool-card]")).not.toBeNull();
+  });
+
+  it("does not route Ask User tools to AgentToolCard", () => {
+    render(
+      <ToolCard
+        toolCall={{
+          title: "Asking user questions",
+          type: "tool-call" as never,
+          state: "input-available",
+          toolCallId: "1:ask",
+          input: {
+            questions: [
+              {
+                question: "Which approach?",
+                header: "Approach",
+                options: [
+                  { label: "A", description: "" },
+                  { label: "B", description: "" },
+                ],
+                multi_select: false,
+              },
+            ],
+          },
+        }}
+      />,
+    );
+
+    expect(document.querySelector("[data-slot=agent-tool-card]")).toBeNull();
+    expect(document.querySelector("[data-slot=swarm-tool-card]")).toBeNull();
+  });
+
+  it("does not show subagent progress UI on ordinary Bash tools", () => {
+    render(
+      <ToolCard
+        defaultOpen
+        toolCall={{
+          ...baseToolCall,
+          state: "input-available",
+          // Stale/incorrect flags that used to leak SubagentSteps into GenericToolCard.
+          subagentRunning: true,
+          extras: { in_progress: true },
+        }}
+      />,
+    );
+
+    expect(document.querySelector("[data-slot=subagent-steps]")).toBeNull();
+    expect(screen.queryByText("等待子代理步骤…")).toBeNull();
+    expect(screen.queryByText(/子代理/)).toBeNull();
   });
 });

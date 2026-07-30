@@ -15,13 +15,13 @@ import { useState } from "react";
 import type { LiveMessage } from "@/hooks/types";
 import { getToolPresentation, type ToolPresentation } from "@/lib/tool-events/tool-registry";
 import { cn } from "@/lib/utils";
+import { isAskUserToolCall } from "@/modules/statusbar/permission-mode";
 import { Expandable } from "@/ui/expandable";
 import { StatusDot } from "@/ui/status-dot";
 import { AgentToolCard } from "./agent-tool-card";
 import { Attachments } from "./attachments";
 import { findDiffDisplay } from "./diff-display";
 import { computeDiffLines } from "./diff-view";
-import { SubagentSteps } from "./subagent-steps";
 import { SwarmToolCard } from "./swarm-tool-card";
 import { TermView } from "./term-view";
 import { ToolDisplayContent } from "./tool-display-content";
@@ -73,9 +73,13 @@ function looksLikeAgentSwarm(toolCall: ToolCall): boolean {
 
 /** Single Agent / Task tools (not swarm). History titles may be free-form descriptions. */
 function looksLikeAgent(toolCall: ToolCall): boolean {
+  // Ask User must never render as the Agent/subagent card — ACP titles are
+  // free-form descriptions ("Asking user questions") and Agent heuristics
+  // can otherwise steal the row before QuestionRequest arrives.
+  if (isAskUserToolCall(toolCall)) return false;
   if (looksLikeAgentSwarm(toolCall)) return false;
   const name = getToolPresentation(toolCall.title).canonicalName;
-  if (name === "Agent" || name === "Task") return true;
+  if (name === "Agent" || name === "Task" || name === "CreateSubagent") return true;
   if (typeof toolCall.input !== "object" || toolCall.input === null) return false;
   const r = toolCall.input as Record<string, unknown>;
   const hasType = r.subagent_type != null || r.subagentType != null;
@@ -93,10 +97,11 @@ function GenericToolCard({
   defaultOpen?: boolean;
 }) {
   const Icon = toolIcon(presentation);
-  const running = isRunningState(toolCall.state) || toolCall.subagentRunning === true;
-  const hasSubagentActivity =
-    Boolean(toolCall.subagentSteps?.length) || toolCall.subagentRunning === true;
-  const [open, setOpen] = useState(defaultOpen ?? (running || hasSubagentActivity));
+  const extrasInProgress = toolCall.extras?.in_progress === true;
+  // Generic tools must not treat subagent flags as running — those belong to
+  // Agent/Swarm cards only. Progress ticks use extras.in_progress.
+  const running = isRunningState(toolCall.state) || extrasInProgress;
+  const [open, setOpen] = useState(defaultOpen ?? running);
   const diff = findDiffDisplay(toolCall.display);
   const diffStats = diff ? computeDiffLines(diff) : null;
 
@@ -149,9 +154,7 @@ function GenericToolCard({
             <ToolDisplayContent display={toolCall.display} />
           ) : toolCall.output ? (
             <TermView output={toolCall.output} />
-          ) : !toolCall.mediaParts?.length &&
-            !toolCall.subagentSteps?.length &&
-            !toolCall.subagentRunning ? (
+          ) : !toolCall.mediaParts?.length ? (
             <div className="p-3 font-mono text-[11px] text-faint">（无输出）</div>
           ) : null}
           {toolCall.mediaParts?.length ? (
@@ -172,11 +175,6 @@ function GenericToolCard({
               />
             </div>
           ) : null}
-          <SubagentSteps
-            steps={toolCall.subagentSteps}
-            running={toolCall.subagentRunning}
-            agentType={toolCall.subagentType}
-          />
         </div>
       </Expandable>
     </div>

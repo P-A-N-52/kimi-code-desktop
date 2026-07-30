@@ -241,6 +241,9 @@ export type SessionsSidebarProps = {
   hasMoreArchived: boolean;
   isLoadingMoreActive: boolean;
   isLoadingMoreArchived: boolean;
+  /** Initial / empty-list loading for the active or archived pane. */
+  isLoadingActive?: boolean;
+  isLoadingArchived?: boolean;
   headerAction?: ReactNode;
 };
 
@@ -348,6 +351,10 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
 
   const hasMore = mode === "active" ? props.hasMoreActive : props.hasMoreArchived;
   const loadingMore = mode === "active" ? props.isLoadingMoreActive : props.isLoadingMoreArchived;
+  const listLoading =
+    mode === "active"
+      ? Boolean(props.isLoadingActive) && props.sessions.length === 0
+      : Boolean(props.isLoadingArchived) && props.archivedSessions.length === 0;
 
   const runBulk = async (action: "archive" | "restore" | "delete") => {
     const ids = [...selectedIds];
@@ -493,7 +500,19 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {groups.length === 0 && (
+        {listLoading ? (
+          <div className="flex flex-col gap-2 px-2 py-3" aria-busy="true" aria-label="加载会话中">
+            {Array.from({ length: 6 }).map((_, index) => (
+              <div
+                key={`session-skeleton-${index}`}
+                className="h-10 animate-pulse rounded-r2 bg-hover/80"
+              />
+            ))}
+            <p className="px-1 pt-1 text-center font-mono text-[10.5px] text-faint">
+              正在加载会话…
+            </p>
+          </div>
+        ) : groups.length === 0 ? (
           <p className="px-2.5 py-6 text-center font-mono text-[11px] text-faint">
             {props.searchQuery
               ? "没有匹配的会话"
@@ -501,7 +520,7 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
                 ? "还没有归档会话"
                 : "还没有会话"}
           </p>
-        )}
+        ) : null}
         {groupMode === "project" && groups.length > 0 && (
           <div className="mb-1 px-2.5 text-[10px] font-medium uppercase tracking-[0.09em] text-faint">
             项目

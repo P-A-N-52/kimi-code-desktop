@@ -213,6 +213,11 @@ jobs:
           [[ "$(find release-assets/macos -type f -name 'release-manifest-macos-arm64.json' | wc -l)" -eq 1 ]]
 
           notes="Windows MSI and macOS Apple Silicon DMG release for Kimi Code Desktop $tag."
+          notes_path="docs/releases/$tag-notes.md"
+          notes_args=(--notes "$notes")
+          if [[ -f "$notes_path" ]]; then
+            notes_args=(--notes-file "$notes_path")
+          fi
           prerelease_args=()
           if [[ "$INPUT_PRERELEASE" == "true" ]]; then
             prerelease_args+=(--prerelease)
@@ -222,8 +227,12 @@ jobs:
             gh release create "$tag" \
               --target "$GITHUB_SHA" \
               --title "Kimi Code $tag" \
-              --notes "$notes" \
+              "${notes_args[@]}" \
               "${prerelease_args[@]}"
+          elif [[ -f "$notes_path" ]]; then
+            gh release edit "$tag" \
+              --title "Kimi Code $tag" \
+              --notes-file "$notes_path"
           fi
 
           mapfile -t files < <(find release-assets -type f | sort)

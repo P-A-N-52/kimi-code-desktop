@@ -1,7 +1,10 @@
 import { Check, Download, RefreshCw, TriangleAlert } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { RuntimeReadiness } from "@/lib/tauri-api";
 import { cn } from "@/lib/utils";
 import { Button } from "@/ui/button";
+
+const SLOW_CHECK_HINT_MS = 8_000;
 
 export function ReadinessOverlay({
 	checking,
@@ -18,6 +21,17 @@ export function ReadinessOverlay({
 	onContinue: () => void;
 	onOpenDownload: () => void;
 }) {
+	const [showSlowHint, setShowSlowHint] = useState(false);
+
+	useEffect(() => {
+		if (!checking) {
+			setShowSlowHint(false);
+			return;
+		}
+		const timer = window.setTimeout(() => setShowSlowHint(true), SLOW_CHECK_HINT_MS);
+		return () => window.clearTimeout(timer);
+	}, [checking]);
+
 	return (
 		<div className="fixed inset-0 z-50 flex items-center justify-center bg-background">
 			<div className="flex w-full max-w-md flex-col items-center gap-4 px-6">
@@ -27,13 +41,28 @@ export function ReadinessOverlay({
 				<h1 className="text-[15px] font-semibold">准备 Kimi Code 运行时</h1>
 
 				{checking ? (
-					<div className="flex items-center gap-2 font-mono text-[12px] text-muted">
-						<span className="size-3 animate-spin rounded-full border border-muted border-t-transparent" />
-						正在检查运行环境…
+					<div className="flex flex-col items-center gap-2">
+						<div className="flex items-center gap-2 font-mono text-[12px] text-muted">
+							<span className="size-3 animate-spin rounded-full border border-muted border-t-transparent" />
+							正在检查运行环境…
+						</div>
+						{showSlowHint && (
+							<>
+								<p className="max-w-sm text-center text-[12px] text-muted">
+									检查时间较长。若正在使用 VPN，可能额外增加延迟；也可以先继续，稍后再重试。
+								</p>
+								<Button variant="ghost" onClick={onContinue}>
+									仍要继续
+								</Button>
+							</>
+						)}
 					</div>
 				) : error ? (
 					<>
 						<p className="text-center font-mono text-[12px] text-danger">{error}</p>
+						<p className="max-w-sm text-center text-[11px] text-muted">
+							若使用 VPN 或网络不稳定，请确认连通后再重试。
+						</p>
 						<div className="flex gap-2">
 							<Button variant="primary" onClick={onRetry}>
 								<RefreshCw size={12} strokeWidth={1.5} />
