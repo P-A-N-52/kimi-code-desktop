@@ -129,7 +129,17 @@ export function useGlobalConfig(
         }
         _cachedConfig = resp.config;
         setConfig(resp.config);
-        window.dispatchEvent(new Event("kimi:config-update"));
+        // G5 §4.8: carry the worker-restart summary so the orchestrator can
+        // replay gap-fill every restarted session. Existing listeners ignore
+        // the detail field.
+        window.dispatchEvent(
+          new CustomEvent("kimi:config-update", {
+            detail: {
+              restartedSessionIds: resp.restartedSessionIds ?? [],
+              skippedBusySessionIds: resp.skippedBusySessionIds ?? [],
+            },
+          }),
+        );
         return resp;
       } catch (err) {
         const message =
