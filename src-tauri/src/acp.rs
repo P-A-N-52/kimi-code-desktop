@@ -460,6 +460,26 @@ impl AcpProcessManager {
             .unwrap_or(false)
     }
 
+    /// G5 observation IPC: read-only snapshot of every live worker, sorted by
+    /// session id. `updated_at` mirrors `RuntimeStatus.updated_at` (Unix ms).
+    pub fn list_workers(&self) -> Vec<crate::wire_events::WorkerStatusView> {
+        let workers = self.inner.workers.lock().unwrap();
+        let mut views: Vec<crate::wire_events::WorkerStatusView> = workers
+            .iter()
+            .map(|(session_id, worker)| {
+                let status = worker.status.lock().unwrap();
+                crate::wire_events::WorkerStatusView {
+                    session_id: session_id.clone(),
+                    state: status.state.clone(),
+                    connection_id: worker.connection_id.lock().unwrap().clone(),
+                    updated_at: status.updated_at,
+                }
+            })
+            .collect();
+        views.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        views
+    }
+
     pub fn ensure_editable(&self, session_id: &str) -> Result<(), String> {
         if let Some(status) = self.get_status(session_id) {
             if status.state == "busy" {
@@ -3394,6 +3414,46 @@ mod tests {
         let status = worker.status.lock().unwrap().clone();
         assert_eq!(status.state, "stopped");
         assert_eq!(status.reason.as_deref(), Some("cancel_timeout"));
+    }
+
+    #[test]
+    fn list_workers_mirrors_the_worker_map() {
+        let manager = AcpProcessManager::new();
+        assert!(manager.list_workers().is_empty());
+
+        let mut worker_a = new_probe_worker();
+        worker_a.session_id = "session-a".to_string();
+        *worker_a.connection_id.lock().unwrap() = Some("lease-1".to_string());
+        {
+            let mut status = worker_a.status.lock().unwrap();
+            status.state = "busy".to_string();
+            status.reason = Some("prompt".to_string());
+        }
+        let updated_a = worker_a.status.lock().unwrap().updated_at;
+
+        let mut worker_b = new_probe_worker();
+        worker_b.session_id = "session-b".to_string();
+
+        {
+            let mut workers = manager.inner.workers.lock().unwrap();
+            workers.insert("session-a".to_string(), Arc::new(worker_a));
+            workers.insert("session-b".to_string(), Arc::new(worker_b));
+        }
+
+        let views = manager.list_workers();
+        assert_eq!(views.len(), 2);
+        assert_eq!(views[0].session_id, "session-a");
+        assert_eq!(views[0].state, "busy");
+        assert_eq!(views[0].connection_id.as_deref(), Some("lease-1"));
+        assert_eq!(views[0].updated_at, updated_a);
+        assert_eq!(views[1].session_id, "session-b");
+        assert_eq!(views[1].state, "ready");
+        assert_eq!(views[1].connection_id, None);
+
+        // The observation view stays in sync with the ground-truth map.
+        manager.inner.workers.lock().unwrap().remove("session-b");
+        assert_eq!(manager.list_workers().len(), 1);
+        assert_eq!(manager.list_workers()[0].session_id, "session-a");
     }
 
     #[test]

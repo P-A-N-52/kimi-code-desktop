@@ -46,6 +46,7 @@ pub fn run() {
             commands::wire_disconnect,
             commands::wire_send,
             commands::wire_status,
+            commands::wire_list_workers,
             commands::list_sessions,
             commands::get_session,
             commands::replay_session_history,

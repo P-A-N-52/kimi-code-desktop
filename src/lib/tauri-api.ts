@@ -307,6 +307,29 @@ export async function wireStatus(sessionId: string): Promise<SessionStatus | nul
   return raw ? normalizeSessionStatus(raw) : null;
 }
 
+export type WorkerStatusView = {
+  sessionId: string;
+  state: string;
+  connectionId: string | null;
+  /** Worker status timestamp in Unix ms (G5 §4.6 `updated_at`). */
+  updatedAt: number;
+};
+
+export async function wireListWorkers(): Promise<WorkerStatusView[]> {
+  if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+  const raw = await invoke<unknown[]>("wire_list_workers");
+  return raw.map((item) => normalizeWorkerStatusView(item as Record<string, unknown>));
+}
+
+function normalizeWorkerStatusView(raw: Record<string, unknown>): WorkerStatusView {
+  return {
+    sessionId: String(raw.session_id ?? ""),
+    state: String(raw.state ?? "unknown"),
+    connectionId: raw.connection_id == null ? null : String(raw.connection_id),
+    updatedAt: Number(raw.updated_at ?? 0),
+  };
+}
+
 export function onWireMessage(sessionId: string, callback: (message: string) => void): () => void {
   return listenEvent("wire:message", (payload) => {
     const eventPayload = payload as WireEventPayload | undefined;

@@ -17,7 +17,7 @@ use crate::session_files;
 use crate::session_influence;
 use crate::session_store;
 use crate::skills;
-use crate::wire_events::{RestartWorkersSummary, RuntimeStatus};
+use crate::wire_events::{RestartWorkersSummary, RuntimeStatus, WorkerStatusView};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
@@ -166,6 +166,13 @@ pub fn wire_status(
     session_id: String,
 ) -> Result<Option<RuntimeStatus>, String> {
     Ok(acp.get_status(&session_id))
+}
+
+#[tauri::command]
+pub fn wire_list_workers(
+    acp: tauri::State<'_, AcpProcessManager>,
+) -> Result<Vec<WorkerStatusView>, String> {
+    Ok(acp.list_workers())
 }
 
 #[tauri::command]
