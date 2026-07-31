@@ -12,6 +12,8 @@ export interface SwarmMember {
   text?: string;
   suspendedReason?: string;
   swarmIndex: number;
+  boundModel?: string;
+  modelPreference?: string;
 }
 
 export interface SwarmCardRow {
@@ -45,6 +47,8 @@ export function agentTaskToSwarmMember(task: AgentTask): SwarmMember {
     text: task.text,
     suspendedReason: task.suspendedReason,
     swarmIndex: task.swarmIndex ?? Number.MAX_SAFE_INTEGER,
+    boundModel: task.boundModel,
+    modelPreference: task.modelPreference,
   };
 }
 

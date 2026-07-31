@@ -1,0 +1,37 @@
+{
+  "sessionId": "sess-desktop-fixture-031",
+  "configOptions": [
+    {
+      "id": "model",
+      "type": "select",
+      "label": "Model",
+      "currentValue": "kimi-k2",
+      "options": [
+        { "value": "kimi-k2", "label": "Kimi K2" },
+        { "value": "kimi-coder", "label": "Kimi Coder" }
+      ]
+    },
+    {
+      "id": "thinking",
+      "type": "select",
+      "label": "Thinking",
+      "currentValue": "on",
+      "options": [
+        { "value": "on", "label": "On" },
+        { "value": "off", "label": "Off" }
+      ]
+    },
+    {
+      "id": "mode",
+      "type": "select",
+      "label": "Mode",
+      "currentValue": "default",
+      "options": [
+        { "value": "default", "label": "Manual" },
+        { "value": "auto", "label": "Auto" },
+        { "value": "yolo", "label": "YOLO" },
+        { "value": "plan", "label": "Plan" }
+      ]
+    }
+  ]
+}

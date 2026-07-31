@@ -33,3 +33,15 @@ function notifyBusySessionsSkipped(resp: ConfigApplySideEffects): void {
 		});
 	}
 }
+
+/** Secondary model writes global [secondary_model]; not a session model switch. */
+export function notifySecondaryModelApplied(
+	resp: ConfigApplySideEffects,
+	successMessage: string,
+): void {
+	toast.success(successMessage, {
+		description:
+			"已写入全局 [secondary_model]；新派生的子代理将使用此模型。主会话 model 不变；空闲会话重连后生效，忙碌会话需稍后重连。",
+	});
+	notifyBusySessionsSkipped(resp);
+}

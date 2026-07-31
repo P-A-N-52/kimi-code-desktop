@@ -133,6 +133,8 @@ import {
   type ApprovalRequestEvent,
   type ApprovalRequestResolvedEvent,
   type ApprovalResponseDecision,
+  type BackgroundTaskObservedEvent,
+  type ConfigOptionUpdateEvent,
   type ContentPart,
   extractEvent,
   type JsonRpcRequest,
@@ -192,19 +194,33 @@ import {
   getKimiCliVersion,
   getSession,
   getSessionGoalSnapshot,
+  getSessionConfigState,
   getSessionRuntimeModes,
   isTauri,
   migrateSessionSwarmMode,
   onWireMessage,
   replaySessionHistory,
+  sendNotification,
   wireConnect,
   wireDisconnect,
   wireSend,
   wireStatus,
 } from "@/lib/tauri-api";
+import {
+  applyConfigOptionWirePayload,
+  emptySessionConfigState,
+  isValidSessionConfigValue,
+  runtimeModesFromSessionModeValue,
+  type SessionConfigState,
+} from "@/lib/session-config-state";
+import {
+  resetBackgroundTaskNotifications,
+  syncBackgroundTaskFromToolResult,
+  syncBackgroundTaskFromWire,
+  type BackgroundTaskSyncResult,
+} from "@/lib/background-tasks/sync";
 import { handleToolResult, type TodoItem, useToolEventsStore } from "@/lib/tool-events/store";
-
-// Regex patterns moved to top level for performance
+import { isBackgroundOrCronObservationTool } from "@/lib/tool-events/tool-registry";
 const DATA_URL_MEDIA_TYPE_REGEX = /^data:([^;,]+)[;,]/;
 const NUMBERED_LIST_ITEM_REGEX = /^\d+\.\s+(.+)$/;
 const IMAGE_TAG_REGEX = /<image\s+path="([^"]+)"\s+content_type="([^"]+)">/i;
@@ -212,6 +228,23 @@ const VIDEO_TAG_REGEX = /<video\s+path="([^"]+)"\s+content_type="([^"]+)">/i;
 const DOCUMENT_TAG_REGEX = /<document\s+path="([^"]+)"\s+content_type="([^"]+)">/i;
 const LEGACY_UPLOADS_REGEX = /`uploads\/([^`]+)`/;
 const TRAILING_DECIMAL_ZERO_REGEX = /\.0$/;
+
+function maybeNotifyBackgroundTaskComplete(
+  result: BackgroundTaskSyncResult,
+  isReplay: boolean,
+): void {
+  if (isReplay || !result.terminalBackgroundTask || !isTauri()) return;
+  if (document.hasFocus()) return;
+  const { title, terminalState } = result.terminalBackgroundTask;
+  const body =
+    terminalState === "failed"
+      ? "后台任务失败"
+      : terminalState === "stopped"
+        ? "后台任务已停止"
+        : "后台任务已完成";
+  void sendNotification(title, body).catch(() => {});
+}
+
 const HTTP_TO_WS_REGEX = /^http/;
 const NEWLINE_REGEX = /\r?\n/;
 // Match <image path="..."> or <video path="..."> tags (path attribute only, no content_type required)
@@ -488,6 +521,7 @@ function normalizeIncomingSlashCommands(
     aliases?: string[];
     input_hint?: string | null;
     inputHint?: string | null;
+    source?: string | null;
   }>,
 ): SlashCommandDef[] {
   return filterDesktopSlashCommands(
@@ -496,6 +530,7 @@ function normalizeIncomingSlashCommands(
       description: command.description ?? "",
       aliases: command.aliases ?? [],
       inputHint: command.inputHint ?? command.input_hint ?? null,
+      source: command.source ?? null,
     })),
   );
 }
@@ -679,6 +714,12 @@ export type UseSessionStreamReturn = {
   sendSetGoalMode: (enabled: boolean) => boolean;
   /** Available slash commands from the server */
   slashCommands: SlashCommandDef[];
+  /** Session-scoped config from ACP (model / thinking / mode) */
+  sessionConfigState: SessionConfigState;
+  /** Whether a session/set_config_option write is in flight */
+  sessionConfigUpdating: boolean;
+  /** Change a declared session config option via the wire worker */
+  sendSetConfigOption: (configId: string, value: unknown) => Promise<boolean>;
 };
 
 type StreamConnection = {
@@ -772,6 +813,11 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
   const [isAwaitingFirstResponse, setIsAwaitingFirstResponse] = useState(false);
   const [isReplayingHistory, setIsReplayingHistory] = useState(true);
   const [slashCommands, setSlashCommands] = useState<SlashCommandDef[]>([]);
+  const [sessionConfigState, setSessionConfigState] = useState<SessionConfigState>(() =>
+    sessionId ? emptySessionConfigState(sessionId) : emptySessionConfigState(""),
+  );
+  const [sessionConfigUpdating, setSessionConfigUpdating] = useState(false);
+  const sessionConfigStateRef = useRef<SessionConfigState>(sessionConfigState);
   const slashCommandsRef = useRef<SlashCommandDef[]>([]);
   const contextUsageRef = useRef(0);
   const contextTokensRef = useRef<number | null>(null);
@@ -896,6 +942,9 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
   const optimisticUserMessagesRef = useRef<OptimisticUserMessage[]>([]);
   const promptRequestIdsRef = useRef<Set<string>>(new Set());
   const cancelRequestIdsRef = useRef<Set<string>>(new Set());
+  const configOptionRequestIdsRef = useRef(
+    new Map<string, { resolve: (ok: boolean) => void; configId: string }>(),
+  );
 
   // Track if current turn is a /clear command (needs UI clear on turn end)
   const pendingClearRef = useRef(false);
@@ -1848,6 +1897,8 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
     swarmModeRef.current = false;
     setGoalMode(false);
     goalModeRef.current = false;
+    setSessionConfigState(emptySessionConfigState(sessionId ?? ""));
+    setSessionConfigUpdating(false);
     setSessionStatus(null);
         latestSessionStatusRef.current = null;
     lastStatusSeqRef.current = null;
@@ -1883,7 +1934,43 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
       usingCachedCommandsRef.current = true;
     }
     },
-    [resetStepState, setAwaitingFirstResponse, setError],
+    [resetStepState, setAwaitingFirstResponse, setError, sessionId],
+  );
+
+  const applySessionConfigFromWire = useCallback(
+    (payload: ConfigOptionUpdateEvent["payload"]) => {
+      const targetSessionId = payload.session_id;
+      if (!targetSessionId || targetSessionId !== sessionId) {
+        return;
+      }
+      setSessionConfigState((prev) => {
+        const nextMap = applyConfigOptionWirePayload(
+          { [targetSessionId]: prev },
+          payload as Record<string, unknown>,
+        );
+        const next =
+          nextMap[targetSessionId] ?? emptySessionConfigState(targetSessionId);
+        sessionConfigStateRef.current = next;
+        return next;
+      });
+
+      const modeOption = payload.options.find((option) => option.id === "mode");
+      const mapped = runtimeModesFromSessionModeValue(
+        modeOption?.currentValue ?? modeOption?.current_value,
+      );
+      if (!mapped) {
+        return;
+      }
+      if (typeof pendingModeUpdatesRef.current.planMode !== "boolean") {
+        setPlanMode(mapped.planMode);
+        planModeRef.current = mapped.planMode;
+      }
+      if (!pendingModeUpdatesRef.current.permissionMode) {
+        setPermissionMode(mapped.permissionMode);
+        permissionModeRef.current = mapped.permissionMode;
+      }
+    },
+    [sessionId],
   );
 
   // Process a SubagentEvent: accumulate inner events into parent Agent tool's subagentSteps
@@ -2496,6 +2583,60 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
           // Handle tool-specific events (e.g., WriteFile → new files notification)
           if (tc && !toolStillInProgress) {
             handleToolResult(tc.name, tc.arguments, return_value.is_error, isReplay);
+          }
+
+          const resolvedToolName =
+            (typeof extrasRecord?.tool_title === "string" && extrasRecord.tool_title) ||
+            tc?.name;
+          if (resolvedToolName && sessionId) {
+            const syncResult = syncBackgroundTaskFromToolResult({
+              sessionId,
+              toolCallId: tool_call_id,
+              toolName: resolvedToolName,
+              toolArguments: tc?.arguments,
+              output: typeof outputStr === "string" ? outputStr : undefined,
+              isError: return_value.is_error,
+              inProgress: toolStillInProgress,
+              isReplay,
+            });
+            maybeNotifyBackgroundTaskComplete(syncResult, isReplay);
+          }
+
+          if (
+            typeof extrasRecord?.tool_title === "string" &&
+            isBackgroundOrCronObservationTool(extrasRecord.tool_title)
+          ) {
+            setMessages((prev) => {
+              if (prev.some((msg) => msg.toolCall?.toolCallId === tool_call_id)) {
+                return prev;
+              }
+              const toolMessageId = getNextMessageId("assistant");
+              return [
+                ...prev,
+                {
+                  id: toolMessageId,
+                  role: "assistant",
+                  variant: "tool",
+                  toolCall: {
+                    title: extrasRecord.tool_title as string,
+                    type: "tool-call" as ToolUIPart["type"],
+                    state: return_value.is_error
+                      ? ("output-error" as ToolUIPart["state"])
+                      : toolStillInProgress
+                        ? ("input-available" as ToolUIPart["state"])
+                        : ("output-available" as ToolUIPart["state"]),
+                    toolCallId: tool_call_id,
+                    output: typeof outputStr === "string" ? outputStr : undefined,
+                    message: messageStr || undefined,
+                    display: return_value.display,
+                    extras: return_value.extras,
+                    isError: return_value.is_error,
+                    errorText: return_value.is_error ? messageStr || undefined : undefined,
+                  },
+                  isStreaming: false,
+                },
+              ];
+            });
           }
 
           if (
@@ -3303,11 +3444,26 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
           break;
         }
 
+        case "ConfigOptionUpdate": {
+          applySessionConfigFromWire((event as ConfigOptionUpdateEvent).payload);
+          break;
+        }
+
+        case "BackgroundTaskObserved": {
+          const payload = (event as BackgroundTaskObservedEvent).payload;
+          if (payload.session_id === sessionId) {
+            const syncResult = syncBackgroundTaskFromWire(payload, isReplay);
+            maybeNotifyBackgroundTaskComplete(syncResult, isReplay);
+          }
+          break;
+        }
+
         default:
           break;
       }
     },
     [
+      applySessionConfigFromWire,
       getNextMessageId,
       setMessages,
       resetStepState,
@@ -3354,12 +3510,21 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
           if (state !== STREAM_OPEN) {
             throw new Error("Tauri wire connection is closed");
           }
+          let isConfigOptionSend = false;
+          try {
+            const parsed = JSON.parse(data) as { method?: string };
+            isConfigOptionSend = parsed.method === "set_config_option";
+          } catch {
+            isConfigOptionSend = false;
+          }
           const pendingSend = wireSend(sid, data)
             .catch((err) => {
               console.error("[SessionStream] Failed to send Tauri wire message:", err);
               const error = err instanceof Error ? err : new Error(String(err));
-              setError(error);
-              onError?.(error);
+              if (!isConfigOptionSend) {
+                setError(error);
+                onError?.(error);
+              }
               throw error;
             })
             .finally(() => {
@@ -3754,6 +3919,12 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
             return;
           }
 
+          if (errorResponseId && configOptionRequestIdsRef.current.has(errorResponseId)) {
+            configOptionRequestIdsRef.current.get(errorResponseId)?.resolve(false);
+            console.warn("[SessionStream] Config option update failed:", message.error);
+            return;
+          }
+
           // Other errors remain fatal
           console.error("[SessionStream] Received error:", message.error);
           const err = new Error(message.error.message || "Unknown error");
@@ -3786,6 +3957,10 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
         const replayResult = message.result as
           | { status?: string; events?: number; requests?: number }
           | undefined;
+        if (replayId && configOptionRequestIdsRef.current.has(replayId)) {
+          configOptionRequestIdsRef.current.get(replayId)?.resolve(true);
+          return;
+        }
         if (replayId && replayId === replayIdRef.current && replayResult) {
           console.log("[SessionStream] Replay complete", replayResult);
           if (historyCompleteTimeoutRef.current) {
@@ -4850,6 +5025,7 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
   contextTokensRef.current = contextTokens;
   maxContextTokensRef.current = maxContextTokens;
   tokenUsageRef.current = tokenUsage;
+  sessionConfigStateRef.current = sessionConfigState;
 
   const sendModeUpdate = useCallback(
     (key: "planMode" | "swarmMode" | "goalMode", enabled: boolean): boolean => {
@@ -4968,6 +5144,60 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
   const sendSetGoalMode = useCallback(
     (enabled: boolean) => sendModeUpdate("goalMode", enabled),
     [sendModeUpdate],
+  );
+
+  const sendSetConfigOption = useCallback(
+    (configId: string, value: unknown): Promise<boolean> => {
+      if (!sessionId) {
+        return Promise.resolve(false);
+      }
+      if (!isValidSessionConfigValue(sessionConfigStateRef.current, configId, value)) {
+        return Promise.resolve(false);
+      }
+
+      const connection = wsRef.current;
+      if (!connection) {
+        preserveMessagesOnConnectRef.current = hasMessagesRef.current;
+        connect();
+        return Promise.resolve(false);
+      }
+
+      const requestId = uuidV4();
+      return new Promise<boolean>((resolve) => {
+        const finish = (ok: boolean) => {
+          if (!configOptionRequestIdsRef.current.has(requestId)) {
+            return;
+          }
+          configOptionRequestIdsRef.current.delete(requestId);
+          setSessionConfigUpdating(false);
+          resolve(ok);
+        };
+        const timeoutId = window.setTimeout(() => finish(false), 30_000);
+        configOptionRequestIdsRef.current.set(requestId, {
+          configId,
+          resolve: (ok) => {
+            window.clearTimeout(timeoutId);
+            finish(ok);
+          },
+        });
+        setSessionConfigUpdating(true);
+
+        void Promise.resolve(
+          connection.send(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              method: "set_config_option",
+              id: requestId,
+              params: { configId, value },
+            }),
+          ),
+        ).catch((error) => {
+          console.warn("[SessionStream] Failed to set config option:", error);
+          configOptionRequestIdsRef.current.get(requestId)?.resolve(false);
+        });
+      });
+    },
+    [connect, sessionId],
   );
 
   const runLocalInfoCommand = useCallback(
@@ -5498,6 +5728,7 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
     setGoalMode(false);
     goalModeRef.current = false;
     setMessages([]);
+    resetBackgroundTaskNotifications();
     useToolEventsStore.getState().clearNewFiles();
     useToolEventsStore.getState().clearTodoItems();
     useToolEventsStore.getState().clearCurrentGoal();
@@ -5515,6 +5746,14 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
           if (cancelled) return;
         } catch (error) {
           console.warn("[SessionStream] Failed to restore Goal state:", error);
+        }
+        try {
+          const configState = await getSessionConfigState(sessionId);
+          if (cancelled) return;
+          setSessionConfigState(configState);
+          sessionConfigStateRef.current = configState;
+        } catch (error) {
+          console.warn("[SessionStream] Failed to load session config state:", error);
         }
       }
 
@@ -5689,5 +5928,8 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
     goalMode,
     sendSetGoalMode,
     slashCommands,
+    sessionConfigState,
+    sessionConfigUpdating,
+    sendSetConfigOption,
   };
 }

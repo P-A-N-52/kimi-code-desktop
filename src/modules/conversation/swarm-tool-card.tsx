@@ -2,11 +2,16 @@ import { Check, ChevronRight, Layers, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { LiveMessage } from "@/hooks/types";
 import { useAgentMonitorStore } from "@/lib/agent-monitor/store";
+import {
+  formatAgentModelDisplay,
+  resolveAgentModelDisplay,
+} from "@/lib/agent-model-display";
 import { parseSwarmResult } from "@/lib/swarm/parseSwarmResult";
 import {
   buildSwarmCardRows,
   resolveSwarmMembers,
   type SwarmCardRow,
+  type SwarmMember,
   type SwarmPhase,
   statusToDotKind,
 } from "@/lib/swarm/swarmCardRows";
@@ -61,9 +66,15 @@ function phaseTextClass(phase: SwarmPhase): string {
   }
 }
 
-function MemberRow({ row }: { row: SwarmCardRow }) {
+function MemberRow({ row, member }: { row: SwarmCardRow; member?: SwarmMember }) {
   const live = row.phase === "working" || row.phase === "suspended" || row.phase === "queued";
   const [open, setOpen] = useState(live && Boolean(row.activity || row.body));
+  const modelDisplay = member
+    ? resolveAgentModelDisplay({
+        boundModel: member.boundModel,
+        modelPreference: member.modelPreference,
+      })
+    : null;
   return (
     <div
       data-slot="swarm-member-row"
@@ -78,6 +89,14 @@ function MemberRow({ row }: { row: SwarmCardRow }) {
       >
         <StatusDot status={statusToDotKind(row.phase)} className="shrink-0" />
         <span className="max-w-[46%] truncate font-medium text-foreground">{row.name}</span>
+        {modelDisplay ? (
+          <span
+            data-slot="swarm-member-model"
+            className="shrink-0 truncate font-mono text-[10px] text-faint"
+          >
+            {formatAgentModelDisplay(modelDisplay)}
+          </span>
+        ) : null}
         <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-muted">
           {row.activity}
         </span>
@@ -111,6 +130,10 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
     [tasks, toolCall.toolCallId],
   );
   const rows = useMemo(() => buildSwarmCardRows(members, result), [members, result]);
+  const memberById = useMemo(
+    () => new Map(members.map((member) => [member.id, member])),
+    [members],
+  );
 
   const running = isToolRunning(toolCall.state);
   const denied = toolCall.state === "output-denied";
@@ -267,7 +290,7 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
           {rows.length > 0 ? (
             <div>
               {rows.map((row) => (
-                <MemberRow key={row.id} row={row} />
+                <MemberRow key={row.id} row={row} member={memberById.get(row.id)} />
               ))}
             </div>
           ) : denialText ? (

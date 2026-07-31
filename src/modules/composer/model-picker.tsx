@@ -17,6 +17,7 @@ export function ModelPicker({
 	thinkingEffort,
 	disabled = false,
 	updating = false,
+	thinkingControlsVisible,
 	onSelectModel,
 	onToggleThinking,
 	onSelectThinkingEffort,
@@ -28,6 +29,8 @@ export function ModelPicker({
 	thinkingEffort: string;
 	disabled?: boolean;
 	updating?: boolean;
+	/** When set, overrides model-capability detection for the Thinking block. */
+	thinkingControlsVisible?: boolean;
 	onSelectModel: (name: string) => void;
 	onToggleThinking: (enabled: boolean) => void;
 	onSelectThinkingEffort: (effort: string) => void;
@@ -40,7 +43,8 @@ export function ModelPicker({
 		() => findConfigModel(models, selectedModel),
 		[models, selectedModel],
 	);
-	const supportsThinking = modelHasThinkingCapability(selected);
+	const supportsThinking =
+		thinkingControlsVisible ?? modelHasThinkingCapability(selected);
 	const forcesThinking = modelForcesThinking(selected);
 	const supportedEfforts = modelThinkingEfforts(selected);
 	const activeEffort = supportedEfforts.includes(thinkingEffort)

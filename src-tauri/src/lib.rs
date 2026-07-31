@@ -1,4 +1,5 @@
 pub mod acp;
+pub mod acp_capabilities;
 pub mod acp_desktop;
 pub mod acp_translate;
 pub mod commands;
@@ -10,10 +11,12 @@ pub mod managed_usage;
 pub mod mcp_config;
 pub mod notify;
 pub mod oauth_login;
+pub mod provider_config;
 pub mod runtime_backend;
 pub mod runtime_check;
 pub mod security;
 pub mod session_files;
+pub mod session_influence;
 pub mod session_store;
 pub mod skills;
 #[cfg(test)]
@@ -73,10 +76,13 @@ pub fn run() {
             commands::list_work_dirs,
             commands::get_startup_dir,
             commands::list_available_skills,
+            commands::get_session_influence_snapshot,
             commands::pick_files,
             commands::pick_folder,
+            commands::save_text_file_dialog,
             commands::get_global_config,
             commands::get_config_toml,
+            commands::get_providers_overview,
             commands::update_config_toml,
             commands::get_mcp_config,
             commands::update_mcp_config,
@@ -86,6 +92,8 @@ pub fn run() {
             commands::hide_window,
             commands::get_app_version,
             commands::get_kimi_cli_version,
+            commands::get_agent_runtime_capabilities,
+            commands::get_session_config_state,
             commands::check_runtime_readiness,
             commands::open_kimi_login,
             commands::start_kimi_login,

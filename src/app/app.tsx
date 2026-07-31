@@ -508,6 +508,7 @@ export default function App() {
             shortId={selectedSessionId ? selectedSessionId.slice(0, 6) : undefined}
             sessionId={selectedSessionId || undefined}
             workDir={currentSession?.workDir}
+            messages={stream.messages}
             panelOpen={panelOpen}
             onTogglePanel={() => setPanelOpen((v) => !v)}
             onOpenSettings={() => openSettings()}
@@ -516,6 +517,8 @@ export default function App() {
         panel={
           <ChangesPanel
             sessionId={selectedSessionId}
+            workDir={currentSession?.workDir}
+            runtimeSlashCommands={stream.slashCommands}
             activeTab={workspaceTab}
             onTabChange={setWorkspaceTab}
             changes={changes}

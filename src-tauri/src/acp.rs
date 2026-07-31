@@ -4,7 +4,8 @@ use crate::acp_translate::{
     acp_permission_to_legacy_request, acp_slash_command_prompt, acp_update_to_wire_event,
     legacy_approval_result_to_acp_outcome_with_options, legacy_prompt_status_from_stop_reason,
     legacy_user_input_to_acp_prompt_with_swarm, normalize_workspace_path,
-    translate_acp_lifecycle_notification, translate_session_update, wire_event_message,
+    translate_acp_lifecycle_notification, translate_session_config_snapshot,
+    translate_session_update, wire_event_message,
 };
 use crate::wire_events::{emit_wire_message, RestartWorkersSummary, RuntimeStatus};
 use crate::{global_config, goal_queue, goal_store, session_files, session_store};
@@ -573,6 +574,9 @@ impl AcpProcessManager {
             ));
         }
 
+        let resume_result = resume.result.as_ref().unwrap_or(&Value::Null);
+        crate::acp_capabilities::set_session_config_from_response(&session_id, resume_result);
+
         worker.rpc.lock().unwrap().replace(Arc::new(rpc));
         set_worker_status(app, &worker, "idle", Some("acp_connected"), None);
 
@@ -592,6 +596,7 @@ impl AcpProcessManager {
             workers.remove(&session_id)
         };
         if let Some(worker) = worker {
+            crate::acp_capabilities::clear_session_config(&session_id);
             stop_worker_async(&worker, "disconnected").await;
         }
         Ok(())
@@ -618,6 +623,7 @@ impl AcpProcessManager {
             }
         };
         if let Some(worker) = worker {
+            crate::acp_capabilities::clear_session_config(&session_id);
             stop_worker_async(&worker, "disconnected").await;
         }
         Ok(())
@@ -842,6 +848,7 @@ impl AcpProcessManager {
                 set_worker_status(app, &worker, "idle", Some("initialized"), None);
                 emit_mode_status_wire(app, &worker);
                 emit_usage_status_wire(app, &worker, None);
+                emit_session_config_wire(app, &worker.session_id);
                 Ok(())
             }
             Some("replay") => handle_replay(app, &worker, id).await,
@@ -900,6 +907,15 @@ impl AcpProcessManager {
                 id,
                 parsed.get("params").cloned().unwrap_or(Value::Null),
             ),
+            Some("set_config_option") => {
+                handle_set_config_option(
+                    app,
+                    &worker,
+                    id,
+                    parsed.get("params").cloned().unwrap_or(Value::Null),
+                )
+                .await
+            }
             None if parsed.get("result").is_some() => {
                 handle_permission_response(&worker, id, parsed.get("result")).await
             }
@@ -1081,7 +1097,7 @@ fn acp_initialize_params() -> Value {
     })
 }
 
-pub(crate) async fn ensure_acp_authenticated(rpc: &mut AcpRpcSession) -> Result<(), String> {
+pub(crate) async fn ensure_acp_authenticated(rpc: &mut AcpRpcSession) -> Result<Value, String> {
     let initialize = rpc.request("initialize", acp_initialize_params()).await?;
 
     if initialize.error.is_some() {
@@ -1091,26 +1107,30 @@ pub(crate) async fn ensure_acp_authenticated(rpc: &mut AcpRpcSession) -> Result<
         ));
     }
 
-    let method_id = pick_auth_method_id(initialize.result.as_ref().unwrap_or(&Value::Null));
+    let initialize_result = initialize.result.clone().unwrap_or(Value::Null);
+    let method_id = pick_auth_method_id(&initialize_result);
     let authenticate = rpc
         .request("authenticate", json!({ "methodId": method_id }))
         .await?;
 
     if is_auth_required_response(&authenticate) || !is_authenticated_response(&authenticate) {
-        return Err(
-            "Kimi Code rejected the configured provider credentials. Check config.toml / login state, then retry. If you use a VPN, confirm the network is reachable."
-                .to_string(),
-        );
+        let message =
+            "Kimi Code rejected the configured provider credentials. Check config.toml / login state, then retry. If you use a VPN, confirm the network is reachable.";
+        crate::provider_config::record_acp_auth_failure(message);
+        return Err(message.to_string());
     }
 
     if authenticate.error.is_some() {
-        return Err(format!(
+        let message = format!(
             "ACP authenticate failed: {}",
             describe_rpc_error(&authenticate)
-        ));
+        );
+        crate::provider_config::record_acp_auth_failure(&message);
+        return Err(message);
     }
 
-    Ok(())
+    crate::provider_config::clear_acp_auth_failure();
+    Ok(initialize_result)
 }
 
 fn set_worker_status(
@@ -1342,6 +1362,41 @@ fn emit_mode_status_wire(app: &AppHandle, worker: &AcpWorker) {
         app,
         &worker.session_id,
         wire_event_message("StatusUpdate", mode_status_payload(worker)),
+    );
+}
+
+fn emit_session_config_wire(app: &AppHandle, session_id: &str) {
+    let Some(state) = crate::acp_capabilities::resolve_session_config(session_id) else {
+        return;
+    };
+    if state.status != crate::acp_capabilities::SessionConfigStatus::Known
+        || state.options.is_empty()
+    {
+        return;
+    }
+    emit_wire_message(
+        app,
+        session_id,
+        translate_session_config_snapshot(session_id, &state),
+    );
+}
+
+fn emit_config_option_error(app: &AppHandle, worker: &AcpWorker, id: Option<Value>, message: &str) {
+    let Some(id) = id else {
+        return;
+    };
+    emit_wire_message(
+        app,
+        &worker.session_id,
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32000,
+                "message": message,
+            }
+        })
+        .to_string(),
     );
 }
 
@@ -1678,6 +1733,98 @@ fn handle_set_goal_mode(
     Ok(())
 }
 
+async fn handle_set_config_option(
+    app: &AppHandle,
+    worker: &Arc<AcpWorker>,
+    id: Option<Value>,
+    params: Value,
+) -> Result<(), String> {
+    let config_id = match params
+        .get("configId")
+        .or_else(|| params.get("config_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(config_id) => config_id.to_string(),
+        None => {
+            emit_config_option_error(app, worker, id, "Missing configId");
+            return Ok(());
+        }
+    };
+    let value = match params.get("value").cloned() {
+        Some(value) => value,
+        None => {
+            emit_config_option_error(app, worker, id, "Missing value");
+            return Ok(());
+        }
+    };
+
+    if let Err(message) = crate::acp_capabilities::validate_config_option_value(
+        &worker.session_id,
+        &config_id,
+        &value,
+    ) {
+        emit_config_option_error(app, worker, id, &message);
+        return Ok(());
+    }
+    if let Err(message) = ensure_mode_change_idle(worker) {
+        emit_config_option_error(app, worker, id, &message);
+        return Ok(());
+    }
+
+    let response = match active_worker_rpc(worker) {
+        Ok(rpc) => match rpc
+            .request(
+                "session/set_config_option",
+                json!({
+                    "sessionId": worker.session_id,
+                    "configId": config_id,
+                    "value": value,
+                }),
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => {
+                emit_config_option_error(app, worker, id, &err);
+                return Ok(());
+            }
+        },
+        Err(message) => {
+            emit_config_option_error(app, worker, id, &message);
+            return Ok(());
+        }
+    };
+
+    if response.error.is_some() {
+        emit_config_option_error(
+            app,
+            worker,
+            id,
+            &format!(
+                "ACP session/set_config_option failed: {}",
+                describe_rpc_error(&response)
+            ),
+        );
+        return Ok(());
+    }
+
+    if let Some(id) = id {
+        emit_wire_message(
+            app,
+            &worker.session_id,
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "status": "ok" },
+            })
+            .to_string(),
+        );
+    }
+    Ok(())
+}
+
 async fn handle_replay(
     app: &AppHandle,
     worker: &Arc<AcpWorker>,
@@ -1712,6 +1859,10 @@ async fn handle_replay(
         ));
     }
 
+    if let Some(result) = response.result.as_ref() {
+        crate::acp_capabilities::set_session_config_from_response(&worker.session_id, result);
+    }
+
     wait_for_session_update_quiescence(worker, Duration::from_millis(150), Duration::from_secs(5))
         .await;
 
@@ -1727,6 +1878,7 @@ async fn handle_replay(
     );
     set_worker_status(app, worker, "idle", Some("replay_complete"), None);
     emit_usage_status_wire(app, worker, None);
+    emit_session_config_wire(app, &worker.session_id);
     Ok(())
 }
 
