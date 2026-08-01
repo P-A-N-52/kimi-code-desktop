@@ -503,12 +503,11 @@ capabilities = ["thinking"]
             overview["providers"][0]["credentialStatus"].as_str(),
             Some("configured")
         );
-        assert_eq!(
+        assert!(
             overview["providers"][0]["credentialHint"]
                 .as_str()
                 .unwrap()
-                .contains("api_key"),
-            true
+                .contains("api_key")
         );
     }
 

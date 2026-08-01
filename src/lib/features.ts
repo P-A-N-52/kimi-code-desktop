@@ -50,3 +50,4 @@ export function setCustomSubagentsEnabled(enabled: boolean): void {
     // Ignore private-mode or quota failures; the in-memory subscribers still refresh.
   }
   window.dispatchEvent(new Event(CUSTOM_SUBAGENTS_CHANGE_EVENT));
+}

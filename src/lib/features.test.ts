@@ -100,3 +100,4 @@ describe("custom subagents experiment", () => {
     });
     expect(isCustomSubagentsEnabled()).toBe(false);
   });
+});
