@@ -1123,6 +1123,7 @@ max_context_size = 128000
     #[test]
     fn secondary_model_update_rejected_when_experiment_disabled() {
         let parsed: toml::Value = SAMPLE_CONFIG.parse().expect("sample config parses");
+        let _lock = crate::test_env::lock::env_lock();
         let err = update_fields_on_value(&parsed, None, None, None, None, Some("kimi"), None)
             .expect_err("experiment gate blocks writes");
         assert!(err.contains("EXPERIMENTAL"));
