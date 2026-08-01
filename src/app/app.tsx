@@ -124,6 +124,7 @@ export default function App() {
       if (restarted && restarted.length > 0) {
         sessionStreamOrchestrator?.reconnectSessions(restarted);
       }
+      void runRuntimeReadinessCheck();
     };
     window.addEventListener("kimi:config-update", handler);
     return () => window.removeEventListener("kimi:config-update", handler);
@@ -494,17 +495,27 @@ export default function App() {
 
   if (shouldPauseRuntime) {
     return (
-      <ReadinessOverlay
-        checking={isCheckingRuntime}
-        readiness={runtimeReadiness}
-        error={runtimeCheckError}
-        onRetry={runRuntimeReadinessCheck}
-        onContinue={() => {
-          setRuntimeCheckError(null);
-          setHasAcknowledgedRuntime(true);
-        }}
-        onOpenDownload={() => void openKimiCodeWebsite()}
-      />
+      <>
+        {!showSettings && (
+          <ReadinessOverlay
+            checking={isCheckingRuntime}
+            readiness={runtimeReadiness}
+            error={runtimeCheckError}
+            onRetry={runRuntimeReadinessCheck}
+            onContinue={() => {
+              setRuntimeCheckError(null);
+              setHasAcknowledgedRuntime(true);
+            }}
+            onOpenDownload={() => void openKimiCodeWebsite()}
+            onOpenSettings={() => openSettings("config")}
+          />
+        )}
+        <SettingsDialog
+          open={showSettings}
+          onOpenChange={handleSettingsOpenChange}
+          initialTab={settingsInitialTab}
+        />
+      </>
     );
   }
 
