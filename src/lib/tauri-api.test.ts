@@ -7,7 +7,37 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
 }));
 
-import { wireListWorkers } from "./tauri-api";
+import { getSessionInfluenceSnapshot, wireListWorkers } from "./tauri-api";
+
+describe("session influence IPC", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue({});
+  });
+
+  it("defaults custom Agent discovery to disabled", async () => {
+    await getSessionInfluenceSnapshot();
+
+    expect(invokeMock).toHaveBeenCalledWith("get_session_influence_snapshot", {
+      workDir: null,
+      includeCustomAgents: false,
+    });
+  });
+
+  it("forwards explicit custom Agent discovery flags", async () => {
+    await getSessionInfluenceSnapshot("  C:/workspace  ", true);
+    await getSessionInfluenceSnapshot(null, false);
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "get_session_influence_snapshot", {
+      workDir: "C:/workspace",
+      includeCustomAgents: true,
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "get_session_influence_snapshot", {
+      workDir: null,
+      includeCustomAgents: false,
+    });
+  });
+});
 
 describe("wireListWorkers", () => {
   beforeEach(() => {

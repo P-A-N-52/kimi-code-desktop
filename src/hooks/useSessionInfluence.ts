@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useCustomSubagentsEnabled } from "@/hooks/useCustomSubagents";
 import type { SlashCommandDef } from "@/lib/slash-command-catalog";
 import {
 	applyRuntimeInfluenceSignals,
@@ -19,6 +20,7 @@ export type UseSessionInfluenceReturn = {
 	error: string | null;
 	refresh: () => Promise<void>;
 	hasRuntimeCommandUpdate: boolean;
+	customSubagentsEnabled: boolean;
 };
 
 export function useSessionInfluence({
@@ -31,6 +33,7 @@ export function useSessionInfluence({
 	);
 	const [isLoading, setIsLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const { enabled: customSubagentsEnabled } = useCustomSubagentsEnabled();
 
 	const hasRuntimeCommandUpdate = useMemo(
 		() =>
@@ -41,22 +44,23 @@ export function useSessionInfluence({
 		[runtimeSlashCommands],
 	);
 
-	const snapshot = useMemo(
-		() =>
-			applyRuntimeInfluenceSignals(
-				diskSnapshot,
-				runtimeSlashCommands,
-				hasRuntimeCommandUpdate,
-			),
-		[diskSnapshot, runtimeSlashCommands, hasRuntimeCommandUpdate],
-	);
+	const snapshot = useMemo(() => {
+		const visibleDiskSnapshot = customSubagentsEnabled
+			? diskSnapshot
+			: { ...diskSnapshot, agents: [] };
+		return applyRuntimeInfluenceSignals(
+			visibleDiskSnapshot,
+			runtimeSlashCommands,
+			hasRuntimeCommandUpdate,
+		);
+	}, [customSubagentsEnabled, diskSnapshot, runtimeSlashCommands, hasRuntimeCommandUpdate]);
 
 	const refresh = async () => {
 		if (!enabled) return;
 		setIsLoading(true);
 		setError(null);
 		try {
-			const raw = await getSessionInfluenceSnapshot(workDir);
+			const raw = await getSessionInfluenceSnapshot(workDir, customSubagentsEnabled);
 			setDiskSnapshot(normalizeSessionInfluenceSnapshot(raw));
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "无法读取会话影响因素");
@@ -70,7 +74,7 @@ export function useSessionInfluence({
 		let cancelled = false;
 		setIsLoading(true);
 		setError(null);
-		getSessionInfluenceSnapshot(workDir)
+		getSessionInfluenceSnapshot(workDir, customSubagentsEnabled)
 			.then((raw) => {
 				if (!cancelled) {
 					setDiskSnapshot(normalizeSessionInfluenceSnapshot(raw));
@@ -87,7 +91,7 @@ export function useSessionInfluence({
 		return () => {
 			cancelled = true;
 		};
-	}, [enabled, workDir]);
+	}, [customSubagentsEnabled, enabled, workDir]);
 
 	return {
 		snapshot,
@@ -95,5 +99,6 @@ export function useSessionInfluence({
 		error,
 		refresh,
 		hasRuntimeCommandUpdate,
+		customSubagentsEnabled,
 	};
 }

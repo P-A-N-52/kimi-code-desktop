@@ -55,7 +55,10 @@ struct PluginManifestSummary {
 }
 
 /// JSON snapshot for the desktop influence panel (disk + config only).
-pub fn get_session_influence_snapshot(work_dir: Option<&str>) -> Result<Value, String> {
+pub fn get_session_influence_snapshot(
+    work_dir: Option<&str>,
+    include_custom_agents: bool,
+) -> Result<Value, String> {
     let kimi_homes = collect_kimi_home_roots();
     let mut plugins = Vec::new();
     let mut seen_plugin_ids = HashSet::new();
@@ -67,7 +70,11 @@ pub fn get_session_influence_snapshot(work_dir: Option<&str>) -> Result<Value, S
         }
     }
 
-    let agents = discover_agents(work_dir, &kimi_homes, &plugins);
+    let agents = if include_custom_agents {
+        discover_agents(work_dir, &kimi_homes, &plugins)
+    } else {
+        Vec::new()
+    };
     let skills = skills::discover_skills();
     let has_system_md = kimi_homes.iter().any(|home| system_md_exists(home));
 
@@ -847,6 +854,8 @@ fn scope_label(scope: AgentScopeRank) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_env::lock::set_kimi_code_home;
+    use serde_json::json;
     use std::fs;
 
     #[test]
@@ -950,5 +959,90 @@ mod tests {
         assert_eq!(out[0]["id"], "demo");
         assert_eq!(out[0]["enabledInConfig"], false);
         assert_eq!(out[0]["sessionStatus"], "unknown");
+    }
+
+    #[test]
+    fn custom_agent_flag_only_controls_agent_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let kimi_home = temp.path().join("kimi-home");
+        let project_root = temp.path().join("project");
+        let plugin_root = kimi_home
+            .join("plugins")
+            .join("managed")
+            .join("flag-plugin");
+
+        fs::create_dir_all(kimi_home.join("plugins")).unwrap();
+        fs::write(
+            kimi_home.join("plugins").join("installed.json"),
+            r#"{"version":1,"plugins":[{"id":"flag-plugin","enabled":true}]}"#,
+        )
+        .unwrap();
+
+        fs::create_dir_all(project_root.join(".git")).unwrap();
+        fs::create_dir_all(project_root.join(".kimi-code").join("agents")).unwrap();
+        fs::write(
+            project_root
+                .join(".kimi-code")
+                .join("agents")
+                .join("project-reviewer.md"),
+            "---\nname: project-reviewer\ndescription: Project reviewer\noverride: true\ntools: []\n---\n",
+        )
+        .unwrap();
+
+        fs::create_dir_all(plugin_root.join("agents")).unwrap();
+        fs::write(
+            plugin_root.join("agents").join("plugin-reviewer.md"),
+            "---\nname: plugin-reviewer\ndescription: Plugin reviewer\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            plugin_root.join("kimi.plugin.json"),
+            r#"{"name":"flag-plugin","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(plugin_root.join("skills").join("flag-skill")).unwrap();
+        fs::write(
+            plugin_root
+                .join("skills")
+                .join("flag-skill")
+                .join("SKILL.md"),
+            "---\nname: flag-skill\ndescription: Flag skill\n---\n",
+        )
+        .unwrap();
+
+        let _home_guard = set_kimi_code_home(&kimi_home);
+        let disabled =
+            get_session_influence_snapshot(Some(project_root.to_string_lossy().as_ref()), false)
+                .unwrap();
+        assert_eq!(disabled["agents"], json!([]));
+        assert!(disabled["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|plugin| plugin.get("id").and_then(Value::as_str) == Some("flag-plugin")));
+        assert!(disabled["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|skill| skill.get("name").and_then(Value::as_str) == Some("flag-skill")));
+
+        let enabled =
+            get_session_influence_snapshot(Some(project_root.to_string_lossy().as_ref()), true)
+                .unwrap();
+        let agents = enabled["agents"].as_array().unwrap();
+        let project_agent = agents
+            .iter()
+            .find(|agent| agent.get("name").and_then(Value::as_str) == Some("project-reviewer"))
+            .expect("project agent");
+        assert_eq!(project_agent["sourceScope"], "project");
+        assert_eq!(
+            project_agent["riskFlags"],
+            json!(["override", "tool_restrictions"])
+        );
+        let plugin_agent = agents
+            .iter()
+            .find(|agent| agent.get("name").and_then(Value::as_str) == Some("plugin-reviewer"))
+            .expect("plugin agent");
+        assert_eq!(plugin_agent["sourceScope"], "plugin");
     }
 }

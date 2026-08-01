@@ -710,10 +710,12 @@ export async function listAvailableSkills(): Promise<AvailableSkill[]> {
 
 export async function getSessionInfluenceSnapshot(
   workDir?: string | null,
+  includeCustomAgents = false,
 ): Promise<Record<string, unknown>> {
   if (!isTauri()) return {};
   const raw = await invoke<Record<string, unknown>>("get_session_influence_snapshot", {
     workDir: workDir?.trim() ? workDir.trim() : null,
+    includeCustomAgents,
   });
   return raw ?? {};
 }

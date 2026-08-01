@@ -21,7 +21,14 @@ export function SessionInfluencePanel({
 	workDir,
 	runtimeSlashCommands = [],
 }: SessionInfluencePanelProps) {
-	const { snapshot, isLoading, error, refresh, hasRuntimeCommandUpdate } = useSessionInfluence({
+	const {
+		snapshot,
+		isLoading,
+		error,
+		refresh,
+		hasRuntimeCommandUpdate,
+		customSubagentsEnabled,
+	} = useSessionInfluence({
 		workDir,
 		runtimeSlashCommands,
 	});
@@ -49,6 +56,12 @@ export function SessionInfluencePanel({
 				<p className="rounded-r1 bg-danger-bg px-2 py-1.5 text-[10.5px] text-danger">{error}</p>
 			) : null}
 
+			{!customSubagentsEnabled ? (
+				<p className="rounded-r1 bg-secondary px-2 py-1.5 text-[10.5px] leading-relaxed text-faint">
+					自定义 Agent 发现已关闭；Plugins、Skills 和运行中代理任务仍会保留。
+				</p>
+			) : null}
+
 			{snapshot.hasSystemMd ? (
 				<div className="flex items-start gap-2 rounded-r1 border border-warning/30 bg-warning-bg px-2.5 py-2 text-[10.5px] text-warning">
 					<AlertTriangle size={13} className="mt-0.5 shrink-0" />
@@ -73,7 +86,11 @@ export function SessionInfluencePanel({
 			<InfluenceSection
 				title="Agents"
 				icon={<Users size={12} />}
-				empty="未发现自定义 Agent 文件（内置 Agent 仍可能生效）"
+				empty={
+					customSubagentsEnabled
+						? "未发现自定义 Agent 文件（内置 Agent 仍可能生效）"
+						: "自定义 Agent 发现已关闭，可在设置中开启"
+				}
 				count={snapshot.agents.length}
 			>
 				{snapshot.agents.map((agent) => (

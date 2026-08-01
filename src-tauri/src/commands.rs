@@ -629,8 +629,14 @@ pub fn list_available_skills() -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub fn get_session_influence_snapshot(work_dir: Option<String>) -> Result<Value, String> {
-    session_influence::get_session_influence_snapshot(work_dir.as_deref())
+pub fn get_session_influence_snapshot(
+    work_dir: Option<String>,
+    include_custom_agents: Option<bool>,
+) -> Result<Value, String> {
+    session_influence::get_session_influence_snapshot(
+        work_dir.as_deref(),
+        include_custom_agents.unwrap_or(false),
+    )
 }
 
 /// Native multi-select file picker. Returns absolute paths so the composer can
@@ -1148,6 +1154,29 @@ mod tests {
             runtime_backend_from_env_value(Some("legacy")),
             RuntimeBackend::Acp
         );
+    }
+
+    #[test]
+    fn omitted_custom_agent_flag_disables_discovery() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("kimi-home");
+        let project = temp.path().join("project");
+        let agents = project.join(".kimi-code").join("agents");
+        std::fs::create_dir_all(project.join(".git")).expect("git marker");
+        std::fs::create_dir_all(&agents).expect("agents directory");
+        std::fs::write(
+            agents.join("omitted-agent.md"),
+            "---\nname: omitted-agent\n---\n",
+        )
+        .expect("agent file");
+
+        let _home_guard = set_kimi_code_home(&home);
+        let snapshot = super::get_session_influence_snapshot(
+            Some(project.to_string_lossy().to_string()),
+            None,
+        )
+        .expect("snapshot");
+        assert_eq!(snapshot["agents"], serde_json::json!([]));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { useCustomSubagentsEnabled } from "@/hooks/useCustomSubagents";
 import { useTheme } from "@/hooks/use-theme";
 import { useGlobalConfig } from "@/hooks/useGlobalConfig";
 import {
@@ -247,6 +248,10 @@ export function SettingsDialog({
   initialTab?: SettingsTab;
 }) {
   const { theme, setThemeWithTransition } = useTheme();
+  const {
+    enabled: customSubagentsEnabled,
+    setEnabled: setCustomSubagentsEnabled,
+  } = useCustomSubagentsEnabled();
   const { config, isLoading, isUpdating, error, update } = useGlobalConfig({ enabled: open });
   const [tab, setTab] = useState<SettingsTab>("general");
   const [dirtyTabs, setDirtyTabs] = useState<Record<"config" | "mcp", boolean>>({
@@ -553,6 +558,22 @@ export function SettingsDialog({
                         {value === "dark" ? "深色" : "浅色"}
                       </button>
                     ))}
+                  </div>
+                </Section>
+                <Section title="实验功能">
+                  <div className="flex items-start justify-between gap-3 rounded-r1 border border-line/70 bg-surface/40 p-3">
+                    <span className="min-w-0">
+                      <span className="block text-[12.5px] text-muted">自定义 Agent 发现</span>
+                      <span className="mt-1 block text-[10.5px] leading-relaxed text-faint">
+                        仅在此桌面应用本地保存。开启后扫描自定义 Agent；关闭时仍保留 Plugins、Skills
+                        和运行中代理任务。
+                      </span>
+                    </span>
+                    <Switch
+                      aria-label="自定义 Agent 发现"
+                      checked={customSubagentsEnabled}
+                      onCheckedChange={setCustomSubagentsEnabled}
+                    />
                   </div>
                 </Section>
                 <Section title="Kimi Code 登录（可选）">
