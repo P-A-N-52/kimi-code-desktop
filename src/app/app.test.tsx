@@ -38,6 +38,7 @@ vi.mock("@/lib/tauri-api", () => ({
 	showWindow: mocks.showWindow,
 	openKimiCodeWebsite: mocks.openKimiCodeWebsite,
 	sendNotification: vi.fn(() => Promise.resolve()),
+	setNativeUiLanguage: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("@/hooks/use-theme", () => ({ useTheme: mocks.useTheme }));
