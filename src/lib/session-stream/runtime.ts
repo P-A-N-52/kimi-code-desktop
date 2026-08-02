@@ -2213,8 +2213,14 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
       }
 
       case "SubagentEvent": {
-        const nestedEvent = innerPayload as SubagentEventWire;
-        const nestedPayload = nestedEvent.payload;
+        // innerPayload is the nested SubagentEvent's payload object
+        // (parent_tool_call_id / agent_id / subagent_type / event).
+        const nestedPayload = innerPayload as {
+          parent_tool_call_id?: string | null;
+          agent_id?: string | null;
+          subagent_type?: string | null;
+          event: { type: string; payload: unknown };
+        };
         const nestedAgentId = nestedPayload.agent_id ?? undefined;
         const nestedToolCallId = nestedPayload.parent_tool_call_id ?? undefined;
 
@@ -2260,10 +2266,15 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
     subagentType?: string,
   ) => {
     // Nested SubagentEvents: keep the agent-monitor hierarchy intact by
-    // recursing the sync with the inner event's own parent link.
+    // recursing the sync with the inner event's own parent link. The
+    // inner payload is itself a SubagentEvent payload object.
     if (innerType === "SubagentEvent") {
-      const nestedEvent = innerPayload as SubagentEventWire;
-      const nestedPayload = nestedEvent.payload;
+      const nestedPayload = innerPayload as {
+        parent_tool_call_id?: string | null;
+        agent_id?: string | null;
+        subagent_type?: string | null;
+        event: { type: string; payload: unknown };
+      };
       syncAgentMonitorFromSubagentEvent(
         nestedPayload.parent_tool_call_id ?? parentToolCallId,
         nestedPayload.event.type,

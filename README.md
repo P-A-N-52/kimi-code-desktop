@@ -5,12 +5,12 @@
 <h1 align="center">Kimi Code Desktop</h1>
 
 <p align="center">
-  为 Kimi Code CLI 打造的原生 Windows 桌面工作台。<br />
-  A native Windows workspace for Kimi Code CLI.
+  为 Kimi Code CLI 打造的原生 Windows 与 macOS 桌面工作台。<br />
+  A native Windows &amp; macOS workspace for Kimi Code CLI.
 </p>
 
 <p align="center">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-111111" />
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-111111" />
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-111111" />
   <img alt="React" src="https://img.shields.io/badge/React-19-111111" />
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-111111" />
@@ -18,9 +18,9 @@
 
 开发与提交约定见 [结构与开发规范](.github/DEVELOPMENT.md)。
 
-Kimi Code Desktop 将 Kimi Code 的终端智能体能力带进一个专注、可视、可管理的桌面界面。它不是另一套 AI 运行时：会话、模型、工具调用与智能体能力仍由用户安装的 Kimi Code CLI 提供，桌面端通过 ACP（`kimi acp`）连接，并负责交互、工作区呈现与 Windows 集成。
+Kimi Code Desktop 将 Kimi Code 的终端智能体能力带进一个专注、可视、可管理的桌面界面。它不是另一套 AI 运行时：会话、模型、工具调用与智能体能力仍由用户安装的 Kimi Code CLI 提供，桌面端通过 ACP（`kimi acp`）连接，并负责交互、工作区呈现与 Windows / macOS 系统集成。
 
-> 当前源码版本为 `1.0.0`，面向 Windows。
+> 当前源码版本为 `1.1.0`，面向 Windows 与 macOS（Apple Silicon）。
 
 ## 你可以用它做什么
 
@@ -30,7 +30,10 @@ Kimi Code Desktop 将 Kimi Code 的终端智能体能力带进一个专注、可
 - **控制智能体行为**：支持权限模式、Plan、Swarm、模型状态、文件上传、Slash Commands，以及忙碌时的消息队列。
 - **管理大量会话**：搜索、重命名、归档、恢复、批量处理，并可按 30 / 60 / 90 天一键归档长期未活跃会话。
 - **查看用量与上下文**：展示当前上下文窗口、Token 明细、平台额度，以及今日 / 7 天 / 30 天本地用量趋势；`/usage` 与 `/status` 会在 Composer 上方即时呈现结果。
+- **任务状态一目了然**：状态条实时显示 `[N task running]`（与 CLI 一致）；后台任务与 Cron 调度在 Tasks 面板只读展示；子代理步骤支持任意层级嵌套，子代理派生的子代理也有独立可折叠视图。
 - **融入 Windows**：提供系统托盘、任务完成与审批通知、全局快捷键，并确保重复启动时聚焦已有窗口。
+- **原生 macOS 体验**：Apple Silicon 原生构建、Finder 中显示、`super+shift+k` 快捷键、原生菜单（含界面语言切换）、自动探测 Homebrew / uv 安装的 Kimi CLI。
+- **中英界面即时切换**：界面语言支持跟随系统 / English / 简体中文，无需重启。
 - **直接管理运行时配置**：在设置中切换深浅主题、编辑全局配置与原始 `config.toml`、管理 MCP Server，并查看桌面端与 CLI 版本。
 
 ## 设计与架构
@@ -138,11 +141,18 @@ src-tauri\target\release\kimi-code-desktop.exe
 src-tauri\target\release\bundle\msi\Kimi Code_<version>_x64_en-US.msi
 ```
 
+macOS 产物位置：
+
+```text
+src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/Kimi Code_<version>_aarch64.dmg
+src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Kimi Code.app
+```
+
 不要使用裸 `cargo build --release` 代替桌面构建；它会绕过 Tauri 的前端构建流程。
 
 ## 当前边界
 
-- 目前仅面向 Windows。
+- 目前支持 Windows 与 macOS（Apple Silicon）；macOS 构建默认不签名、不公证，正式分发需要配置 Apple 开发者凭据。
 - 运行时必须能够访问已安装、已配置可用 provider 的 Kimi Code CLI，不要求 Kimi 账号登录，也不提供 legacy sidecar fallback。
 - 当前提供手动深色 / 浅色切换；跟随系统主题尚未接入。
 - ACP 尚不支持 fork-at-turn，因此桌面端不会伪造会话分叉能力。
