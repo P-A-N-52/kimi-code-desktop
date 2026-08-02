@@ -63,4 +63,36 @@ pub mod lock {
             }
         }
     }
+
+    pub struct EnvVarsGuard {
+        _lock: MutexGuard<'static, ()>,
+        previous: Vec<(String, Option<OsString>)>,
+    }
+
+    pub fn set_env_vars(values: &[(&str, Option<&str>)]) -> EnvVarsGuard {
+        let lock = env_lock();
+        let mut previous = Vec::with_capacity(values.len());
+        for (name, value) in values {
+            previous.push(((*name).to_string(), std::env::var_os(name)));
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+        EnvVarsGuard {
+            _lock: lock,
+            previous,
+        }
+    }
+
+    impl Drop for EnvVarsGuard {
+        fn drop(&mut self) {
+            for (name, previous) in self.previous.drain(..) {
+                match previous {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
 }

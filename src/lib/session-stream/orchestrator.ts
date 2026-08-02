@@ -269,7 +269,11 @@ export function createSessionStreamOrchestrator(): SessionStreamOrchestrator {
         runtime.start();
       } else {
         const snapshot = runtime.getSnapshot();
-        if (wantsLive && !isLive(snapshot) && snapshot.status !== "streaming") {
+        // A background worker can still report an in-flight turn after its
+        // frontend wire lease was lost. Reconnect it on return regardless of
+        // the chat status so the visible timeline catches up instead of
+        // remaining frozen and treating the next prompt as a failed queue.
+        if (wantsLive && !isLive(snapshot)) {
           runtime.connect();
         }
       }

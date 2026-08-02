@@ -126,19 +126,27 @@ export default function App() {
   }, [sessionStreamOrchestrator, shouldPauseRuntime]);
 
   // G5 §4.8: after a config-triggered worker restart, replay gap-fill every
-  // restarted session (no-op when the flag is off).
+  // restarted session. Global model defaults do not need the startup readiness
+  // gate, while raw config saves continue to request it by default.
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ restartedSessionIds?: string[] }>).detail;
+      const detail = (
+        event as CustomEvent<{
+          restartedSessionIds?: string[];
+          requiresRuntimeReadiness?: boolean;
+        }>
+      ).detail;
       const restarted = detail?.restartedSessionIds;
       if (restarted && restarted.length > 0) {
         sessionStreamOrchestrator?.reconnectSessions(restarted);
       }
-      void runRuntimeReadinessCheck();
+      if (detail?.requiresRuntimeReadiness !== false) {
+        void runRuntimeReadinessCheck();
+      }
     };
     window.addEventListener("kimi:config-update", handler);
     return () => window.removeEventListener("kimi:config-update", handler);
-  }, [sessionStreamOrchestrator]);
+  }, [runRuntimeReadinessCheck, sessionStreamOrchestrator]);
 
   const {
     sessions,
@@ -195,9 +203,6 @@ export default function App() {
       applySessionStatus(status);
       if (status.state !== "idle") return;
       const reason = status.reason ?? "";
-      if (reason === "config_update") {
-        window.dispatchEvent(new Event("kimi:config-update"));
-      }
       const classified = classifyIdleReason(reason);
       if (!classified.isTurnComplete) return;
       if (isTauri() && !document.hasFocus() && classified.wouldNotifySuccess) {
@@ -307,10 +312,12 @@ export default function App() {
     }
   }, [dismissGoalCancel, goalCancelTarget, selectedSessionId, stream.controlGoal]);
   const userClosedPanelRef = useRef(false);
+  const lastSemanticChangeCountRef = useRef<number | null>(null);
 
   useEffect(() => {
     void selectedSessionId;
     userClosedPanelRef.current = false;
+    lastSemanticChangeCountRef.current = null;
     setPanelOpen(false);
     setWorkspaceTab("changes");
     setGoalCancelOpen(false);
@@ -399,11 +406,22 @@ export default function App() {
   }, [pendingApprovals, permissionMode, selectedSessionId, t]);
 
   useEffect(() => {
-    if (changes.length > 0 && !userClosedPanelRef.current) {
-      setWorkspaceTab("changes");
-      setPanelOpen(true);
+    const previousCount = lastSemanticChangeCountRef.current;
+    lastSemanticChangeCountRef.current = semanticChanges.length;
+
+    if (
+      previousCount === null ||
+      stream.isReplayingHistory ||
+      semanticChanges.length === previousCount ||
+      semanticChanges.length === 0 ||
+      userClosedPanelRef.current
+    ) {
+      return;
     }
-  }, [changes.length]);
+
+    setWorkspaceTab("changes");
+    setPanelOpen(true);
+  }, [semanticChanges.length, stream.isReplayingHistory]);
 
   const handleApproveAll = useCallback(() => {
     for (const approval of pendingApprovals) {

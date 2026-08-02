@@ -127,6 +127,8 @@ export function ConversationView({
     sessionId,
     epoch: stream.goalCompletionEpoch,
   });
+  const goalCompletionEpochRef = useRef(stream.goalCompletionEpoch);
+  goalCompletionEpochRef.current = stream.goalCompletionEpoch;
   const goalQueuePromotionInFlightRef = useRef(false);
   const goalQueueMutationInFlightRef = useRef(false);
   const suppressGoalQueuePromotionRef = useRef(false);
@@ -149,9 +151,12 @@ export function ConversationView({
     setGoalQueueOpen(false);
     setGoalQueuePendingId(undefined);
     setGoalQueuePromotionRequested(false);
+    // A session switch establishes a new observation baseline. A cached or
+    // replayed stream may already carry completions from before this view
+    // mounted; those must not promote an upcoming Goal as a new live event.
     goalCompletionObservedRef.current = {
       sessionId,
-      epoch: 0,
+      epoch: goalCompletionEpochRef.current,
     };
     goalQueuePromotionInFlightRef.current = false;
     suppressGoalQueuePromotionRef.current = false;

@@ -809,6 +809,7 @@ export async function updateGlobalConfig(args: {
   defaultPlanMode?: boolean;
   secondaryModel?: string;
   secondaryDefaultEffort?: string;
+  secondaryModelExperimentEnabled?: boolean;
   restartRunningSessions?: boolean;
   forceRestartBusySessions?: boolean;
 }): Promise<UpdateGlobalConfigResponse> {
@@ -820,6 +821,7 @@ export async function updateGlobalConfig(args: {
     defaultPlanMode: args.defaultPlanMode,
     secondaryModel: args.secondaryModel,
     secondaryDefaultEffort: args.secondaryDefaultEffort,
+    secondaryModelExperimentEnabled: args.secondaryModelExperimentEnabled,
     restartRunningSessions: args.restartRunningSessions,
     forceRestartBusySessions: args.forceRestartBusySessions,
   });

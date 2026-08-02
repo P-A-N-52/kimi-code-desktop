@@ -536,9 +536,9 @@ model = "gpt-test"
     #[test]
     fn sanitize_auth_message_redacts_long_tokens() {
         let sanitized = sanitize_auth_message(
-            "authenticate failed: token sk-abcdefghijklmnopqrstuvwxyz1234567890 rejected",
+            "authenticate failed: token test_token_abcdefghijklmnopqrstuvwxyz1234567890 rejected",
         );
-        assert!(!sanitized.contains("sk-abcdefghijklmnopqrstuvwxyz1234567890"));
+        assert!(!sanitized.contains("test_token_abcdefghijklmnopqrstuvwxyz1234567890"));
         assert!(sanitized.contains("[redacted]"));
     }
 

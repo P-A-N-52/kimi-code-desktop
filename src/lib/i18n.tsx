@@ -629,6 +629,8 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Failed to update Secondary model": "更新 Secondary model 失败",
   "Failed to clear Secondary model": "清除 Secondary model 失败",
   "Failed to update Secondary thinking effort": "更新 Secondary 思考档位失败",
+  "Failed to enable custom subagents": "开启自定义子代理失败",
+  "Failed to disable custom subagents": "关闭自定义子代理失败",
   "Experimental features": "实验功能",
   "Custom Agent discovery": "自定义 Agent 发现",
   "Saved locally in this desktop app only. When enabled, scans custom Agents; when disabled, Plugins, Skills, and running agent tasks are still kept.":
@@ -636,10 +638,18 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Global defaults for new sessions. The actual model/thinking of a connected session follows the model menu in the chat area; add or edit model definitions in Config.":
     "新会话的全局默认。当前已连接会话的实际 model/thinking 以聊天区模型菜单为准；在 Config 中添加或编辑模型定义。",
   "Secondary model (experimental)": "Secondary model（实验）",
+  "Enable custom subagents": "启用自定义子代理",
+  "Enable [experimental].secondary-model and write [secondary_model].model at the same time; defaults to the current global model.":
+    "同时开启 [experimental].secondary-model 并写入 [secondary_model].model；默认沿用当前全局模型。",
+  "Custom subagents enabled; default model:": "自定义子代理已开启，默认模型为：",
+  "Custom subagents disabled": "自定义子代理已关闭",
+  "No configured model available": "未配置可用模型",
   "Default model for subagents": "子代理默认模型",
   "(Not configured)": "（未配置）",
   "Corresponds to the official `/secondary_model` and `[secondary_model].model`; not the session model switch in the chat area.":
     "对应官方 `/secondary_model` 与 `[secondary_model].model`；不是聊天区的会话 model 切换。",
+  "The experiment flag and model alias are written to global config.toml; newly derived subagents use this model. The main session model is unchanged; idle sessions apply after reconnect, busy sessions need a later reconnect.":
+    "实验开关与模型 alias 均写入全局 config.toml；新派生的子代理将使用此模型。主会话 model 不变；空闲会话重连后生效，忙碌会话需稍后重连。",
   "Currently overridden by the KIMI_SECONDARY_MODEL environment variable for the config.toml display value.":
     "当前由环境变量 KIMI_SECONDARY_MODEL 覆盖 config.toml 显示值。",
   "The current secondary model is not resolved in `[models]`; new subagents will bind only after saving a valid alias.":

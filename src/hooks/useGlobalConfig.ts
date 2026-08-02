@@ -18,6 +18,7 @@ type UpdateGlobalConfigArgs = {
   defaultPlanMode?: boolean;
   secondaryModel?: string;
   secondaryDefaultEffort?: string;
+  secondaryModelExperimentEnabled?: boolean;
   restartRunningSessions?: boolean;
   forceRestartBusySessions?: boolean;
 };
@@ -109,6 +110,7 @@ export function useGlobalConfig(
             defaultPlanMode: args.defaultPlanMode,
             secondaryModel: args.secondaryModel,
             secondaryDefaultEffort: args.secondaryDefaultEffort,
+            secondaryModelExperimentEnabled: args.secondaryModelExperimentEnabled,
             restartRunningSessions: args.restartRunningSessions,
             forceRestartBusySessions: args.forceRestartBusySessions,
           });
@@ -129,14 +131,15 @@ export function useGlobalConfig(
         }
         _cachedConfig = resp.config;
         setConfig(resp.config);
-        // G5 §4.8: carry the worker-restart summary so the orchestrator can
-        // replay gap-fill every restarted session. Existing listeners ignore
-        // the detail field.
+        // Global model defaults are safe to refresh without taking the desktop
+        // through its startup readiness gate. Carry the worker-restart summary
+        // so the orchestrator can replay any reconnect gaps.
         window.dispatchEvent(
           new CustomEvent("kimi:config-update", {
             detail: {
               restartedSessionIds: resp.restartedSessionIds ?? [],
               skippedBusySessionIds: resp.skippedBusySessionIds ?? [],
+              requiresRuntimeReadiness: false,
             },
           }),
         );

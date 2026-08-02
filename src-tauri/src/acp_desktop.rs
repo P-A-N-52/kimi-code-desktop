@@ -107,6 +107,15 @@ impl AcpDesktopClient {
         }
     }
 
+    /// Drop the shared non-wire ACP process so its next request reloads config.toml.
+    pub async fn invalidate(&self) {
+        let session = self.inner.lock().await.take();
+        *self.capabilities.lock().await = None;
+        if let Some(session) = session {
+            let _ = session.rpc.shutdown();
+        }
+    }
+
     pub async fn request(
         &self,
         app: &AppHandle,

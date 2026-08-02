@@ -20,10 +20,13 @@ const mocks = vi.hoisted(() => {
 		openKimiCodeWebsite: vi.fn(() => Promise.resolve()),
 		useSessions: vi.fn(),
 		useSessionStream: vi.fn(),
-		useSessionStreamOrchestrator: vi.fn(() => null),
+		useSessionStreamOrchestrator: vi.fn<() => unknown>(() => null),
 		useGitDiffStats: vi.fn(),
 		useTheme: vi.fn(),
 		useToolEventsStore,
+		deriveChanges: vi.fn((messages: unknown[]) => messages),
+		derivePendingApprovals: vi.fn(() => []),
+		mergeGitChanges: vi.fn((semanticChanges: unknown[]) => semanticChanges),
 		createConfigSessionReconnectCoordinator: vi.fn(() => ({
 			handleConfigUpdate: vi.fn(),
 			handleSessionStatus: vi.fn(),
@@ -88,12 +91,16 @@ vi.mock("@/modules/conversation/goal-cancel-confirmation", () => ({
 vi.mock("@/modules/sessions/app-sidebar", () => ({ AppSidebar: () => null }));
 vi.mock("@/modules/topbar/topbar", () => ({ Topbar: () => null }));
 vi.mock("@/modules/workspace/changes-panel", () => ({ ChangesPanel: () => null }));
-vi.mock("@/app/app-shell", () => ({ AppShell: () => null }));
+vi.mock("@/app/app-shell", () => ({
+	AppShell: ({ panelOpen }: { panelOpen: boolean }) => (
+		<output data-testid="app-shell" data-panel-open={panelOpen} />
+	),
+}));
 vi.mock("@/app/new-session-view", () => ({ NewSessionView: () => null }));
 vi.mock("@/modules/workspace/derive-changes", () => ({
-	deriveChanges: vi.fn(() => []),
-	derivePendingApprovals: vi.fn(() => []),
-	mergeGitChanges: vi.fn(() => []),
+	deriveChanges: mocks.deriveChanges,
+	derivePendingApprovals: mocks.derivePendingApprovals,
+	mergeGitChanges: mocks.mergeGitChanges,
 }));
 
 function createRuntimeReadiness() {
@@ -237,5 +244,113 @@ describe("App runtime readiness", () => {
 			expect(screen.getByTestId("readiness-overlay")).toBeTruthy();
 		});
 		expect(mocks.useSessions).toHaveBeenLastCalledWith({ enabled: false });
+	});
+
+	it("keeps the desktop active for nonblocking global model updates", async () => {
+		const reconnectSessions = vi.fn();
+		mocks.useSessionStreamOrchestrator.mockReturnValue({
+			setPaused: vi.fn(),
+			reconnectSessions,
+		});
+		mocks.checkRuntimeReadiness.mockResolvedValue(createReadyRuntimeReadiness());
+
+		renderApp();
+
+		await waitFor(() => {
+			expect(mocks.checkRuntimeReadiness).toHaveBeenCalledOnce();
+			expect(mocks.useSessions).toHaveBeenLastCalledWith({ enabled: true });
+		});
+
+		await act(async () => {
+			window.dispatchEvent(
+				new CustomEvent("kimi:config-update", {
+					detail: {
+						restartedSessionIds: ["session-1"],
+						requiresRuntimeReadiness: false,
+					},
+				}),
+			);
+		});
+
+		await waitFor(() => {
+			expect(reconnectSessions).toHaveBeenCalledWith(["session-1"]);
+		});
+		expect(mocks.checkRuntimeReadiness).toHaveBeenCalledOnce();
+		expect(screen.queryByTestId("readiness-overlay")).toBeNull();
+		expect(mocks.useSessions).toHaveBeenLastCalledWith({ enabled: true });
+	});
+});
+
+describe("App workspace panel", () => {
+	const renderApp = () =>
+		render(
+			<UiLanguageProvider>
+				<App />
+			</UiLanguageProvider>,
+		);
+
+	it("keeps replayed changes closed and opens for a subsequent live change", async () => {
+		vi.clearAllMocks();
+		window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, "zh-CN");
+		mocks.isTauri.mockReturnValue(true);
+		mocks.useSessionStreamOrchestrator.mockReturnValue(null);
+		mocks.checkRuntimeReadiness.mockResolvedValue(createReadyRuntimeReadiness());
+		mocks.useSessions.mockReturnValue({
+			sessions: [
+				{
+					sessionId: "history-session",
+					title: "历史会话",
+					workDir: "/workspace",
+					isRunning: false,
+				},
+			],
+			archivedSessions: [],
+			selectedSessionId: "history-session",
+			fetchStartupDir: vi.fn(() => Promise.resolve("/workspace")),
+			applySessionStatus: vi.fn(),
+			refreshSession: vi.fn(),
+			listSessionDirectory: vi.fn(),
+			getSessionFile: vi.fn(),
+			uploadSessionFile: vi.fn(),
+			error: null,
+		});
+		const stream = {
+			messages: [{}],
+			isReplayingHistory: true,
+			sessionStatus: null,
+			controlGoal: vi.fn(),
+			permissionMode: "manual",
+			respondToApproval: vi.fn(),
+			slashCommands: [],
+		};
+		mocks.useSessionStream.mockReturnValue(stream);
+		mocks.useGitDiffStats.mockReturnValue({
+			stats: null,
+			isLoading: false,
+			error: null,
+			refresh: vi.fn(),
+		});
+
+		const { rerender } = renderApp();
+		await waitFor(() => {
+			expect(screen.getByTestId("app-shell")).toBeTruthy();
+		});
+		expect(screen.getByTestId("app-shell").dataset.panelOpen).toBe("false");
+
+		stream.isReplayingHistory = false;
+		rerender(
+			<UiLanguageProvider>
+				<App />
+			</UiLanguageProvider>,
+		);
+		expect(screen.getByTestId("app-shell").dataset.panelOpen).toBe("false");
+
+		stream.messages = [{}, {}];
+		rerender(
+			<UiLanguageProvider>
+				<App />
+			</UiLanguageProvider>,
+		);
+		expect(screen.getByTestId("app-shell").dataset.panelOpen).toBe("true");
 	});
 });

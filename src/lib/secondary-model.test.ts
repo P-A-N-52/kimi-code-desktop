@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isSecondaryModelExperimentEnabled,
+  resolveSecondaryModelOnEnable,
   shouldShowSecondaryModelSettings,
 } from "./secondary-model";
 import type { GlobalConfig } from "@/lib/api/models";
@@ -23,13 +24,13 @@ const baseConfig: GlobalConfig = {
 };
 
 describe("secondary model settings gate", () => {
-  it("hides settings when experiment env is off", () => {
+  it("shows settings while experiment is off so it can be enabled", () => {
     expect(
       shouldShowSecondaryModelSettings({
         ...baseConfig,
         secondaryModelExperimentEnabled: false,
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("shows settings when experiment is on and models exist", () => {
@@ -47,5 +48,46 @@ describe("secondary model settings gate", () => {
         secondaryModelExperimentEnabled: true,
       }),
     ).toBe(true);
+  });
+
+  it("hides settings when there are no configured models", () => {
+    expect(
+      shouldShowSecondaryModelSettings({
+        ...baseConfig,
+        models: [],
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("resolveSecondaryModelOnEnable", () => {
+  it("uses the configured default model without requiring a Luna model", () => {
+    expect(resolveSecondaryModelOnEnable(baseConfig)).toBe("kimi");
+  });
+
+  it("preserves an existing valid secondary model when re-enabling", () => {
+    expect(
+      resolveSecondaryModelOnEnable({
+        ...baseConfig,
+        secondaryModel: "cheap",
+        models: [
+          ...baseConfig.models,
+          { ...baseConfig.models[0], name: "cheap", model: "cheap-model" },
+        ],
+      }),
+    ).toBe("cheap");
+  });
+
+  it("falls back to the first configured model when the default alias is stale", () => {
+    expect(
+      resolveSecondaryModelOnEnable({
+        ...baseConfig,
+        defaultModel: "missing",
+      }),
+    ).toBe("kimi");
+  });
+
+  it("returns null when no model can be configured", () => {
+    expect(resolveSecondaryModelOnEnable({ ...baseConfig, models: [] })).toBeNull();
   });
 });

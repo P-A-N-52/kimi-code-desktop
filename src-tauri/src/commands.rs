@@ -724,10 +724,12 @@ pub fn get_providers_overview() -> Result<Value, String> {
 pub async fn update_config_toml(
     app: tauri::AppHandle,
     acp_wire: tauri::State<'_, AcpProcessManager>,
+    acp_desktop: tauri::State<'_, AcpDesktopClient>,
     content: String,
 ) -> Result<Value, String> {
     validate_toml(&content)?;
     write_kimi_config_file("config.toml", &content)?;
+    acp_desktop.invalidate().await;
     let summary = acp_wire
         .restart_running_workers(&app, "config_update", false)
         .await;
@@ -768,12 +770,14 @@ pub async fn update_mcp_config(
 pub async fn update_global_config(
     app: tauri::AppHandle,
     acp_wire: tauri::State<'_, AcpProcessManager>,
+    acp_desktop: tauri::State<'_, AcpDesktopClient>,
     default_model: Option<String>,
     default_thinking: Option<bool>,
     thinking_effort: Option<String>,
     default_plan_mode: Option<bool>,
     secondary_model: Option<String>,
     secondary_default_effort: Option<String>,
+    secondary_model_experiment_enabled: Option<bool>,
     restart_running_sessions: Option<bool>,
     force_restart_busy_sessions: Option<bool>,
 ) -> Result<Value, String> {
@@ -786,7 +790,12 @@ pub async fn update_global_config(
         default_plan_mode,
         secondary_model.as_deref(),
         secondary_default_effort.as_deref(),
+        secondary_model_experiment_enabled,
     )?;
+
+    // The shared session-RPC ACP process caches config at startup. Invalidate it
+    // before any later session/new call so the experiment and model recipe agree.
+    acp_desktop.invalidate().await;
 
     let summary = if restart_running {
         acp_wire
@@ -1002,12 +1011,12 @@ pub fn open_in_editor(path: String, editor: String) -> Result<(), String> {
             "cursor" => "Cursor",
             _ => return Err(format!("Unsupported editor: {}", editor)),
         };
-        return Command::new("open")
+        Command::new("open")
             .args(["-a", app])
             .arg(&path)
             .spawn()
             .map(|_| ())
-            .map_err(|e| e.to_string());
+            .map_err(|e| e.to_string())
     }
 
     #[cfg(not(target_os = "macos"))]

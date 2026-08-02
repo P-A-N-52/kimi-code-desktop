@@ -1,12 +1,9 @@
 /**
- * React binding for the G5 session-stream orchestrator (design §5.5 / §9.1).
+ * React binding for the desktop session-stream orchestrator.
  *
- * Mounted at the app root (bootstrap.tsx) but only creates the orchestrator —
- * and with it the SINGLE global `wire:message` listener — when the
- * multi-active-sessions flag is on AND running in Tauri
- * (see `isMultiActiveSessionsEnabled` in `@/lib/features`). Flag off: the
- * provider is a transparent pass-through and no listener is registered
- * (rollback guarantee of §9.1).
+ * Mounted at the app root (bootstrap.tsx). Tauri creates the orchestrator and
+ * its single global `wire:message` listener; web builds remain a transparent
+ * single-stream pass-through (see `isMultiActiveSessionsEnabled`).
  *
  * The runtime pause signal (`shouldPauseRuntime`, §4.6) is not a prop because
  * it lives inside App; App forwards it via `orchestrator.setPaused()`.

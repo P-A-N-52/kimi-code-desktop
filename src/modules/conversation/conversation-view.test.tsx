@@ -384,6 +384,31 @@ describe("ConversationView upcoming Goal queue", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
+  it("does not treat a switched-to session's historical completion as live", async () => {
+    tauriApi.getSessionGoalQueue
+      .mockResolvedValueOnce({ goals: [] })
+      .mockResolvedValue({ goals: [upcomingGoal] });
+    const sendMessage = vi.fn<UseSessionStreamReturn["sendMessage"]>();
+    const view = renderConversation("goal-queue-before-switch", makeStream(sendMessage));
+
+    await waitFor(() => {
+      expect(tauriApi.getSessionGoalQueue).toHaveBeenCalledWith("goal-queue-before-switch");
+    });
+
+    view.rerender(
+      conversation(
+        "goal-queue-after-switch",
+        makeStream(sendMessage, { goalCompletionEpoch: 1 }),
+      ),
+    );
+
+    await waitFor(() => {
+      expect(tauriApi.getSessionGoalQueue).toHaveBeenCalledWith("goal-queue-after-switch");
+    });
+    expect(tauriApi.getSessionGoalQueue).toHaveBeenCalledTimes(2);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
   it("promotes only after canonical Goal completion and leaves the item queued on decline", async () => {
     const confirmation: GoalStartConfirmationResult = {
       kind: "goal-start-confirmation",

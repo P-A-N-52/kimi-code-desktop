@@ -218,6 +218,32 @@ describe("session-stream orchestrator (G5 flag on)", () => {
     orchestrator.destroy();
   });
 
+  it("reconnects a disconnected session that still reports an active turn", async () => {
+    const orchestrator = createSessionStreamOrchestrator();
+    const liveOptions = { ...defaultOptions("session-a"), autoConnect: true };
+    orchestrator.attach("session-a", liveOptions);
+    await vi.waitFor(() => {
+      expect(mocks.wireConnect).toHaveBeenCalledWith("session-a", expect.any(String));
+    });
+    completeReplayFor("session-a");
+    await flushPromises();
+
+    // The frontend lease is gone, but the ACP worker reports that its turn is
+    // still active. This is the switch-back state that previously stayed frozen.
+    orchestrator.actionsFor("session-a", liveOptions).disconnect();
+    emitWire("session-a", sessionStatusMessage("session-a", "busy", 2));
+    expect(orchestrator.getSnapshot().status).toBe("streaming");
+    expect(orchestrator.getSnapshot().isConnected).toBe(false);
+
+    mocks.wireConnect.mockClear();
+    orchestrator.attach("session-b", defaultOptions("session-b"));
+    orchestrator.attach("session-a", liveOptions);
+    await vi.waitFor(() => {
+      expect(mocks.wireConnect).toHaveBeenCalledWith("session-a", expect.any(String));
+    });
+    orchestrator.destroy();
+  });
+
   it("evicts the oldest non-visible idle worker beyond maxLiveWorkers", async () => {
     const orchestrator = createSessionStreamOrchestrator();
     for (const sessionId of ["session-a", "session-b", "session-c"]) {

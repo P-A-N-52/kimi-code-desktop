@@ -7,7 +7,38 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
 }));
 
-import { getSessionInfluenceSnapshot, listSessions, wireListWorkers } from "./tauri-api";
+import {
+  getSessionInfluenceSnapshot,
+  listSessions,
+  updateGlobalConfig,
+  wireListWorkers,
+} from "./tauri-api";
+
+describe("global config IPC", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue({ config: { models: [] } });
+  });
+
+  it("sends the secondary-model experiment and model recipe atomically", async () => {
+    await updateGlobalConfig({
+      secondaryModelExperimentEnabled: true,
+      secondaryModel: "provider/cheap",
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("update_global_config", {
+      defaultModel: undefined,
+      defaultThinking: undefined,
+      thinkingEffort: undefined,
+      defaultPlanMode: undefined,
+      secondaryModel: "provider/cheap",
+      secondaryDefaultEffort: undefined,
+      secondaryModelExperimentEnabled: true,
+      restartRunningSessions: undefined,
+      forceRestartBusySessions: undefined,
+    });
+  });
+});
 
 describe("session influence IPC", () => {
   beforeEach(() => {

@@ -25,6 +25,7 @@ import {
   modelThinkingEfforts,
 } from "@/lib/model-capabilities";
 import {
+  resolveSecondaryModelOnEnable,
   secondaryModelEffectHint,
   shouldShowSecondaryModelSettings,
 } from "@/lib/secondary-model";
@@ -275,6 +276,11 @@ export function SettingsDialog({
   const forcesThinking = modelForcesThinking(selectedModel);
   const supportedEfforts = modelThinkingEfforts(selectedModel);
   const showSecondaryModelSettings = shouldShowSecondaryModelSettings(config);
+  const secondaryModelEnabled = Boolean(
+    config?.secondaryModelExperimentEnabled &&
+      config.secondaryModelConfigured &&
+      config.secondaryModelValid,
+  );
   const selectedSecondaryModel = useMemo(
     () => findConfigModel(config?.models, config?.secondaryModel ?? undefined),
     [config?.models, config?.secondaryModel],
@@ -490,14 +496,27 @@ export function SettingsDialog({
     }
   };
 
-  const clearSecondaryModel = async () => {
+  const applySecondaryModelExperiment = async (enabled: boolean, model: string) => {
     try {
-      const resp = await update({ secondaryModel: "" });
-      notifySecondaryModelApplied(resp, "Secondary model 已清除");
-    } catch (err) {
-      toast.error("清除 Secondary model 失败", {
-        description: err instanceof Error ? err.message : String(err),
+      const resp = await update({
+        secondaryModelExperimentEnabled: enabled,
+        secondaryModel: model,
       });
+      notifySecondaryModelApplied(
+        resp,
+        enabled
+          ? `${t("Custom subagents enabled; default model:")} ${model}`
+          : t("Custom subagents disabled"),
+      );
+    } catch (err) {
+      toast.error(
+        enabled
+          ? t("Failed to enable custom subagents")
+          : t("Failed to disable custom subagents"),
+        {
+          description: err instanceof Error ? err.message : String(err),
+        },
+      );
     }
   };
 
@@ -699,16 +718,45 @@ export function SettingsDialog({
                             Secondary model（实验）
                           </div>
                           <div className="flex flex-col gap-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="min-w-0">
+                                <span className="block text-[12.5px] text-muted">
+                                  {t("Enable custom subagents")}
+                                </span>
+                                <span className="mt-1 block text-[10.5px] leading-relaxed text-faint">
+                                  {t(
+                                    "Enable [experimental].secondary-model and write [secondary_model].model at the same time; defaults to the current global model.",
+                                  )}
+                                </span>
+                              </span>
+                              <Switch
+                                aria-label={t("Enable custom subagents")}
+                                checked={secondaryModelEnabled}
+                                disabled={isUpdating}
+                                onCheckedChange={(enabled) => {
+                                  if (enabled) {
+                                    const model = resolveSecondaryModelOnEnable(config);
+                                    if (!model) {
+                                      toast.error(t("No configured model available"));
+                                      return;
+                                    }
+                                    void applySecondaryModelExperiment(true, model);
+                                    return;
+                                  }
+                                  void applySecondaryModelExperiment(false, "");
+                                }}
+                              />
+                            </div>
                             <label className="flex flex-col gap-1.5">
                               <span className="text-[12.5px] text-muted">子代理默认模型</span>
                               <select
                                 aria-label="Secondary model"
                                 value={config.secondaryModel ?? ""}
-                                disabled={isUpdating}
+                                disabled={isUpdating || !secondaryModelEnabled}
                                 onChange={(event) => {
                                   const value = event.target.value;
                                   if (!value) {
-                                    void clearSecondaryModel();
+                                    void applySecondaryModelExperiment(false, "");
                                     return;
                                   }
                                   void applySecondaryModel(value);

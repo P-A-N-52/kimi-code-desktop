@@ -2,7 +2,7 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 状态 | **APPROVE_WITH_NITS**（2026-07-31 评审）；P0/P1 缺口已写入 §4/§5/§9/§14；**Phase 1 开做前须满足 §14 清单** |
+| 状态 | **已实施**（2026-08-02）：Tauri Desktop 默认启用多活跃会话编排器；Web / 非 Tauri 仍使用单流。后续优化项见 §4 / §5 / §9 / §14。 |
 | 关联计划 | [2026-07-31-kimi-code-0.31.0-alignment.md](./2026-07-31-kimi-code-0.31.0-alignment.md) § G5 |
 | 代码仓库 | `source/kimi-code-desktop` |
 | 日期 | 2026-07-31 |
@@ -522,28 +522,13 @@ G3 承诺「当前持续连接会话」的 TaskOutput 通知；G5 完成后扩�
 
 **Phase 1 不做**：侧栏 running badge、跨 session OS 通知、完整 LRU/`idleDisconnectTtlMs`（属 Phase 2–3）。
 
-### 9.1 Feature flag 定义与 rollback（P0）
+### 9.1 默认启用与 Web 回退
 
-**载体（Phase 1 选定，不再「或」）**：
+**Tauri Desktop** 使用 `isTauri()` 作为唯一运行时条件，默认创建 `SessionStreamOrchestrator`。该编排器为每个已访问会话保留独立 `SessionRuntime`，并通过一个全局 `wire:message` 监听器按 `session_id` 分发事件。
 
-| 层级 | 键 / 条件 | 默认 |
-| --- | --- | --- |
-| **Build-time** | `import.meta.env.VITE_G5_MULTI_ACTIVE_SESSIONS === "true"` | `false`（生产构建） |
-| **Dev override** | `localStorage` 键 `kimi-code-desktop.experimental.multi-active-sessions.v1` = `"1"` | 仅 `import.meta.env.DEV` 生效 |
-| **Runtime guard** | `isTauri()` 必须为 true | Web 恒 false |
+**Web / 非 Tauri** 恒为单流回退：不创建 orchestrator，不注册全局 `wire:message` listener，并保持既有的会话切换生命周期。这是平台差异，不提供 build-time 或 localStorage 的桌面关闭开关。
 
-**有效 flag**：`isTauri() && (buildTime \|\| devLocalStorage)`。
-
-**flag off = 100% 单流 rollback（验收必测）**：
-
-1. 不挂载 `SessionStreamOrchestratorProvider`；不注册全局 `wire:message` listen
-2. `useSessionStream` 代码路径与 G5 前 **行为等价**：切换 `sessionId` → `useLayoutEffect` disconnect + 全局 state reset
-3. 无 `Map<sessionId, ViewState>` 常驻内存（或 Map 未实例化）
-4. Vitest：`flagOff` fixture 跑现有 `useSessionStream.test.tsx` 全绿，无新增断言依赖多流
-
-**Phase 4 演进**：稳定后可迁入 `GlobalConfig.experimentalMultiActiveSessions`（Tauri 读 config.toml `[experiments]`），build-time flag 降为强制 kill-switch。
-
-**Dev 切换**：修改 env 或 localStorage 后 **整页 reload**（不热切换），避免半挂载 orchestrator。
+桌面端切回一个 `autoConnect` 的会话时，只要其 wire lease 不处于 connecting / connected / reconnecting 状态，就必须补连；即使该会话仍报告 `streaming`，也要 replay 缺失事件，不能让时间线凝固或让下一条 prompt 落入错误队列。
 
 ### Phase 2 — RetentionPolicy + idle 后台
 
@@ -557,12 +542,11 @@ G3 承诺「当前持续连接会话」的 TaskOutput 通知；G5 完成后扩�
 - 审批 / 后台任务 / turn 完成跨 session toast + 点击跳转
 - 可选 Rust `notify.rs` 接入
 
-### Phase 4 — 硬化与默认开启
+### Phase 4 — 后续硬化
 
-- Feature flag 默认 on
 - 压力测试通过（§11）
 - WebView2 真实验收（`2026-07-18-webview2-acceptance.md` 增补 G5 场景）
-- 移除旧单流 dead code
+- 评估是否可移除不支持多流的 Web 单流实现
 
 ### Phase 5（独立）— fork-at-turn
 
