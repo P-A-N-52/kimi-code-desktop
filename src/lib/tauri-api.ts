@@ -928,11 +928,27 @@ export function listenEvent(event: string, callback: (payload: unknown) => void)
   };
 }
 
+/** Parses a session timestamp that may be an ISO string, an epoch-ms number,
+ * or missing. Never returns an invalid Date (which would crash
+ * Intl.RelativeTimeFormat rendering in the sessions sidebar). */
+function toValidDate(value: unknown): Date {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value);
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = new Date(value);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+  return new Date();
+}
+
 function normalizeSession(raw: Record<string, unknown>): Session {
   return {
     sessionId: String(raw.session_id ?? raw.sessionId ?? ""),
     title: stripThinkMarkup(String(raw.title ?? "Untitled")).trim() || "Untitled",
-    lastUpdated: new Date(String(raw.last_updated ?? raw.lastUpdated ?? Date.now())),
+    lastUpdated: toValidDate(raw.last_updated ?? raw.lastUpdated),
     isRunning: Boolean(raw.is_running ?? raw.isRunning),
     status: raw.status ? normalizeSessionStatus(raw.status as Record<string, unknown>) : undefined,
     workDir:

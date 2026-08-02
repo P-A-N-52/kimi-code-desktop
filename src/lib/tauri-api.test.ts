@@ -7,7 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
 }));
 
-import { getSessionInfluenceSnapshot, wireListWorkers } from "./tauri-api";
+import { getSessionInfluenceSnapshot, listSessions, wireListWorkers } from "./tauri-api";
 
 describe("session influence IPC", () => {
   beforeEach(() => {
@@ -71,5 +71,31 @@ describe("wireListWorkers", () => {
       connectionId: null,
       updatedAt: 0,
     });
+  });
+});
+
+describe("listSessions", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+  });
+
+  it("normalizes ISO and epoch-ms last_updated timestamps", async () => {
+    invokeMock.mockResolvedValue([
+      { session_id: "iso", title: "A", last_updated: "2026-08-01T10:00:00Z" },
+      { session_id: "ms", title: "B", last_updated: 1785643566672 },
+      { session_id: "missing", title: "C", last_updated: null },
+    ]);
+    const sessions = await listSessions({});
+    expect(sessions[0].lastUpdated.toISOString()).toBe("2026-08-01T10:00:00.000Z");
+    expect(sessions[1].lastUpdated.getTime()).toBe(1785643566672);
+    expect(Number.isNaN(sessions[2].lastUpdated.getTime())).toBe(false);
+  });
+
+  it("falls back to a valid date for unparseable timestamps", async () => {
+    invokeMock.mockResolvedValue([
+      { session_id: "bad", title: "D", last_updated: "not-a-date" },
+    ]);
+    const sessions = await listSessions({});
+    expect(Number.isNaN(sessions[0].lastUpdated.getTime())).toBe(false);
   });
 });
