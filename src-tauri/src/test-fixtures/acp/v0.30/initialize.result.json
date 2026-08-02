@@ -1,0 +1,30 @@
+{
+  "protocolVersion": 1,
+  "agentInfo": {
+    "name": "Kimi Code CLI",
+    "version": "0.30.0"
+  },
+  "agentCapabilities": {
+    "loadSession": true,
+    "promptCapabilities": {
+      "image": true,
+      "audio": false,
+      "embeddedContext": true
+    },
+    "mcpCapabilities": {
+      "http": true,
+      "sse": true
+    },
+    "sessionCapabilities": {
+      "list": {},
+      "resume": {}
+    }
+  },
+  "authMethods": [
+    {
+      "id": "login",
+      "name": "Login",
+      "description": "Use configured provider credentials"
+    }
+  ]
+}

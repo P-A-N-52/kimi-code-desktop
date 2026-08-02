@@ -714,6 +714,7 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
         // Lazy-connect path never starts ACP, so still surface persisted modes.
         let mut messages = Vec::new();
         push_runtime_mode_status(&mut messages, session_id)?;
+        push_session_config_snapshot(&mut messages, session_id)?;
         return Ok(messages);
     };
 
@@ -805,8 +806,87 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
     // Emit after usage so lazy-connect UIs restore permission / plan / swarm
     // without waiting for an ACP worker (which may never start until a prompt).
     push_runtime_mode_status(&mut messages, session_id)?;
+    push_session_config_snapshot(&mut messages, session_id)?;
 
     Ok(messages)
+}
+
+fn push_session_config_snapshot(
+    messages: &mut Vec<String>,
+    session_id: &str,
+) -> Result<(), String> {
+    let Some(state) = crate::acp_capabilities::resolve_session_config(session_id) else {
+        return Ok(());
+    };
+    if state.status != crate::acp_capabilities::SessionConfigStatus::Known
+        || state.options.is_empty()
+    {
+        return Ok(());
+    }
+    messages.push(crate::acp_translate::translate_session_config_snapshot(
+        session_id, &state,
+    ));
+    Ok(())
+}
+
+const PERSISTED_SESSION_CONFIG_KEY: &str = "session_config";
+
+/// Persist the last known session config snapshot for lazy-connect replay after restart.
+pub fn persist_session_config(
+    session_id: &str,
+    state: &crate::acp_capabilities::SessionConfigState,
+) -> Result<(), String> {
+    let session_dir = find_session_dir_by_id_or_err(session_id)?;
+    let serialized = crate::acp_capabilities::session_config_state_to_value(state);
+    mutate_session_state(&session_dir, |root| {
+        let root = root
+            .as_object_mut()
+            .ok_or_else(|| "Session state is not a JSON object".to_string())?;
+        let custom = root.entry("custom").or_insert_with(|| json!({}));
+        let custom = custom
+            .as_object_mut()
+            .ok_or_else(|| "Session state custom field is not a JSON object".to_string())?;
+        let desktop = custom
+            .entry("kimi_code_desktop")
+            .or_insert_with(|| json!({}));
+        let desktop = desktop
+            .as_object_mut()
+            .ok_or_else(|| "Session desktop state is not a JSON object".to_string())?;
+        desktop.insert(PERSISTED_SESSION_CONFIG_KEY.to_string(), serialized.clone());
+        Ok(())
+    })
+}
+
+/// Read persisted session config for lazy replay when the in-memory store is empty.
+pub fn read_persisted_session_config(
+    session_id: &str,
+) -> Result<Option<crate::acp_capabilities::SessionConfigState>, String> {
+    let session_dir = match find_session_dir_by_id(session_id)? {
+        Some(dir) => dir,
+        None => return Ok(None),
+    };
+    let state_path = state_json_path(&session_dir);
+    if !state_path.is_file() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&state_path)
+        .map_err(|e| format!("Failed to read {}: {e}", state_path.display()))?;
+    let state: Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse {}: {e}", state_path.display()))?;
+    let raw = state
+        .get("custom")
+        .and_then(|custom| custom.get("kimi_code_desktop"))
+        .and_then(|desktop| desktop.get(PERSISTED_SESSION_CONFIG_KEY));
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let mut parsed: crate::acp_capabilities::SessionConfigState =
+        serde_json::from_value(raw.clone())
+            .map_err(|e| format!("Invalid persisted session config: {e}"))?;
+    if parsed.session_id.is_empty() {
+        parsed.session_id = session_id.to_string();
+    }
+    Ok(Some(parsed))
 }
 
 /// Derive a short session title from the first visible user turn in wire history.
@@ -1683,6 +1763,61 @@ mod tests {
         // Runtime mode StatusUpdate is always emitted for lazy-connect UIs.
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0]["params"]["type"], "StatusUpdate");
+    }
+
+    #[test]
+    fn push_session_config_snapshot_appends_config_option_update() {
+        let session_id = "push-config-snapshot-test";
+        crate::acp_capabilities::set_session_config_from_response(
+            session_id,
+            &serde_json::json!({
+                "configOptions": [{
+                    "id": "model",
+                    "type": "select",
+                    "currentValue": "kimi-k2",
+                    "options": [{ "value": "kimi-k2", "label": "Kimi K2" }]
+                }]
+            }),
+        );
+        let mut messages = Vec::new();
+        push_session_config_snapshot(&mut messages, session_id).expect("push snapshot");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("ConfigOptionUpdate")),
+            "expected ConfigOptionUpdate wire event"
+        );
+        crate::acp_capabilities::clear_session_config(session_id);
+    }
+
+    #[test]
+    fn push_session_config_snapshot_reads_persisted_state_after_memory_clear() {
+        let (_guard, home) = temp_home("user-persist-config");
+        let session_id = "sess-persist-config";
+        write_session_layout(&home, "hash-persist-config", session_id);
+        let _lock = set_kimi_code_home(&home);
+
+        crate::acp_capabilities::set_session_config_from_response(
+            session_id,
+            &serde_json::json!({
+                "configOptions": [{
+                    "id": "thinking",
+                    "type": "toggle",
+                    "currentValue": "on"
+                }]
+            }),
+        );
+        crate::acp_capabilities::clear_session_config(session_id);
+
+        let mut messages = Vec::new();
+        push_session_config_snapshot(&mut messages, session_id).expect("push snapshot");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("ConfigOptionUpdate")
+                    && message.contains("thinking")),
+            "expected persisted ConfigOptionUpdate wire event"
+        );
     }
 
     #[test]

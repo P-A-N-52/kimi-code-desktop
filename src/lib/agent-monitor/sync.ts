@@ -181,6 +181,15 @@ function createTaskFromRecord(payload: UnknownRecord): AgentTask | null {
     suspendedReason,
     swarmIndex: readNumber(raw, "swarm_index", "swarmIndex"),
     runInBackground: readBoolean(raw, "run_in_background", "runInBackground"),
+    boundModel: readString(
+      raw,
+      "bound_model",
+      "boundModel",
+      "model_alias",
+      "modelAlias",
+      "model",
+    ),
+    modelPreference: readString(raw, "model_preference", "modelPreference"),
   };
 }
 
@@ -376,6 +385,11 @@ export function syncAgentMonitorFromSubagentLifecycle(
       currentStep: reason ?? subagentPhase ?? defaultStep(status),
       outputPreview:
         readString(payload, "output_preview", "outputPreview", "summary") ?? existing.outputPreview,
+      boundModel:
+        readString(payload, "bound_model", "boundModel", "model_alias", "modelAlias", "model") ??
+        existing.boundModel,
+      modelPreference:
+        readString(payload, "model_preference", "modelPreference") ?? existing.modelPreference,
     },
     sessionId,
   );

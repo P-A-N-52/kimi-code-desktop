@@ -60,6 +60,20 @@ export interface GlobalConfig {
      * @memberof GlobalConfig
      */
     models: Array<ConfigModel>;
+    /** True when KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL or KIMI_CODE_EXPERIMENTAL_FLAG is set for the Desktop process. */
+    secondaryModelExperimentEnabled?: boolean;
+    /** Effective secondary model alias (env override wins over [secondary_model].model). */
+    secondaryModel?: string | null;
+    /** Effective secondary default effort (env override wins over config). */
+    secondaryDefaultEffort?: string | null;
+    /** Whether [secondary_model].model is set in config.toml (ignoring env override). */
+    secondaryModelConfigured?: boolean;
+    /** Whether the effective secondary model resolves to a configured [models] entry. */
+    secondaryModelValid?: boolean;
+    /** True when KIMI_SECONDARY_MODEL env override is active. */
+    secondaryModelEnvOverride?: boolean;
+    /** True when KIMI_SECONDARY_EFFORT env override is active. */
+    secondaryDefaultEffortEnvOverride?: boolean;
 }
 
 /**
@@ -91,6 +105,15 @@ export function GlobalConfigFromJSONTyped(json: any, ignoreDiscriminator: boolea
         'defaultPlanMode': Boolean(json['default_plan_mode']),
         'defaultPermissionMode': json['default_permission_mode'] ?? 'manual',
         'models': ((json['models'] as Array<any>).map(ConfigModelFromJSON)),
+        'secondaryModelExperimentEnabled': Boolean(json['secondary_model_experiment_enabled']),
+        'secondaryModel': json['secondary_model'] ?? null,
+        'secondaryDefaultEffort': json['secondary_default_effort'] ?? null,
+        'secondaryModelConfigured': Boolean(json['secondary_model_configured']),
+        'secondaryModelValid': json['secondary_model_valid'] == null
+            ? true
+            : Boolean(json['secondary_model_valid']),
+        'secondaryModelEnvOverride': Boolean(json['secondary_model_env_override']),
+        'secondaryDefaultEffortEnvOverride': Boolean(json['secondary_default_effort_env_override']),
     };
 }
 
@@ -111,5 +134,12 @@ export function GlobalConfigToJSONTyped(value?: GlobalConfig | null, ignoreDiscr
         'default_plan_mode': value['defaultPlanMode'],
         'default_permission_mode': value['defaultPermissionMode'],
         'models': ((value['models'] as Array<any>).map(ConfigModelToJSON)),
+        'secondary_model_experiment_enabled': value['secondaryModelExperimentEnabled'] ?? false,
+        'secondary_model': value['secondaryModel'] ?? null,
+        'secondary_default_effort': value['secondaryDefaultEffort'] ?? null,
+        'secondary_model_configured': value['secondaryModelConfigured'] ?? false,
+        'secondary_model_valid': value['secondaryModelValid'] ?? true,
+        'secondary_model_env_override': value['secondaryModelEnvOverride'] ?? false,
+        'secondary_default_effort_env_override': value['secondaryDefaultEffortEnvOverride'] ?? false,
     };
 }

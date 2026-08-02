@@ -1,4 +1,5 @@
 use crate::acp::{resolve_acp_command_validated, AcpProcessManager};
+use crate::acp_capabilities::{session_config_state_to_value, set_session_config_from_response};
 use crate::acp_desktop::{
     fetch_all_acp_sessions, filter_sessions, find_session_in_list, session_new_params,
     shape_acp_session_to_legacy, AcpDesktopClient,
@@ -9,12 +10,14 @@ use crate::goal_queue;
 use crate::goal_store;
 use crate::runtime_check;
 use crate::security::{
-    validate_http_external_url, validate_local_absolute_path, validate_mcp_config_json,
+    validate_http_external_url, validate_local_absolute_path, validate_local_write_path,
+    validate_mcp_config_json,
 };
 use crate::session_files;
+use crate::session_influence;
 use crate::session_store;
 use crate::skills;
-use crate::wire_events::{RestartWorkersSummary, RuntimeStatus};
+use crate::wire_events::{RestartWorkersSummary, RuntimeStatus, WorkerStatusView};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::fs;
@@ -163,6 +166,13 @@ pub fn wire_status(
     session_id: String,
 ) -> Result<Option<RuntimeStatus>, String> {
     Ok(acp.get_status(&session_id))
+}
+
+#[tauri::command]
+pub fn wire_list_workers(
+    acp: tauri::State<'_, AcpProcessManager>,
+) -> Result<Vec<WorkerStatusView>, String> {
+    Ok(acp.list_workers())
 }
 
 #[tauri::command]
@@ -403,6 +413,8 @@ pub async fn create_session(
         .map(str::to_string)
         .ok_or_else(|| "ACP session/new returned no sessionId".to_string())?;
 
+    set_session_config_from_response(&session_id, &result);
+
     get_session(app, acp_desktop, acp_wire, session_id).await
 }
 
@@ -616,6 +628,17 @@ pub fn list_available_skills() -> Result<Value, String> {
     skills::list_available_skills()
 }
 
+#[tauri::command]
+pub fn get_session_influence_snapshot(
+    work_dir: Option<String>,
+    include_custom_agents: Option<bool>,
+) -> Result<Value, String> {
+    session_influence::get_session_influence_snapshot(
+        work_dir.as_deref(),
+        include_custom_agents.unwrap_or(false),
+    )
+}
+
 /// Native multi-select file picker. Returns absolute paths so the composer can
 /// insert them as text tokens (browser file inputs do not expose real paths).
 #[tauri::command]
@@ -645,9 +668,56 @@ pub fn pick_folder() -> Result<Value, String> {
     }
 }
 
+/// Save-dialog for Desktop-local exports (e.g. session Markdown). Returns
+/// `{ saved: boolean, path: string | null }`; `saved` is false when cancelled.
+#[tauri::command]
+pub fn save_text_file_dialog(
+    default_name: Option<String>,
+    content: String,
+) -> Result<Value, String> {
+    let mut dialog = rfd::FileDialog::new().set_title("保存文件");
+    if let Some(name) = default_name.as_deref() {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            dialog = dialog.set_file_name(trimmed);
+        }
+    }
+    dialog = dialog
+        .add_filter("Markdown", &["md"])
+        .add_filter("Text", &["txt"]);
+
+    match dialog.save_file() {
+        Some(path) => {
+            let path_str = path.to_string_lossy().to_string();
+            let validated = validate_local_write_path(&path_str)?;
+            if let Some(parent) = validated.parent() {
+                if !parent.as_os_str().is_empty() {
+                    fs::create_dir_all(parent)
+                        .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+                }
+            }
+            fs::write(&validated, content.as_bytes())
+                .map_err(|err| format!("Failed to write {}: {err}", validated.display()))?;
+            Ok(json!({
+                "saved": true,
+                "path": path_str,
+            }))
+        }
+        None => Ok(json!({
+            "saved": false,
+            "path": Value::Null,
+        })),
+    }
+}
+
 #[tauri::command]
 pub fn get_config_toml() -> Result<Value, String> {
     read_kimi_config_file("config.toml", "")
+}
+
+#[tauri::command]
+pub fn get_providers_overview() -> Result<Value, String> {
+    crate::provider_config::get_providers_overview()
 }
 
 #[tauri::command]
@@ -702,6 +772,8 @@ pub async fn update_global_config(
     default_thinking: Option<bool>,
     thinking_effort: Option<String>,
     default_plan_mode: Option<bool>,
+    secondary_model: Option<String>,
+    secondary_default_effort: Option<String>,
     restart_running_sessions: Option<bool>,
     force_restart_busy_sessions: Option<bool>,
 ) -> Result<Value, String> {
@@ -712,6 +784,8 @@ pub async fn update_global_config(
         default_thinking,
         thinking_effort.as_deref(),
         default_plan_mode,
+        secondary_model.as_deref(),
+        secondary_default_effort.as_deref(),
     )?;
 
     let summary = if restart_running {
@@ -779,6 +853,44 @@ pub async fn fetch_usage_stats(range: String) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || crate::usage_stats::fetch_usage_stats(&range))
         .await
         .map_err(|e| format!("Failed to join usage stats fetch: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_agent_runtime_capabilities(
+    acp_desktop: tauri::State<'_, AcpDesktopClient>,
+    app: tauri::AppHandle,
+) -> Result<Value, String> {
+    let probe = acp_desktop.request(&app, "session/list", json!({})).await;
+    let mut caps = acp_desktop
+        .agent_runtime_capabilities()
+        .await
+        .unwrap_or_default();
+    match probe {
+        Ok(_) => {
+            caps.capabilities_stale = false;
+        }
+        Err(err) => {
+            let has_cached = caps.agent_version.is_some()
+                || caps.session_config_options
+                || caps.load_session
+                || !caps.auth_methods.is_empty();
+            if !has_cached {
+                return Err(err);
+            }
+            caps.capabilities_stale = true;
+        }
+    }
+    Ok(crate::acp_capabilities::agent_runtime_capabilities_to_value(&caps))
+}
+
+#[tauri::command]
+pub fn get_session_config_state(session_id: String) -> Result<Value, String> {
+    match crate::acp_capabilities::resolve_session_config(&session_id) {
+        Some(state) => Ok(session_config_state_to_value(&state)),
+        None => Ok(session_config_state_to_value(
+            &crate::acp_capabilities::SessionConfigState::unknown(session_id),
+        )),
+    }
 }
 
 #[tauri::command]
@@ -1042,6 +1154,29 @@ mod tests {
             runtime_backend_from_env_value(Some("legacy")),
             RuntimeBackend::Acp
         );
+    }
+
+    #[test]
+    fn omitted_custom_agent_flag_disables_discovery() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("kimi-home");
+        let project = temp.path().join("project");
+        let agents = project.join(".kimi-code").join("agents");
+        std::fs::create_dir_all(project.join(".git")).expect("git marker");
+        std::fs::create_dir_all(&agents).expect("agents directory");
+        std::fs::write(
+            agents.join("omitted-agent.md"),
+            "---\nname: omitted-agent\n---\n",
+        )
+        .expect("agent file");
+
+        let _home_guard = set_kimi_code_home(&home);
+        let snapshot = super::get_session_influence_snapshot(
+            Some(project.to_string_lossy().to_string()),
+            None,
+        )
+        .expect("snapshot");
+        assert_eq!(snapshot["agents"], serde_json::json!([]));
     }
 
     #[test]

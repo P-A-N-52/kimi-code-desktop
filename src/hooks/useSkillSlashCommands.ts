@@ -8,6 +8,9 @@ function toSlashCommand(skill: AvailableSkill): SlashCommandDef {
 		description: skill.description || `Invoke the ${skill.name} skill`,
 		aliases: [],
 		inputHint: null,
+		source: skill.source.startsWith("plugin:")
+			? `disk:skill:${skill.source}`
+			: `disk:skill:${skill.source || "unknown"}`,
 	};
 }
 

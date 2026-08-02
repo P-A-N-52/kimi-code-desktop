@@ -6,9 +6,11 @@
 
 English: This repository is an independent Windows desktop shell for Kimi Code CLI, not the CLI source tree. React/Tauri owns the desktop UX and process orchestration; the user-installed Kimi Code CLI provides sessions, models, tools, and runtime behavior through `kimi acp`. Rust helpers handle config, MCP, session files, and Git data in `~/.kimi-code` and the active workspace.
 
-当前事实来源按优先级为：正在运行的源码和测试、`package.json` 脚本、本文件、`README.md`、`docs/plans/`。不要引用已删除的 `docs/DEVELOPMENT_STANDARD.md`、`docs/RELEASE.md` 或 `docs/acp-contract.md`。
+当前事实来源按优先级为：正在运行的源码和测试、`package.json` 脚本、`.github/DEVELOPMENT.md`、本文件、`README.md`、`docs/plans/`。不要引用已删除的 `docs/DEVELOPMENT_STANDARD.md`、`docs/RELEASE.md` 或 `docs/acp-contract.md`。
 
-English: Sources of truth, in order, are the running source and tests, `package.json` scripts, this file, `README.md`, and `docs/plans/`. Do not reference the removed `docs/DEVELOPMENT_STANDARD.md`, `docs/RELEASE.md`, or `docs/acp-contract.md`.
+English: Sources of truth, in order, are the running source and tests, `package.json` scripts, `.github/DEVELOPMENT.md`, this file, `README.md`, and `docs/plans/`. Do not reference the removed `docs/DEVELOPMENT_STANDARD.md`, `docs/RELEASE.md`, or `docs/acp-contract.md`.
+
+开发规范见 `.github/DEVELOPMENT.md`，实现前先阅读。 / Read `.github/DEVELOPMENT.md` before implementation.
 
 ## 当前进度（2026-07-20）/ Current Progress
 

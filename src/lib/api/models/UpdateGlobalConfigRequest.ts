@@ -51,6 +51,10 @@ export interface UpdateGlobalConfigRequest {
      * @memberof UpdateGlobalConfigRequest
      */
     forceRestartBusySessions?: boolean | null;
+    /** Writes [secondary_model].model when the secondary-model experiment is enabled. */
+    secondaryModel?: string | null;
+    /** Writes [secondary_model].default_effort when the secondary-model experiment is enabled. */
+    secondaryDefaultEffort?: string | null;
 }
 
 /**
@@ -76,6 +80,8 @@ export function UpdateGlobalConfigRequestFromJSONTyped(json: any, ignoreDiscrimi
         'defaultPlanMode': json['default_plan_mode'] == null ? undefined : json['default_plan_mode'],
         'restartRunningSessions': json['restart_running_sessions'] == null ? undefined : json['restart_running_sessions'],
         'forceRestartBusySessions': json['force_restart_busy_sessions'] == null ? undefined : json['force_restart_busy_sessions'],
+        'secondaryModel': json['secondary_model'] == null ? undefined : json['secondary_model'],
+        'secondaryDefaultEffort': json['secondary_default_effort'] == null ? undefined : json['secondary_default_effort'],
     };
 }
 
@@ -96,5 +102,7 @@ export function UpdateGlobalConfigRequestToJSONTyped(value?: UpdateGlobalConfigR
         'default_plan_mode': value['defaultPlanMode'],
         'restart_running_sessions': value['restartRunningSessions'],
         'force_restart_busy_sessions': value['forceRestartBusySessions'],
+        'secondary_model': value['secondaryModel'],
+        'secondary_default_effort': value['secondaryDefaultEffort'],
     };
 }

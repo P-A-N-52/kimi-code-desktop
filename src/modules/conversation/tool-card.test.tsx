@@ -131,6 +131,27 @@ describe("ToolCard", () => {
     expect(screen.getByText(/"answer": 42/)).toBeTruthy();
   });
 
+  it("routes TaskOutput tools to the read-only background task card", () => {
+    render(
+      <ToolCard
+        defaultOpen
+        toolCall={{
+          title: "TaskOutput",
+          type: "tool-call" as never,
+          state: "input-available",
+          toolCallId: "task-output-1",
+          input: { task_id: "bg-1" },
+          output: "status: running",
+          extras: { in_progress: true },
+        }}
+      />,
+    );
+
+    expect(document.querySelector("[data-slot=background-task-tool-card]")).not.toBeNull();
+    expect(screen.getByText(/只读观察/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /停止|Stop|Delete/i })).toBeNull();
+  });
+
   it("routes AgentSwarm tool calls to the swarm card", () => {
     render(
       <ToolCard

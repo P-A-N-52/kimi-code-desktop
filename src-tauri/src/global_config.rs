@@ -87,6 +87,8 @@ pub fn update_global_config_fields(
     default_thinking: Option<bool>,
     thinking_effort: Option<&str>,
     default_plan_mode: Option<bool>,
+    secondary_model: Option<&str>,
+    secondary_default_effort: Option<&str>,
 ) -> Result<Value, String> {
     let path = config_path()?;
     let mut parsed = load_config_toml()?;
@@ -97,6 +99,8 @@ pub fn update_global_config_fields(
         default_thinking,
         thinking_effort,
         default_plan_mode,
+        secondary_model,
+        secondary_default_effort,
     )?;
 
     write_config_toml(&path, &parsed)?;
@@ -109,6 +113,8 @@ fn update_global_config_value(
     default_thinking: Option<bool>,
     thinking_effort: Option<&str>,
     default_plan_mode: Option<bool>,
+    secondary_model: Option<&str>,
+    secondary_default_effort: Option<&str>,
 ) -> Result<(), String> {
     if let Some(model) = default_model {
         if !model_exists(parsed, model) {
@@ -131,6 +137,165 @@ fn update_global_config_value(
 
     if let Some(plan_mode) = default_plan_mode {
         set_top_level_bool(parsed, "default_plan_mode", plan_mode);
+    }
+
+    if secondary_model.is_some() || secondary_default_effort.is_some() {
+        if !secondary_model_experiment_enabled() {
+            return Err(
+                "Secondary model updates require KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL=1 or KIMI_CODE_EXPERIMENTAL_FLAG=1"
+                    .to_string(),
+            );
+        }
+        update_secondary_model_value(parsed, secondary_model, secondary_default_effort)?;
+    }
+
+    Ok(())
+}
+
+fn env_flag_truthy(name: &str) -> bool {
+    matches!(
+        std::env::var(name)
+            .ok()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
+/// Official Kimi Code secondary-model experiment gate (env-only; no config.toml key).
+pub fn secondary_model_experiment_enabled() -> bool {
+    env_flag_truthy("KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL")
+        || env_flag_truthy("KIMI_CODE_EXPERIMENTAL_FLAG")
+}
+
+fn env_override_string(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn secondary_model_table(parsed: &toml::Value) -> Option<&toml::map::Map<String, toml::Value>> {
+    parsed
+        .get("secondary_model")
+        .and_then(toml::Value::as_table)
+}
+
+fn secondary_model_table_mut(parsed: &mut toml::Value) -> &mut toml::map::Map<String, toml::Value> {
+    let root = parsed.as_table_mut().expect("config root must be a table");
+    let section = root
+        .entry("secondary_model".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    if !section.is_table() {
+        *section = toml::Value::Table(toml::map::Map::new());
+    }
+    section
+        .as_table_mut()
+        .expect("secondary_model must be a table")
+}
+
+fn configured_secondary_model(parsed: &toml::Value) -> Option<String> {
+    secondary_model_table(parsed)
+        .and_then(|table| table.get("model"))
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn configured_secondary_default_effort(parsed: &toml::Value) -> Option<String> {
+    secondary_model_table(parsed)
+        .and_then(|table| table.get("default_effort"))
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn effective_secondary_model(parsed: &toml::Value) -> (Option<String>, bool) {
+    if let Some(model) = env_override_string("KIMI_SECONDARY_MODEL") {
+        return (Some(model), true);
+    }
+    (configured_secondary_model(parsed), false)
+}
+
+fn effective_secondary_default_effort(parsed: &toml::Value) -> (Option<String>, bool) {
+    if let Some(effort) = env_override_string("KIMI_SECONDARY_EFFORT") {
+        return (Some(effort), true);
+    }
+    (configured_secondary_default_effort(parsed), false)
+}
+
+fn validate_secondary_default_effort(
+    parsed: &toml::Value,
+    effort: &str,
+    model_name: &str,
+) -> Result<(), String> {
+    let supported = model_efforts(parsed, model_name);
+    if supported.is_empty() || supported.contains(&effort) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Secondary default effort '{effort}' is not supported by model '{model_name}'"
+        ))
+    }
+}
+
+fn update_secondary_model_value(
+    parsed: &mut toml::Value,
+    secondary_model: Option<&str>,
+    secondary_default_effort: Option<&str>,
+) -> Result<(), String> {
+    if let Some(model) = secondary_model {
+        let trimmed = model.trim();
+        if trimmed.is_empty() {
+            if let Some(root) = parsed.as_table_mut() {
+                root.remove("secondary_model");
+            }
+        } else {
+            if !model_exists(parsed, trimmed) {
+                return Err(format!("Model '{trimmed}' not found in config"));
+            }
+            secondary_model_table_mut(parsed).insert(
+                "model".to_string(),
+                toml::Value::String(trimmed.to_string()),
+            );
+        }
+    }
+
+    if let Some(effort) = secondary_default_effort {
+        let trimmed = effort.trim();
+        if trimmed.is_empty() {
+            if let Some(table) = parsed
+                .get_mut("secondary_model")
+                .and_then(toml::Value::as_table_mut)
+            {
+                table.remove("default_effort");
+                if table.is_empty() {
+                    if let Some(root) = parsed.as_table_mut() {
+                        root.remove("secondary_model");
+                    }
+                }
+            }
+        } else {
+            let model_name = configured_secondary_model(parsed)
+                .or_else(|| {
+                    secondary_model
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                })
+                .ok_or_else(|| {
+                    "Cannot set secondary default effort without a configured secondary model"
+                        .to_string()
+                })?;
+            validate_secondary_default_effort(parsed, trimmed, &model_name)?;
+            secondary_model_table_mut(parsed).insert(
+                "default_effort".to_string(),
+                toml::Value::String(trimmed.to_string()),
+            );
+        }
     }
 
     Ok(())
@@ -336,6 +501,15 @@ pub(crate) fn build_global_config_json(parsed: &toml::Value) -> Value {
         .unwrap_or(false);
     let default_permission_mode = normalized_permission_mode(parsed);
     let thinking_effort = configured_thinking_effort(parsed).unwrap_or_default();
+    let secondary_model_experiment_enabled = secondary_model_experiment_enabled();
+    let (secondary_model, secondary_model_env_override) = effective_secondary_model(parsed);
+    let (secondary_default_effort, secondary_default_effort_env_override) =
+        effective_secondary_default_effort(parsed);
+    let secondary_model_configured = configured_secondary_model(parsed).is_some();
+    let secondary_model_valid = secondary_model
+        .as_deref()
+        .map(|model| model_exists(parsed, model))
+        .unwrap_or(true);
 
     json!({
         "default_model": default_model,
@@ -344,6 +518,13 @@ pub(crate) fn build_global_config_json(parsed: &toml::Value) -> Value {
         "default_permission_mode": default_permission_mode,
         "thinking_effort": thinking_effort,
         "models": build_models_array(parsed),
+        "secondary_model_experiment_enabled": secondary_model_experiment_enabled,
+        "secondary_model": secondary_model,
+        "secondary_default_effort": secondary_default_effort,
+        "secondary_model_configured": secondary_model_configured,
+        "secondary_model_valid": secondary_model_valid,
+        "secondary_model_env_override": secondary_model_env_override,
+        "secondary_default_effort_env_override": secondary_default_effort_env_override,
     })
 }
 
@@ -645,7 +826,8 @@ default_permission_mode = "unexpected"
     #[test]
     fn update_global_config_fields_rejects_unknown_model() {
         let parsed: toml::Value = SAMPLE_CONFIG.parse().expect("sample config parses");
-        let err = update_fields_on_value(&parsed, Some("missing"), None, None, None).unwrap_err();
+        let err = update_fields_on_value(&parsed, Some("missing"), None, None, None, None, None)
+            .unwrap_err();
         assert!(err.contains("not found in config"));
     }
 
@@ -653,7 +835,7 @@ default_permission_mode = "unexpected"
     fn update_global_config_fields_updates_defaults() {
         let parsed: toml::Value = SAMPLE_CONFIG.parse().expect("sample config parses");
         let mut next = parsed.clone();
-        update_global_config_value(&mut next, None, Some(false), None, Some(true))
+        update_global_config_value(&mut next, None, Some(false), None, Some(true), None, None)
             .expect("update succeeds");
         let updated = build_global_config_json(&next);
 
@@ -716,7 +898,7 @@ capabilities = ["thinking"]
         )
         .expect("config written");
 
-        let updated = update_global_config_fields(None, Some(false), None, None)
+        let updated = update_global_config_fields(None, Some(false), None, None, None, None)
             .expect("toggle thinking off");
         assert_eq!(updated["default_thinking"], false);
 
@@ -737,11 +919,11 @@ capabilities = ["thinking"]
     #[test]
     fn update_global_config_fields_validates_thinking_effort() {
         let parsed: toml::Value = SAMPLE_CONFIG.parse().expect("sample config parses");
-        let updated = update_fields_on_value(&parsed, None, None, Some("low"), None)
+        let updated = update_fields_on_value(&parsed, None, None, Some("low"), None, None, None)
             .expect("supported effort succeeds");
         assert_eq!(updated["thinking_effort"], "low");
 
-        let err = update_fields_on_value(&parsed, None, None, Some("medium"), None)
+        let err = update_fields_on_value(&parsed, None, None, Some("medium"), None, None, None)
             .expect_err("unsupported effort is rejected");
         assert!(err.contains("not supported by model 'kimi'"));
     }
@@ -755,7 +937,7 @@ capabilities = ["thinking"]
         .parse()
         .expect("sample config parses");
 
-        let updated = update_fields_on_value(&parsed, Some("fast"), None, None, None)
+        let updated = update_fields_on_value(&parsed, Some("fast"), None, None, None, None, None)
             .expect("model switch succeeds");
         assert_eq!(updated["default_model"], "fast");
         assert_eq!(updated["thinking_effort"], "low");
@@ -908,6 +1090,8 @@ max_context_size = 128000
         default_thinking: Option<bool>,
         thinking_effort: Option<&str>,
         default_plan_mode: Option<bool>,
+        secondary_model: Option<&str>,
+        secondary_default_effort: Option<&str>,
     ) -> Result<Value, String> {
         let mut next = parsed.clone();
         update_global_config_value(
@@ -916,7 +1100,91 @@ max_context_size = 128000
             default_thinking,
             thinking_effort,
             default_plan_mode,
+            secondary_model,
+            secondary_default_effort,
         )?;
         Ok(build_global_config_json(&next))
+    }
+
+    #[test]
+    fn secondary_model_json_reflects_config_and_experiment_gate() {
+        let parsed: toml::Value = format!(
+            "{SAMPLE_CONFIG}\n[secondary_model]\nmodel = \"kimi\"\ndefault_effort = \"low\"\n"
+        )
+        .parse()
+        .expect("sample config parses");
+        let config = build_global_config_json(&parsed);
+        assert_eq!(config["secondary_model"], "kimi");
+        assert_eq!(config["secondary_default_effort"], "low");
+        assert_eq!(config["secondary_model_configured"], true);
+        assert_eq!(config["secondary_model_valid"], true);
+    }
+
+    #[test]
+    fn secondary_model_update_rejected_when_experiment_disabled() {
+        let parsed: toml::Value = SAMPLE_CONFIG.parse().expect("sample config parses");
+        let _lock = crate::test_env::lock::env_lock();
+        let err = update_fields_on_value(&parsed, None, None, None, None, Some("kimi"), None)
+            .expect_err("experiment gate blocks writes");
+        assert!(err.contains("EXPERIMENTAL"));
+    }
+
+    #[test]
+    fn secondary_model_update_persists_without_touching_unrelated_keys() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _lock = crate::test_env::lock::env_lock();
+        let previous_home = std::env::var_os("KIMI_CODE_HOME");
+        let previous_secondary = std::env::var_os("KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL");
+        std::env::set_var("KIMI_CODE_HOME", dir.path());
+        std::env::set_var("KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL", "1");
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            r#"default_model = "kimi"
+default_plan_mode = true
+
+[providers.kimi]
+type = "kimi"
+api_key = "secret"
+
+[models.kimi]
+provider = "kimi"
+model = "kimi-k2"
+support_efforts = ["low", "high"]
+default_effort = "high"
+"#,
+        )
+        .expect("config written");
+
+        let updated =
+            update_global_config_fields(None, None, None, None, Some("kimi"), Some("low"))
+                .expect("secondary model update succeeds");
+        assert_eq!(updated["secondary_model"], "kimi");
+        assert_eq!(updated["secondary_default_effort"], "low");
+        assert_eq!(updated["default_plan_mode"], true);
+
+        let on_disk: toml::Value = fs::read_to_string(&path)
+            .expect("config readable")
+            .parse()
+            .expect("valid toml");
+        assert_eq!(on_disk["secondary_model"]["model"].as_str(), Some("kimi"));
+        assert_eq!(
+            on_disk["secondary_model"]["default_effort"].as_str(),
+            Some("low")
+        );
+        assert_eq!(on_disk["default_plan_mode"].as_bool(), Some(true));
+        assert_eq!(
+            on_disk["providers"]["kimi"]["api_key"].as_str(),
+            Some("secret")
+        );
+
+        match previous_home {
+            Some(value) => std::env::set_var("KIMI_CODE_HOME", value),
+            None => std::env::remove_var("KIMI_CODE_HOME"),
+        }
+        match previous_secondary {
+            Some(value) => std::env::set_var("KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL", value),
+            None => std::env::remove_var("KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL"),
+        }
     }
 }

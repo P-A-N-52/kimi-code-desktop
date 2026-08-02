@@ -1,0 +1,15 @@
+{
+  "sessionUpdate": "available_commands_update",
+  "availableCommands": [
+    {
+      "name": "compact",
+      "description": "Compact context",
+      "input": { "hint": "optional instruction" }
+    },
+    "skill:demo",
+    {
+      "command": "plugin.review",
+      "description": "Plugin-provided review command"
+    }
+  ]
+}
