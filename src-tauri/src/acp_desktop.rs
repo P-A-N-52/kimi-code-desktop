@@ -3,6 +3,9 @@
 use crate::acp::{
     ensure_acp_authenticated, spawn_acp_probe_worker, AcpRpcSession, AcpWorker, JsonRpcResponse,
 };
+use crate::acp_capabilities::{
+    agent_runtime_capabilities_to_value, parse_agent_runtime_capabilities, AgentRuntimeCapabilities,
+};
 use crate::mcp_config;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -82,12 +85,25 @@ struct DesktopAcpSession {
 
 pub struct AcpDesktopClient {
     inner: Mutex<Option<DesktopAcpSession>>,
+    capabilities: Mutex<Option<AgentRuntimeCapabilities>>,
 }
 
 impl AcpDesktopClient {
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(None),
+            capabilities: Mutex::new(None),
+        }
+    }
+
+    pub async fn agent_runtime_capabilities(&self) -> Option<AgentRuntimeCapabilities> {
+        self.capabilities.lock().await.clone()
+    }
+
+    pub async fn agent_runtime_capabilities_value(&self) -> Value {
+        match self.agent_runtime_capabilities().await {
+            Some(caps) => agent_runtime_capabilities_to_value(&caps),
+            None => Value::Null,
         }
     }
 
@@ -103,10 +119,15 @@ impl AcpDesktopClient {
             .map_or(true, |session| !session.rpc.is_alive())
         {
             let (mut rpc, worker) = spawn_acp_probe_worker(app)?;
-            if let Err(err) = ensure_acp_authenticated(&mut rpc).await {
-                let _ = rpc.shutdown();
-                return Err(err);
-            }
+            let initialize_result = match ensure_acp_authenticated(&mut rpc).await {
+                Ok(result) => result,
+                Err(err) => {
+                    let _ = rpc.shutdown();
+                    return Err(err);
+                }
+            };
+            *self.capabilities.lock().await =
+                Some(parse_agent_runtime_capabilities(&initialize_result));
             *guard = Some(DesktopAcpSession {
                 _worker: worker,
                 rpc,

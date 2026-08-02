@@ -3,6 +3,8 @@ export type SlashCommandDef = {
   description: string;
   aliases: string[];
   inputHint?: string | null;
+  /** Live/replay source tag from ACP or disk discovery (`runtime:*`, `disk:*`). */
+  source?: string | null;
 };
 
 /**
@@ -69,7 +71,7 @@ const DESKTOP_SLASH_DENYLIST = new Set([
 ]);
 
 /** Always safe to forward to ACP even before available_commands_update. */
-const ACP_FORWARDABLE_SLASH_COMMANDS = new Set(["compact", "mcp", "tasks", "task"]);
+const ACP_FORWARDABLE_SLASH_COMMANDS = new Set(["compact", "mcp"]);
 
 /** Local desktop handlers (not forwarded to ACP as raw prompts). */
 const LOCALLY_HANDLED_SLASH_COMMANDS = new Set([
@@ -97,6 +99,9 @@ const ARG_FRIENDLY_COMMANDS = new Set([
   "sub-skill",
 ]);
 
+const TASKS_SLASH_LIMIT_MESSAGE =
+  "/tasks 在当前 Desktop 会话中不可用。已观察到的后台任务会显示在工作区「任务」页签；完整管理请使用 Kimi Code CLI TUI。";
+
 const DESKTOP_DESCRIPTION_OVERRIDES: Record<string, string> = {
   usage: "Show plan quotas (5h / 7d) and session token usage",
   status: "Show session status and plan quotas (5h / 7d)",
@@ -115,7 +120,7 @@ const DENIED_COMMAND_HINTS: Record<string, string> = {
   clear: "Use New chat in the sidebar.",
   sessions: "Use the sessions sidebar.",
   resume: "Use the sessions sidebar.",
-  fork: "Use Fork session in the sidebar.",
+  fork: "ACP does not support session/fork yet. Use /fork in the Kimi Code CLI TUI, or wait for a future desktop release.",
   title: "Rename the session from the sidebar.",
   rename: "Rename the session from the sidebar.",
   settings: "Open Settings from the app menu.",
@@ -132,6 +137,15 @@ const DENIED_COMMAND_HINTS: Record<string, string> = {
   experimental: "Open experiments in the Kimi Code CLI TUI.",
   theme: "Theme is controlled by the desktop app appearance.",
   editor: "External editor is a TUI-only setting.",
+  copy: "Use Copy last AI reply in the title menu.",
+  "export-md": "Use Export Markdown in the title menu.",
+  export: "Use Export Markdown in the title menu.",
+  "export-debug-zip": "Use `kimi export` or `/export-debug-zip` in the Kimi Code CLI TUI.",
+  undo: "Use `/undo` in the Kimi Code CLI TUI (idle only; not available over ACP).",
+  init: "Use `/init` in the Kimi Code CLI TUI to analyze the repo and generate AGENTS.md.",
+  "add-dir": "Use `/add-dir` in the Kimi Code CLI TUI to add session work directories.",
+  btw: "Use `/btw` in the Kimi Code CLI TUI for side conversations.",
+  feedback: "Use `/feedback` in the Kimi Code CLI TUI to submit feedback.",
   exit: "Close the desktop window to quit.",
   quit: "Close the desktop window to quit.",
   q: "Close the desktop window to quit.",
@@ -195,6 +209,22 @@ export function classifySlashDispatch(
   }
   if (name === "goal") {
     return { kind: "local", name: "goal", args };
+  }
+
+  if (name === "tasks" || name === "task") {
+    const advertised = new Set(
+      advertisedCommands.flatMap((command) => {
+        const names = [normalizeCommandName(command.name)];
+        for (const alias of command.aliases ?? []) {
+          names.push(normalizeCommandName(alias));
+        }
+        return names;
+      }),
+    );
+    if (advertised.has(name)) {
+      return { kind: "passthrough" };
+    }
+    return { kind: "blocked", message: TASKS_SLASH_LIMIT_MESSAGE };
   }
 
   if (isDeniedDesktopSlashCommand(name)) {

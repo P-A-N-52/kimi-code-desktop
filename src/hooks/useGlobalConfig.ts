@@ -16,6 +16,8 @@ type UpdateGlobalConfigArgs = {
   defaultThinking?: boolean;
   thinkingEffort?: string;
   defaultPlanMode?: boolean;
+  secondaryModel?: string;
+  secondaryDefaultEffort?: string;
   restartRunningSessions?: boolean;
   forceRestartBusySessions?: boolean;
 };
@@ -105,6 +107,8 @@ export function useGlobalConfig(
             defaultThinking: args.defaultThinking,
             thinkingEffort: args.thinkingEffort,
             defaultPlanMode: args.defaultPlanMode,
+            secondaryModel: args.secondaryModel,
+            secondaryDefaultEffort: args.secondaryDefaultEffort,
             restartRunningSessions: args.restartRunningSessions,
             forceRestartBusySessions: args.forceRestartBusySessions,
           });
@@ -114,6 +118,8 @@ export function useGlobalConfig(
             defaultThinking: args.defaultThinking ?? undefined,
             thinkingEffort: args.thinkingEffort ?? undefined,
             defaultPlanMode: args.defaultPlanMode ?? undefined,
+            secondaryModel: args.secondaryModel ?? undefined,
+            secondaryDefaultEffort: args.secondaryDefaultEffort ?? undefined,
             restartRunningSessions: args.restartRunningSessions ?? undefined,
             forceRestartBusySessions: args.forceRestartBusySessions ?? undefined,
           };
@@ -123,7 +129,17 @@ export function useGlobalConfig(
         }
         _cachedConfig = resp.config;
         setConfig(resp.config);
-        window.dispatchEvent(new Event("kimi:config-update"));
+        // G5 §4.8: carry the worker-restart summary so the orchestrator can
+        // replay gap-fill every restarted session. Existing listeners ignore
+        // the detail field.
+        window.dispatchEvent(
+          new CustomEvent("kimi:config-update", {
+            detail: {
+              restartedSessionIds: resp.restartedSessionIds ?? [],
+              skippedBusySessionIds: resp.skippedBusySessionIds ?? [],
+            },
+          }),
+        );
         return resp;
       } catch (err) {
         const message =

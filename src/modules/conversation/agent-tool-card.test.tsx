@@ -179,6 +179,44 @@ describe("AgentToolCard", () => {
     expect(screen.getByText("ReadFile")).toBeTruthy();
   });
 
+  it("shows runtime model binding when monitor task provides it", () => {
+    useAgentMonitorStore.setState({
+      tasks: [
+        {
+          id: "agent-model",
+          sessionId: "s1",
+          kind: "subagent",
+          agentType: "explore",
+          description: "查模型",
+          status: "running",
+          currentStep: "Working",
+          createdAt: Date.now(),
+          parentToolCallId: "agent-model-parent",
+          boundModel: "kimi-code/kimi-k2.5",
+          modelPreference: "secondary",
+        },
+      ],
+    });
+
+    render(
+      <AgentToolCard
+        defaultOpen
+        toolCall={{
+          title: "Agent",
+          type: "tool-Agent" as never,
+          state: "input-available",
+          toolCallId: "agent-model-parent",
+          input: { description: "查模型", subagent_type: "explore", prompt: "go" },
+          subagentRunning: true,
+        }}
+      />,
+    );
+
+    expect(document.querySelector("[data-slot=agent-model-chip]")?.textContent).toBe(
+      "secondary · kimi-code/kimi-k2.5",
+    );
+  });
+
   it("lists multiple monitor children with status and count", () => {
     useAgentMonitorStore.setState({
       tasks: [

@@ -289,6 +289,8 @@ export type AgentTaskWire = {
   suspended_reason?: string | null;
   swarm_index?: number | null;
   run_in_background?: boolean | null;
+  bound_model?: string | null;
+  model_preference?: string | null;
 };
 
 export type TaskCreatedEvent = {
@@ -335,6 +337,8 @@ export type SubagentLifecycleEvent = {
     description?: string | null;
     swarm_index?: number | null;
     error?: string | null;
+    bound_model?: string | null;
+    model_preference?: string | null;
   };
 };
 
@@ -362,7 +366,43 @@ export type SlashCommandsUpdateEvent = {
       aliases?: string[];
       input_hint?: string | null;
       inputHint?: string | null;
+      source?: string | null;
     }>;
+  };
+};
+
+export type ConfigOptionUpdateEvent = {
+  type: "ConfigOptionUpdate";
+  payload: {
+    session_id: string;
+    status: "known" | "unknown";
+    options: Array<{
+      id: string;
+      optionType?: string;
+      type?: string;
+      label?: string | null;
+      currentValue?: unknown;
+      current_value?: unknown;
+      options?: Array<{ value: unknown; label?: string | null }> | null;
+    }>;
+  };
+};
+
+export type BackgroundTaskObservedEvent = {
+  type: "BackgroundTaskObserved";
+  payload: {
+    session_id: string;
+    tool_call_id: string;
+    tool_name: string;
+    task_id?: string | null;
+    snapshot: string;
+    terminal_state: "running" | "completed" | "failed" | "stopped" | "unknown";
+    output_path?: string | null;
+    cron_id?: string | null;
+    cron_expression?: string | null;
+    human_schedule?: string | null;
+    next_fire_at?: string | null;
+    recurring?: boolean | null;
   };
 };
 
@@ -392,7 +432,9 @@ export type WireEvent =
   | SubagentLifecycleEvent
   | SteerInputEvent
   | PlanDisplayEvent
-  | SlashCommandsUpdateEvent;
+  | SlashCommandsUpdateEvent
+  | ConfigOptionUpdateEvent
+  | BackgroundTaskObservedEvent;
 
 // Parsed wire message
 export type WireMessage = {

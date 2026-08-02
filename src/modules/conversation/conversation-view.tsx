@@ -8,8 +8,17 @@ import type {
 } from "@/hooks/useSessionStream";
 import type { SessionFileEntry } from "@/hooks/useSessions";
 import { useSkillSlashCommands } from "@/hooks/useSkillSlashCommands";
-import type { UploadSessionFileResponse } from "@/lib/api/models";
+import type { ConfigModel, UploadSessionFileResponse } from "@/lib/api/models";
+import { ProviderType } from "@/lib/api/models/ProviderType";
+import type { AgentRuntimeCapabilities } from "@/lib/acp-capabilities";
+import { emptyAgentRuntimeCapabilities } from "@/lib/acp-capabilities";
 import { notifyGlobalConfigApplied } from "@/lib/config-update-toast";
+import {
+  canUseSessionConfigOption,
+  getSessionConfigOption,
+  getSessionConfigOptionValue,
+  prefersSetConfigOptionRpc,
+} from "@/lib/session-config-state";
 import { parseGoalCommand } from "@/lib/goal";
 import {
   findConfigModel,
@@ -23,6 +32,7 @@ import {
 } from "@/lib/slash-command-catalog";
 import {
   appendSessionGoalQueue,
+  getAgentRuntimeCapabilities,
   getSessionGoalQueue,
   isTauri,
   moveSessionGoalQueue,
@@ -120,6 +130,10 @@ export function ConversationView({
   const goalQueueMutationInFlightRef = useRef(false);
   const suppressGoalQueuePromotionRef = useRef(false);
   const { config, update, isUpdating } = useGlobalConfig();
+  const [agentRuntime, setAgentRuntime] = useState<AgentRuntimeCapabilities>(
+    emptyAgentRuntimeCapabilities(),
+  );
+  const sessionConfig = stream.sessionConfigState;
   const busy = stream.status === "submitted" || stream.status === "streaming";
   const currentGoal = useToolEventsStore((state) => state.currentGoal);
   const skillCommands = useSkillSlashCommands();
@@ -158,6 +172,21 @@ export function ConversationView({
       cancelled = true;
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    void getAgentRuntimeCapabilities()
+      .then((caps) => {
+        if (!cancelled) setAgentRuntime(caps);
+      })
+      .catch(() => {
+        if (!cancelled) setAgentRuntime(emptyAgentRuntimeCapabilities());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!currentGoal || currentGoal.status === "complete") return;
@@ -245,40 +274,121 @@ export function ConversationView({
 
   const selectedModel = config?.defaultModel || "";
   const models = config?.models ?? [];
-  const selectedConfigModel = useMemo(
-    () => findConfigModel(models, selectedModel),
-    [models, selectedModel],
+  const sessionModelOption = getSessionConfigOption(sessionConfig, "model");
+  const canUseSessionModel = canUseSessionConfigOption(
+    agentRuntime,
+    sessionConfig,
+    "model",
   );
+  const canUseSessionThinking = canUseSessionConfigOption(
+    agentRuntime,
+    sessionConfig,
+    "thinking",
+  );
+  const canSetSessionModel = prefersSetConfigOptionRpc(
+    agentRuntime,
+    sessionConfig,
+    "model",
+  );
+  const canSetSessionThinking = prefersSetConfigOptionRpc(
+    agentRuntime,
+    sessionConfig,
+    "thinking",
+  );
+  const displayModels: ConfigModel[] = useMemo(() => {
+    if (sessionModelOption?.options?.length) {
+      return sessionModelOption.options.map((choice) => {
+        const name = String(choice.value ?? "");
+        const label = choice.label ?? name;
+        return {
+          name,
+          provider: label,
+          model: name,
+          maxContextSize: 0,
+          providerType: ProviderType.Kimi,
+        } satisfies ConfigModel;
+      });
+    }
+    return models;
+  }, [models, sessionModelOption]);
+  const displaySelectedModel = useMemo(() => {
+    const sessionValue = getSessionConfigOptionValue(sessionConfig, "model");
+    if (canUseSessionModel && typeof sessionValue === "string" && sessionValue.trim()) {
+      return sessionValue;
+    }
+    return selectedModel;
+  }, [canUseSessionModel, selectedModel, sessionConfig]);
+  const displaySelectedModelLabel = useMemo(() => {
+    if (canUseSessionModel) {
+      return displaySelectedModel || "未知模型";
+    }
+    if (sessionConfig.status === "unknown" && !selectedModel) {
+      return "未知";
+    }
+    return selectedModel ? `${selectedModel} (全局默认)` : "全局默认";
+  }, [canUseSessionModel, displaySelectedModel, selectedModel, sessionConfig.status]);
+  const selectedConfigModel = useMemo(
+    () => findConfigModel(displayModels.length > 0 ? displayModels : models, displaySelectedModel),
+    [displayModels, displaySelectedModel, models],
+  );
+  const displayThinkingEnabled = useMemo(() => {
+    if (canUseSessionThinking) {
+      const raw = getSessionConfigOptionValue(sessionConfig, "thinking");
+      const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+      if (value === "on" || value === "true") return true;
+      if (value === "off" || value === "false") return false;
+    }
+    return Boolean(config?.defaultThinking);
+  }, [canUseSessionThinking, config?.defaultThinking, sessionConfig]);
+  const modelControlsDisabled =
+    stream.status !== "ready" ||
+    agentRuntime.capabilitiesStale === true ||
+    !canUseSessionModel;
+  const modelUpdating = isUpdating || stream.sessionConfigUpdating;
 
   const handleSelectModel = useCallback(
     async (name: string) => {
-      if (!name || name === selectedModel) return;
-      try {
-        const resp = await update({ defaultModel: name });
-        notifyGlobalConfigApplied(resp, `已切换到 ${name}`);
-      } catch (error) {
-        toast.error("切换模型失败", {
-          description: error instanceof Error ? error.message : String(error),
-        });
+      if (!name || name === displaySelectedModel) return;
+      if (!canUseSessionModel) {
+        return;
       }
+      if (canSetSessionModel) {
+        const ok = await stream.sendSetConfigOption("model", name);
+        if (!ok) {
+          toast.error("切换会话模型失败", {
+            description: "请检查 ACP 连接或稍后重试。",
+          });
+        }
+        return;
+      }
+      toast.error("当前运行时无法修改会话模型", {
+        description: "请升级 Kimi Code 或检查 ACP 连接。",
+      });
     },
-    [selectedModel, update],
+    [canSetSessionModel, canUseSessionModel, displaySelectedModel, stream],
   );
 
   const handleToggleThinking = useCallback(
     async (enabled: boolean) => {
+      if (!canUseSessionThinking) {
+        return;
+      }
       if (modelForcesThinking(selectedConfigModel)) return;
       if (!modelHasThinkingCapability(selectedConfigModel)) return;
-      try {
-        const resp = await update({ defaultThinking: enabled });
-        notifyGlobalConfigApplied(resp, enabled ? "思考模式已开启" : "思考模式已关闭");
-      } catch (error) {
-        toast.error("更新思考模式失败", {
-          description: error instanceof Error ? error.message : String(error),
-        });
+      if (canSetSessionThinking) {
+        const ok = await stream.sendSetConfigOption("thinking", enabled ? "on" : "off");
+        if (!ok) {
+          toast.error("更新会话 Thinking 失败", {
+            description: "请检查 ACP 连接或稍后重试。",
+          });
+        }
+        return;
       }
+      toast.error("当前运行时无法修改会话 Thinking", {
+        description: "请升级 Kimi Code 或检查 ACP 连接。",
+      });
     },
-    [selectedConfigModel, update],
+    [canSetSessionThinking, canUseSessionThinking, selectedConfigModel, stream],
   );
 
   const handleSelectThinkingEffort = useCallback(
@@ -768,12 +878,13 @@ export function ConversationView({
             onUploadFile={(file) => onUploadFile(sessionId, file)}
             onOpenContext={() => onOpenWorkspace("files")}
             listDirectory={listDirectory}
-            models={models}
-            selectedModel={selectedModel || "默认模型"}
-            thinkingEnabled={Boolean(config?.defaultThinking)}
+            models={displayModels.length > 0 ? displayModels : models}
+            selectedModel={displaySelectedModelLabel}
+            thinkingEnabled={displayThinkingEnabled}
             thinkingEffort={config?.thinkingEffort ?? ""}
-            modelControlsDisabled={!config}
-            modelUpdating={isUpdating}
+            modelControlsDisabled={modelControlsDisabled}
+            modelUpdating={modelUpdating}
+            thinkingControlsVisible={canUseSessionThinking}
             onSelectModel={(name) => void handleSelectModel(name)}
             onToggleThinking={(enabled) => void handleToggleThinking(enabled)}
             onSelectThinkingEffort={(effort) => void handleSelectThinkingEffort(effort)}

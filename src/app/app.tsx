@@ -20,6 +20,8 @@ import {
   showWindow,
 } from "@/lib/tauri-api";
 import { useToolEventsStore } from "@/lib/tool-events/store";
+import { clearBackgroundTasksSession } from "@/lib/background-tasks/sync";
+import { useSessionStreamOrchestrator } from "@/lib/session-stream/provider";
 import { ConversationView } from "@/modules/conversation/conversation-view";
 import { GoalCancelConfirmation } from "@/modules/conversation/goal-cancel-confirmation";
 import { ReadinessOverlay } from "@/modules/readiness/readiness-overlay";
@@ -115,6 +117,28 @@ export default function App() {
     (isCheckingRuntime ||
       Boolean(runtimeCheckError) ||
       shouldPauseForRuntimeReadiness(runtimeReadiness, hasAcknowledgedRuntime));
+
+  // G5: forward the runtime readiness gate into the multi-session orchestrator
+  // (no-op when the flag is off — the context value is null then).
+  const sessionStreamOrchestrator = useSessionStreamOrchestrator();
+  useEffect(() => {
+    sessionStreamOrchestrator?.setPaused(shouldPauseRuntime);
+  }, [sessionStreamOrchestrator, shouldPauseRuntime]);
+
+  // G5 §4.8: after a config-triggered worker restart, replay gap-fill every
+  // restarted session (no-op when the flag is off).
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ restartedSessionIds?: string[] }>).detail;
+      const restarted = detail?.restartedSessionIds;
+      if (restarted && restarted.length > 0) {
+        sessionStreamOrchestrator?.reconnectSessions(restarted);
+      }
+      void runRuntimeReadinessCheck();
+    };
+    window.addEventListener("kimi:config-update", handler);
+    return () => window.removeEventListener("kimi:config-update", handler);
+  }, [sessionStreamOrchestrator]);
 
   const {
     sessions,
@@ -308,6 +332,39 @@ export default function App() {
   pendingApprovalsRef.current = pendingApprovals;
   const permissionMode = stream.permissionMode;
 
+  // G5 §4.7: session deletion must release the orchestrator lease and drop the
+  // view state BEFORE the Rust delete_session persists the removal, so no late
+  // wire event can write into a ghost session.
+  const handleDeleteSession = useCallback(
+    (sessionId: string) => {
+      sessionStreamOrchestrator?.disconnectSession(sessionId, "delete");
+      clearBackgroundTasksSession(sessionId);
+      for (const key of notifiedApprovalsRef.current) {
+        if (key.startsWith(`${sessionId}:`)) {
+          notifiedApprovalsRef.current.delete(key);
+        }
+      }
+      void deleteSession(sessionId);
+    },
+    [deleteSession, sessionStreamOrchestrator],
+  );
+
+  const handleBulkDeleteSessions = useCallback(
+    async (sessionIds: string[]) => {
+      for (const sessionId of sessionIds) {
+        sessionStreamOrchestrator?.disconnectSession(sessionId, "delete");
+        clearBackgroundTasksSession(sessionId);
+        for (const key of notifiedApprovalsRef.current) {
+          if (key.startsWith(`${sessionId}:`)) {
+            notifiedApprovalsRef.current.delete(key);
+          }
+        }
+      }
+      await bulkDeleteSessions(sessionIds);
+    },
+    [bulkDeleteSessions, sessionStreamOrchestrator],
+  );
+
   useEffect(() => {
     if (!isTauri() || document.hasFocus()) return;
 
@@ -459,17 +516,27 @@ export default function App() {
 
   if (shouldPauseRuntime) {
     return (
-      <ReadinessOverlay
-        checking={isCheckingRuntime}
-        readiness={runtimeReadiness}
-        error={runtimeCheckError}
-        onRetry={runRuntimeReadinessCheck}
-        onContinue={() => {
-          setRuntimeCheckError(null);
-          setHasAcknowledgedRuntime(true);
-        }}
-        onOpenDownload={() => void openKimiCodeWebsite()}
-      />
+      <>
+        {!showSettings && (
+          <ReadinessOverlay
+            checking={isCheckingRuntime}
+            readiness={runtimeReadiness}
+            error={runtimeCheckError}
+            onRetry={runRuntimeReadinessCheck}
+            onContinue={() => {
+              setRuntimeCheckError(null);
+              setHasAcknowledgedRuntime(true);
+            }}
+            onOpenDownload={() => void openKimiCodeWebsite()}
+            onOpenSettings={() => openSettings("config")}
+          />
+        )}
+        <SettingsDialog
+          open={showSettings}
+          onOpenChange={handleSettingsOpenChange}
+          initialTab={settingsInitialTab}
+        />
+      </>
     );
   }
 
@@ -489,7 +556,7 @@ export default function App() {
             searchQuery={searchQuery}
             onSearchQueryChange={setSearchQuery}
             onSelect={selectSession}
-            onDelete={(id) => void deleteSession(id)}
+            onDelete={handleDeleteSession}
             onRename={(id, title) => void renameSession(id, title)}
             onArchive={(id) => void archiveSession(id)}
             onUnarchive={(id) => void unarchiveSession(id)}
@@ -499,9 +566,7 @@ export default function App() {
             onBulkUnarchive={async (ids) => {
               await bulkUnarchiveSessions(ids);
             }}
-            onBulkDelete={async (ids) => {
-              await bulkDeleteSessions(ids);
-            }}
+            onBulkDelete={handleBulkDeleteSessions}
             onArchiveOlderThan={async (days) => {
               await archiveSessionsOlderThan(days);
             }}
@@ -529,6 +594,7 @@ export default function App() {
             shortId={selectedSessionId ? selectedSessionId.slice(0, 6) : undefined}
             sessionId={selectedSessionId || undefined}
             workDir={currentSession?.workDir}
+            messages={stream.messages}
             panelOpen={panelOpen}
             onTogglePanel={() => setPanelOpen((v) => !v)}
             onOpenSettings={() => openSettings()}
@@ -537,6 +603,8 @@ export default function App() {
         panel={
           <ChangesPanel
             sessionId={selectedSessionId}
+            workDir={currentSession?.workDir}
+            runtimeSlashCommands={stream.slashCommands}
             activeTab={workspaceTab}
             onTabChange={setWorkspaceTab}
             changes={changes}

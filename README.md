@@ -16,6 +16,8 @@
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-111111" />
 </p>
 
+开发与提交约定见 [结构与开发规范](.github/DEVELOPMENT.md)。
+
 Kimi Code Desktop 将 Kimi Code 的终端智能体能力带进一个专注、可视、可管理的桌面界面。它不是另一套 AI 运行时：会话、模型、工具调用与智能体能力仍由用户安装的 Kimi Code CLI 提供，桌面端通过 ACP（`kimi acp`）连接，并负责交互、工作区呈现与 Windows 集成。
 
 > 当前源码版本为 `1.0.0`，面向 Windows。

@@ -1,0 +1,15 @@
+{
+  "sessionUpdate": "tool_call_update",
+  "toolCallId": "turn-3:task-output-9",
+  "title": "TaskOutput",
+  "status": "completed",
+  "content": [
+    {
+      "type": "content",
+      "content": {
+        "type": "text",
+        "text": "Task completed successfully.\n\nResult summary: lint passed, 0 issues."
+      }
+    }
+  ]
+}

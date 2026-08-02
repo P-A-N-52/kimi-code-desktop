@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GoalStartConfirmationResult, UseSessionStreamReturn } from "@/hooks/useSessionStream";
+import { emptySessionConfigState } from "@/lib/session-config-state";
 import { useToolEventsStore } from "@/lib/tool-events/store";
 import type { SessionModeDraft } from "@/modules/statusbar/permission-mode";
 import { ConversationView } from "./conversation-view";
@@ -23,6 +24,18 @@ const tauriApi = vi.hoisted(() => {
       async (_sessionId: string, _goalId: string, _direction: "up" | "down") => emptySnapshot(),
     ),
     removeSessionGoalQueue: vi.fn(async (_sessionId: string, _goalId: string) => emptySnapshot()),
+    getAgentRuntimeCapabilities: vi.fn(async () => ({
+      loadSession: false,
+      promptImage: false,
+      promptAudio: false,
+      promptEmbeddedContext: false,
+      mcpHttp: false,
+      mcpSse: false,
+      sessionList: false,
+      sessionResume: false,
+      sessionConfigOptions: false,
+      authMethods: [],
+    })),
     updateSessionGoalQueue: vi.fn(async (_sessionId: string, _goalId: string, _objective: string) =>
       emptySnapshot(),
     ),
@@ -128,6 +141,9 @@ function makeStream(
     goalMode: true,
     sendSetGoalMode: vi.fn(() => true),
     slashCommands: [],
+    sessionConfigState: emptySessionConfigState("test-session"),
+    sessionConfigUpdating: false,
+    sendSetConfigOption: vi.fn(async () => true),
     ...overrides,
   };
 }

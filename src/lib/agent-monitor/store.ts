@@ -31,6 +31,10 @@ export interface AgentTask {
   suspendedReason?: string;
   swarmIndex?: number;
   runInBackground?: boolean;
+  /** Bound model alias when runtime events provide it. */
+  boundModel?: string;
+  /** primary | secondary when runtime events provide model preference. */
+  modelPreference?: string;
 }
 
 export type AgentTaskCounts = Record<AgentTaskStatus, number>;
