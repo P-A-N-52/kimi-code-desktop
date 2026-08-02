@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { UI_LANGUAGE_STORAGE_KEY, UiLanguageProvider } from "@/lib/i18n";
 import App from "./app";
 
 const mocks = vi.hoisted(() => {
@@ -182,13 +183,21 @@ function installSessionMocks() {
 describe("App runtime readiness", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, "zh-CN");
 		mocks.isTauri.mockReturnValue(true);
 		mocks.checkRuntimeReadiness.mockResolvedValue(createRuntimeReadiness());
 		installSessionMocks();
 	});
 
+	const renderApp = () =>
+		render(
+			<UiLanguageProvider>
+				<App />
+			</UiLanguageProvider>,
+		);
+
 	it("opens the config settings tab without enabling session list or creation", async () => {
-		render(<App />);
+		renderApp();
 
 		await waitFor(() => {
 			expect(mocks.checkRuntimeReadiness).toHaveBeenCalledOnce();
@@ -209,7 +218,7 @@ describe("App runtime readiness", () => {
 			.mockResolvedValueOnce(createReadyRuntimeReadiness())
 			.mockResolvedValueOnce(createRuntimeReadiness());
 
-		render(<App />);
+		renderApp();
 
 		await waitFor(() => {
 			expect(mocks.checkRuntimeReadiness).toHaveBeenCalledOnce();
