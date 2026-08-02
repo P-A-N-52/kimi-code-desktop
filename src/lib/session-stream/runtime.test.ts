@@ -255,4 +255,73 @@ describe("createSessionRuntime", () => {
     expect(runtime.getSnapshot().messages).toEqual([]);
     expect(runtime.getSnapshot()).toBe(before);
   });
+
+  it("retries the initial wire connect once before surfacing the error", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.wireConnect
+        .mockRejectedValueOnce(new Error("acp still initializing"))
+        .mockResolvedValueOnce(undefined);
+      const runtime = createSessionRuntime({ sessionId: "session-1", autoConnect: true });
+
+      runtime.start();
+      await flushPromises();
+      expect(mocks.wireConnect).toHaveBeenCalledTimes(1);
+
+      // The first failure must not surface as an error; it schedules a retry.
+      expect(runtime.getSnapshot().error).toBeNull();
+
+      vi.advanceTimersByTime(1500);
+      await flushPromises();
+      await flushPromises();
+      expect(mocks.wireConnect).toHaveBeenCalledTimes(2);
+
+      // Settle the retried connection: answer the replay request.
+      const sentMessages = mocks.wireSend.mock.calls.map(([, rawMessage]) =>
+        JSON.parse(rawMessage),
+      );
+      const replay = sentMessages.find((message) => message.method === "replay");
+      expect(replay).toBeDefined();
+      wireMessageHandler?.(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: replay?.id,
+          result: { status: "finished" },
+        }),
+      );
+      await flushPromises();
+
+      const snapshot = runtime.getSnapshot();
+      expect(snapshot.isConnected).toBe(true);
+      expect(snapshot.connectionPhase).toBe("connected");
+      expect(snapshot.error).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("surfaces the connect error when the retry also fails", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.wireConnect.mockRejectedValue(new Error("acp unavailable"));
+      const runtime = createSessionRuntime({ sessionId: "session-1", autoConnect: true });
+
+      runtime.start();
+      await flushPromises();
+      expect(mocks.wireConnect).toHaveBeenCalledTimes(1);
+      expect(runtime.getSnapshot().error).toBeNull();
+
+      vi.advanceTimersByTime(1500);
+      await flushPromises();
+      await flushPromises();
+      expect(mocks.wireConnect).toHaveBeenCalledTimes(2);
+
+      const snapshot = runtime.getSnapshot();
+      expect(snapshot.error).not.toBeNull();
+      expect(snapshot.connectionPhase).toBe("disconnected");
+      expect(snapshot.isConnected).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

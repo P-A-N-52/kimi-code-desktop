@@ -851,6 +851,9 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
   const replayIdRef: { current: string | null } = { current: null };
   const initializeRetryCountRef: { current: number } = { current: 0 }; // Track retry attempts for initialize
   const MAX_INITIALIZE_RETRIES = 5; // Maximum retry attempts
+  const connectRetryCountRef: { current: number } = { current: 0 }; // Retry attempts for the initial Tauri wire connect
+  const MAX_TAURI_CONNECT_RETRIES = 1; // One automatic retry; kimi acp may still be initializing
+  const TAURI_CONNECT_RETRY_DELAY_MS = 1500; // Delay before the retry
   const usingCachedCommandsRef: { current: boolean } = { current: false }; // Track if using cached slash commands
   const slashCommandsLenRef: { current: number } = { current: 0 }; // Track slashCommands length without state dependency
 
@@ -4601,6 +4604,26 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
         console.error("[SessionStream] Failed to connect Tauri wire:", err);
         const failedPendingMessage = pendingMessageRef.current;
         const connectionError = err instanceof Error ? err : new Error(String(err));
+
+        // The first wire_connect can fire while kimi acp is still starting up
+        // (e.g. waiting on a permission/login confirmation), which fails the
+        // lease. Retry once before surfacing the error so a single-try failure
+        // does not break the first turn; keep the pending message for the retry.
+        if (connectRetryCountRef.current < MAX_TAURI_CONNECT_RETRIES) {
+          connectRetryCountRef.current += 1;
+          pendingMessageRef.current = failedPendingMessage;
+          awaitingIdleRef.current = false;
+          connection.markClosed();
+          wsRef.current = null;
+          window.setTimeout(() => {
+            if (wsRef.current === null) {
+              connect();
+            }
+          }, TAURI_CONNECT_RETRY_DELAY_MS);
+          return;
+        }
+        connectRetryCountRef.current = 0;
+
         setError(connectionError);
         onError?.(connectionError);
         awaitingIdleRef.current = false;
@@ -4662,6 +4685,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
             console.log("[SessionStream] Connected to Tauri wire session:", sessionId);
             setIsConnected(true);
             setConnectionPhase("connected");
+            connectRetryCountRef.current = 0;
             setError(null);
             awaitingIdleRef.current = false;
             lastWsMessageTimeRef.current = Date.now();
