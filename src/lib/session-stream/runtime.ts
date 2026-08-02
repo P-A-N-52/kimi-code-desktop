@@ -2084,6 +2084,173 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
     }
   };
 
+  // Accumulate inner subagent events into a steps array. Recurses into
+  // nested SubagentEvents so subagents spawned by subagents render as
+  // their own nested step group instead of being dropped.
+  const accumulateSubagentSteps = (
+    steps: SubagentStep[],
+    innerType: string,
+    innerPayload: unknown,
+    agentId?: string,
+    subagentType?: string,
+  ) => {
+    switch (innerType) {
+      case "ContentPart": {
+        const cp = innerPayload as {
+          type: string;
+          think?: string;
+          text?: string;
+        };
+        if (cp.type === "think" && cp.think) {
+          const last = steps[steps.length - 1];
+          if (last?.kind === "thinking") {
+            steps[steps.length - 1] = {
+              ...last,
+              text: last.text + cp.think,
+            };
+          } else {
+            steps.push({ kind: "thinking", text: cp.think });
+          }
+        } else if (cp.type === "text" && cp.text) {
+          const last = steps[steps.length - 1];
+          if (last?.kind === "text") {
+            steps[steps.length - 1] = {
+              ...last,
+              text: last.text + cp.text,
+            };
+          } else {
+            steps.push({ kind: "text", text: cp.text });
+          }
+        }
+        break;
+      }
+
+      case "ToolCall": {
+        const tc = innerPayload as {
+          type: string;
+          id: string;
+          function: { name: string; arguments: string };
+        };
+        const initialArgs = tc.function.arguments || "";
+        let parsedInput: unknown;
+        try {
+          parsedInput = JSON.parse(initialArgs || "{}");
+        } catch {
+          // not valid JSON yet
+        }
+        steps.push({
+          kind: "tool-call",
+          toolCallId: tc.id,
+          toolName: tc.function.name,
+          rawArgs: initialArgs,
+          input: parsedInput,
+          status: "running",
+        });
+        break;
+      }
+
+      case "ToolCallPart": {
+        const tcp = innerPayload as { arguments_part: string };
+        // Find the last running tool-call step and append arguments
+        for (let i = steps.length - 1; i >= 0; i--) {
+          const step = steps[i];
+          if (step.kind === "tool-call" && step.status === "running") {
+            const newArgs = (step.rawArgs ?? "") + tcp.arguments_part;
+            let parsedInput: unknown;
+            try {
+              parsedInput = JSON.parse(newArgs);
+            } catch {
+              // not complete JSON yet
+            }
+            steps[i] = {
+              ...step,
+              rawArgs: newArgs,
+              input: parsedInput ?? step.input,
+            };
+            break;
+          }
+        }
+        break;
+      }
+
+      case "ToolResult": {
+        const tr = innerPayload as {
+          tool_call_id: string;
+          return_value: {
+            is_error: boolean;
+            output: Array<{ text?: string }> | string;
+            message: string;
+          };
+        };
+        for (let i = steps.length - 1; i >= 0; i--) {
+          const step = steps[i];
+          if (step.kind === "tool-call" && step.toolCallId === tr.tool_call_id) {
+            const outputStr = Array.isArray(tr.return_value.output)
+              ? tr.return_value.output
+                  .map((p) => p.text ?? "")
+                  .filter(Boolean)
+                  .join("\n")
+              : tr.return_value.output;
+            steps[i] = {
+              ...step,
+              status: tr.return_value.is_error ? "error" : "success",
+              output: outputStr || undefined,
+              errorText: tr.return_value.is_error
+                ? tr.return_value.message || undefined
+                : undefined,
+            };
+            break;
+          }
+        }
+        break;
+      }
+
+      case "StepRetry": {
+        const retainedSteps = discardSubagentRetryAttempt(steps);
+        steps.length = 0;
+        steps.push(...retainedSteps);
+        break;
+      }
+
+      case "SubagentEvent": {
+        const nestedEvent = innerPayload as SubagentEventWire;
+        const nestedPayload = nestedEvent.payload;
+        const nestedAgentId = nestedPayload.agent_id ?? undefined;
+        const nestedToolCallId = nestedPayload.parent_tool_call_id ?? undefined;
+
+        const nestedIdx = steps.findIndex(
+          (step) => step.kind === "subagent" && step.agentId === (nestedAgentId ?? ""),
+        );
+        const existingNested =
+          nestedIdx >= 0
+            ? (steps[nestedIdx] as Extract<SubagentStep, { kind: "subagent" }>)
+            : undefined;
+        const nestedSteps = existingNested ? [...existingNested.steps] : [];
+        accumulateSubagentSteps(
+          nestedSteps,
+          nestedPayload.event.type,
+          nestedPayload.event.payload,
+          nestedPayload.agent_id ?? undefined,
+          nestedPayload.subagent_type ?? subagentType,
+        );
+        const nestedStep: Extract<SubagentStep, { kind: "subagent" }> = {
+          kind: "subagent",
+          agentId: nestedAgentId ?? nestedToolCallId ?? agentId ?? "",
+          agentType: existingNested?.agentType ?? nestedPayload.subagent_type ?? subagentType,
+          status: existingNested?.status ?? "running",
+          steps: nestedSteps,
+        };
+        if (nestedIdx >= 0) steps[nestedIdx] = nestedStep;
+        else steps.push(nestedStep);
+        break;
+      }
+
+      default:
+        // Ignore StepBegin, TurnBegin, TurnEnd, StatusUpdate, etc.
+        break;
+    }
+  };
+
   // Process a SubagentEvent: accumulate inner events into parent Agent tool's subagentSteps
   const processSubagentEvent = (
     parentToolCallId: string,
@@ -2092,6 +2259,21 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
     agentId?: string,
     subagentType?: string,
   ) => {
+    // Nested SubagentEvents: keep the agent-monitor hierarchy intact by
+    // recursing the sync with the inner event's own parent link.
+    if (innerType === "SubagentEvent") {
+      const nestedEvent = innerPayload as SubagentEventWire;
+      const nestedPayload = nestedEvent.payload;
+      syncAgentMonitorFromSubagentEvent(
+        nestedPayload.parent_tool_call_id ?? parentToolCallId,
+        nestedPayload.event.type,
+        nestedPayload.event.payload,
+        nestedPayload.agent_id ?? undefined,
+        nestedPayload.subagent_type ?? subagentType,
+        sessionId ?? undefined,
+      );
+    }
+
     syncAgentMonitorFromSubagentEvent(
       parentToolCallId,
       innerType,
@@ -2109,135 +2291,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
       const parentMsg = prev[parentIdx];
       const steps: SubagentStep[] = [...(parentMsg.toolCall?.subagentSteps ?? [])];
 
-      switch (innerType) {
-        case "ContentPart": {
-          const cp = innerPayload as {
-            type: string;
-            think?: string;
-            text?: string;
-          };
-          if (cp.type === "think" && cp.think) {
-            const last = steps[steps.length - 1];
-            if (last?.kind === "thinking") {
-              steps[steps.length - 1] = {
-                ...last,
-                text: last.text + cp.think,
-              };
-            } else {
-              steps.push({ kind: "thinking", text: cp.think });
-            }
-          } else if (cp.type === "text" && cp.text) {
-            const last = steps[steps.length - 1];
-            if (last?.kind === "text") {
-              steps[steps.length - 1] = {
-                ...last,
-                text: last.text + cp.text,
-              };
-            } else {
-              steps.push({ kind: "text", text: cp.text });
-            }
-          }
-          break;
-        }
-
-        case "ToolCall": {
-          const tc = innerPayload as {
-            type: string;
-            id: string;
-            function: { name: string; arguments: string };
-          };
-          const initialArgs = tc.function.arguments || "";
-          let parsedInput: unknown;
-          try {
-            parsedInput = JSON.parse(initialArgs || "{}");
-          } catch {
-            // not valid JSON yet
-          }
-          steps.push({
-            kind: "tool-call",
-            toolCallId: tc.id,
-            toolName: tc.function.name,
-            rawArgs: initialArgs,
-            input: parsedInput,
-            status: "running",
-          });
-          break;
-        }
-
-        case "ToolCallPart": {
-          const tcp = innerPayload as { arguments_part: string };
-          // Find the last running tool-call step and append arguments
-          for (let i = steps.length - 1; i >= 0; i--) {
-            const step = steps[i];
-            if (step.kind === "tool-call" && step.status === "running") {
-              const newArgs = (step.rawArgs ?? "") + tcp.arguments_part;
-              let parsedInput: unknown;
-              try {
-                parsedInput = JSON.parse(newArgs);
-              } catch {
-                // not complete JSON yet
-              }
-              steps[i] = {
-                ...step,
-                rawArgs: newArgs,
-                input: parsedInput ?? step.input,
-              };
-              break;
-            }
-          }
-          break;
-        }
-
-        case "ToolResult": {
-          const tr = innerPayload as {
-            tool_call_id: string;
-            return_value: {
-              is_error: boolean;
-              output: Array<{ text?: string }> | string;
-              message: string;
-            };
-          };
-          for (let i = steps.length - 1; i >= 0; i--) {
-            const step = steps[i];
-            if (step.kind === "tool-call" && step.toolCallId === tr.tool_call_id) {
-              const outputStr = Array.isArray(tr.return_value.output)
-                ? tr.return_value.output
-                    .map((p) => p.text ?? "")
-                    .filter(Boolean)
-                    .join("\n")
-                : tr.return_value.output;
-              steps[i] = {
-                ...step,
-                status: tr.return_value.is_error ? "error" : "success",
-                output: outputStr || undefined,
-                errorText: tr.return_value.is_error
-                  ? tr.return_value.message || undefined
-                  : undefined,
-              };
-              break;
-            }
-          }
-          break;
-        }
-
-        case "StepRetry": {
-          const retainedSteps = discardSubagentRetryAttempt(steps);
-          steps.length = 0;
-          steps.push(...retainedSteps);
-          break;
-        }
-
-        case "SubagentEvent": {
-          // Nested subagent — deep nesting is rare in practice.
-          // For now we skip nested SubagentEvents; the parent subagent's
-          // direct tool calls/text/thinking are already captured.
-          break;
-        }
-
-        default:
-          // Ignore StepBegin, TurnBegin, TurnEnd, StatusUpdate, etc.
-          break;
-      }
+      accumulateSubagentSteps(steps, innerType, innerPayload, agentId, subagentType);
 
       const next = [...prev];
       next[parentIdx] = {

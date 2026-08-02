@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { SubagentStep } from "@/hooks/types";
+import { useAgentMonitorStore } from "@/lib/agent-monitor/store";
 import { createSessionRuntime } from "./runtime";
 
 let wireMessageHandler: ((message: string) => void) | null = null;
@@ -298,6 +300,82 @@ describe("createSessionRuntime", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("accumulates nested subagent events into a nested step group", async () => {
+    const runtime = createSessionRuntime({ sessionId: "session-1" });
+
+    // Parent Agent tool call message in the stream.
+    runtime.handleWireMessage(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: {
+          type: "ToolCall",
+          payload: { id: "tool-1", function: { name: "Agent", arguments: "{}" } },
+        },
+      }),
+    );
+
+    // Outer subagent emits its own text.
+    runtime.handleWireMessage(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: {
+          type: "SubagentEvent",
+          payload: {
+            parent_tool_call_id: "tool-1",
+            agent_id: "agent-a1",
+            subagent_type: "code",
+            event: { type: "ContentPart", payload: { type: "text", text: "outer text" } },
+          },
+        },
+      }),
+    );
+
+    // Nested subagent (spawned by the subagent) emits its own text.
+    runtime.handleWireMessage(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: {
+          type: "SubagentEvent",
+          payload: {
+            parent_tool_call_id: "tool-1",
+            agent_id: "agent-a1",
+            subagent_type: "code",
+            event: {
+              type: "SubagentEvent",
+              payload: {
+                parent_tool_call_id: "tool-1",
+                agent_id: "agent-a2",
+                subagent_type: "architect",
+                event: { type: "ContentPart", payload: { type: "text", text: "nested text" } },
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    const messages = runtime.getSnapshot().messages;
+    const toolMsg = messages.find((msg) => msg.toolCall?.toolCallId === "tool-1");
+    expect(toolMsg).toBeDefined();
+    const steps = toolMsg?.toolCall?.subagentSteps ?? [];
+    expect(steps.some((step) => step.kind === "text" && step.text === "outer text")).toBe(true);
+    const nested = steps.find(
+      (step) => step.kind === "subagent",
+    ) as Extract<SubagentStep, { kind: "subagent" }> | undefined;
+    expect(nested).toBeDefined();
+    expect(nested?.agentId).toBe("agent-a2");
+    expect(nested?.steps.some((step) => step.kind === "text" && step.text === "nested text")).toBe(
+      true,
+    );
+
+    // The nested subagent is also tracked in the agent-monitor store.
+    const tracked = useAgentMonitorStore.getState().tasks;
+    expect(tracked.some((task) => task.id === "agent-a2")).toBe(true);
   });
 
   it("surfaces the connect error when the retry also fails", async () => {

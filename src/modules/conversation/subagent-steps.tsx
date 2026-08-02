@@ -19,6 +19,10 @@ function latestStepPreview(steps?: SubagentStep[]): string {
         step.status === "success" ? "完成" : step.status === "error" ? "失败" : "调用";
       return `${verb} ${step.toolName}`;
     }
+    if (step.kind === "subagent") {
+      const nested = latestStepPreview(step.steps);
+      if (nested) return `${titleCase(step.agentType)} · ${nested}`;
+    }
     if (step.kind === "text" || step.kind === "thinking") {
       const text = step.text.trim();
       if (text) return text.length > 72 ? `${text.slice(0, 72)}…` : text;
@@ -33,6 +37,29 @@ function Step({ step }: { step: SubagentStep }) {
   }
   if (step.kind === "text") {
     return <div className="line-clamp-4 text-muted">{step.text}</div>;
+  }
+  if (step.kind === "subagent") {
+    const done = step.status === "success" || step.status === "error";
+    return (
+      <div className="rounded-r1 border border-line/70 bg-elevated/50 px-2 py-1.5">
+        <div className="flex items-center gap-1.5 font-mono text-[10.5px] text-foreground">
+          <StatusDot status={done ? (step.status === "error" ? "error" : "ok") : "running"} />
+          <span>{titleCase(step.agentType)}</span>
+          <span className="ml-auto text-faint">
+            {step.status === "success"
+              ? "完成"
+              : step.status === "error"
+                ? "失败"
+                : step.status === "cancelled"
+                  ? "已取消"
+                  : "运行中"}
+          </span>
+        </div>
+        {step.steps.length > 0 && (
+          <SubagentSteps steps={step.steps} running={!done} agentType={step.agentType} compact />
+        )}
+      </div>
+    );
   }
   return (
     <div className="rounded-r1 border border-line bg-background px-2 py-1.5">
