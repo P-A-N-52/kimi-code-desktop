@@ -1,5 +1,6 @@
 //! Translate between Kimi Code ACP JSON-RPC and the legacy desktop wire stream.
 
+use crate::acp_capabilities::{config_option_update_to_wire_payload, SessionConfigState};
 use serde_json::{json, Value};
 use std::path::{Component, Path, PathBuf};
 
@@ -384,7 +385,7 @@ pub fn translate_session_update(session_id: &str, update: &Value) -> Vec<String>
                 }),
             )]
         }
-        "tool_call_update" => translate_tool_call_update(update),
+        "tool_call_update" => translate_tool_call_update(session_id, update),
         "plan" => {
             let entries = update
                 .get("entries")
@@ -470,8 +471,25 @@ pub fn translate_session_update(session_id: &str, update: &Value) -> Vec<String>
             translate_subagent_lifecycle(session_id, "cancelled", update)
         }
         "available_commands_update" => translate_available_commands_update(update),
+        "config_option_update" => translate_config_option_update(session_id, update),
         _ => Vec::new(),
     }
+}
+
+fn translate_config_option_update(session_id: &str, update: &Value) -> Vec<String> {
+    let state = crate::acp_capabilities::apply_config_option_update(session_id, update);
+    vec![wire_event_message(
+        "ConfigOptionUpdate",
+        config_option_update_to_wire_payload(session_id, &state),
+    )]
+}
+
+/// Build a wire event from an already-normalized session config snapshot (replay path).
+pub fn translate_session_config_snapshot(session_id: &str, state: &SessionConfigState) -> String {
+    wire_event_message(
+        "ConfigOptionUpdate",
+        config_option_update_to_wire_payload(session_id, state),
+    )
 }
 
 fn translate_available_commands_update(update: &Value) -> Vec<String> {
@@ -497,6 +515,7 @@ fn translate_available_commands_update(update: &Value) -> Vec<String> {
                     "description": "",
                     "aliases": [],
                     "input_hint": Value::Null,
+                    "source": infer_slash_command_source(name),
                 });
             }
 
@@ -540,6 +559,7 @@ fn translate_available_commands_update(update: &Value) -> Vec<String> {
                 "description": description,
                 "aliases": aliases,
                 "input_hint": input_hint,
+                "source": infer_slash_command_source(&name),
             })
         })
         .collect::<Vec<_>>();
@@ -548,6 +568,25 @@ fn translate_available_commands_update(update: &Value) -> Vec<String> {
         "SlashCommandsUpdate",
         json!({ "slash_commands": slash_commands }),
     )]
+}
+
+fn infer_slash_command_source(name: &str) -> Value {
+    if name.starts_with("skill:") {
+        return json!("runtime:skill");
+    }
+    if let Some((prefix, _)) = name.split_once(':') {
+        if !prefix.is_empty()
+            && prefix
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return json!(format!("runtime:plugin:{prefix}"));
+        }
+    }
+    if name.contains('.') {
+        return json!("runtime:plugin");
+    }
+    json!("runtime")
 }
 
 fn canonical_agent_tool_name<'a>(title: &'a str, raw_input: &Value) -> Option<&'a str> {
@@ -661,6 +700,8 @@ fn normalize_task(session_id: &str, outer: &Value, raw: &Value) -> Option<Value>
         "suspended_reason": cloned_for_keys(raw, &["suspended_reason", "suspendedReason", "reason"]),
         "swarm_index": cloned_for_keys(raw, &["swarm_index", "swarmIndex"]),
         "run_in_background": cloned_for_keys(raw, &["run_in_background", "runInBackground"]),
+        "bound_model": cloned_for_keys(raw, &["bound_model", "boundModel", "model_alias", "modelAlias", "model"]),
+        "model_preference": cloned_for_keys(raw, &["model_preference", "modelPreference"]),
     }))
 }
 
@@ -779,6 +820,8 @@ fn translate_subagent_lifecycle(session_id: &str, phase: &str, update: &Value) -
             "description": description,
             "swarm_index": swarm_index,
             "error": error,
+            "bound_model": cloned_for_keys(payload, &["bound_model", "boundModel", "model_alias", "modelAlias", "model"]),
+            "model_preference": cloned_for_keys(payload, &["model_preference", "modelPreference"]),
         }),
     );
 
@@ -802,6 +845,8 @@ fn translate_subagent_lifecycle(session_id: &str, phase: &str, update: &Value) -
                 "suspended_reason": null,
                 "swarm_index": swarm_index,
                 "run_in_background": cloned_for_keys(payload, &["run_in_background", "runInBackground"]),
+                "bound_model": cloned_for_keys(payload, &["bound_model", "boundModel", "model_alias", "modelAlias", "model"]),
+                "model_preference": cloned_for_keys(payload, &["model_preference", "modelPreference"]),
             });
             vec![
                 wire_event_message(
@@ -885,16 +930,24 @@ fn acp_question_to_legacy_request(question: &Value) -> String {
     wire_request_message("QuestionRequest", payload, json!(id))
 }
 
-fn translate_tool_call_update(update: &Value) -> Vec<String> {
+fn translate_tool_call_update(session_id: &str, update: &Value) -> Vec<String> {
     let status = update.get("status").and_then(Value::as_str).unwrap_or("");
     let tool_call_id = update
         .get("toolCallId")
         .and_then(Value::as_str)
         .unwrap_or("tool-call");
+    let tool_title = update.get("title").and_then(Value::as_str);
+
+    let mut extras = json!({
+        "tool_call_update": true,
+    });
+    if let Some(title) = tool_title {
+        extras["tool_title"] = json!(title);
+    }
 
     if status == "completed" || status == "failed" {
         let message = tool_call_update_message(update);
-        return vec![wire_event_message(
+        let mut messages = vec![wire_event_message(
             "ToolResult",
             json!({
                 "tool_call_id": tool_call_id,
@@ -903,9 +956,16 @@ fn translate_tool_call_update(update: &Value) -> Vec<String> {
                     "output": message,
                     "message": message,
                     "display": tool_call_update_display(update),
+                    "extras": extras,
                 }
             }),
         )];
+        if let Some(observed) =
+            background_task_observation_from_tool_call_update(session_id, update, status, &message)
+        {
+            messages.push(wire_event_message("BackgroundTaskObserved", observed));
+        }
+        return messages;
     }
 
     if status == "in_progress" {
@@ -914,7 +974,8 @@ fn translate_tool_call_update(update: &Value) -> Vec<String> {
         if message.is_empty() && display.is_empty() {
             return Vec::new();
         }
-        return vec![wire_event_message(
+        extras["in_progress"] = json!(true);
+        let mut messages = vec![wire_event_message(
             "ToolResult",
             json!({
                 "tool_call_id": tool_call_id,
@@ -923,13 +984,167 @@ fn translate_tool_call_update(update: &Value) -> Vec<String> {
                     "output": message,
                     "message": message,
                     "display": display,
-                    "extras": { "in_progress": true },
+                    "extras": extras,
                 }
             }),
         )];
+        if let Some(observed) =
+            background_task_observation_from_tool_call_update(session_id, update, status, &message)
+        {
+            messages.push(wire_event_message("BackgroundTaskObserved", observed));
+        }
+        return messages;
     }
 
     Vec::new()
+}
+
+fn background_task_tool_names() -> &'static [&'static str] {
+    &[
+        "TaskList",
+        "TaskOutput",
+        "TaskStop",
+        "CronCreate",
+        "CronList",
+        "CronDelete",
+    ]
+}
+
+fn is_background_task_tool_title(title: &str) -> bool {
+    let normalized = title.trim();
+    background_task_tool_names()
+        .iter()
+        .any(|name| normalized.eq_ignore_ascii_case(name))
+}
+
+fn background_task_terminal_state(status: &str, is_error: bool) -> &'static str {
+    if status == "in_progress" {
+        return "running";
+    }
+    if is_error || status == "failed" {
+        return "failed";
+    }
+    if status == "completed" {
+        return "completed";
+    }
+    "unknown"
+}
+
+fn extract_task_id_from_text(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("task_id") || lower.contains("task id") {
+            if let Some(value) = extract_field_value(line) {
+                return Some(value);
+            }
+        }
+        if lower.contains("output written to") {
+            if let Some(path) = line.split_whitespace().last() {
+                if let Some(stem) = path.rsplit('/').next() {
+                    if let Some(id) = stem.strip_suffix(".txt") {
+                        if !id.is_empty() {
+                            return Some(id.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_output_path_from_text(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.contains("output_path") || lower.contains("output path") {
+            if let Some(value) = extract_field_value(line) {
+                return Some(value);
+            }
+        }
+        if lower.contains("output written to") {
+            if let Some(index) = lower.find("output written to") {
+                let tail = line[index + "output written to".len()..].trim();
+                if !tail.is_empty() {
+                    return Some(tail.to_string());
+                }
+            }
+        }
+        if line.contains(".kimi/tasks/") {
+            if let Some(index) = line.find(".kimi/tasks/") {
+                let tail = line[index..].split_whitespace().next()?.trim();
+                return Some(tail.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn extract_field_value(line: &str) -> Option<String> {
+    let (_, rhs) = line.split_once(':').or_else(|| line.split_once('='))?;
+    let value = rhs.trim().trim_matches('"').trim_matches('\'');
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn parse_cron_fields(text: &str) -> (Option<String>, Option<String>, Option<String>, Option<bool>) {
+    let mut cron_id = None;
+    let mut human_schedule = None;
+    let mut next_fire_at = None;
+    let mut recurring = None;
+    for line in text.lines() {
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("id:") || lower.starts_with("id=") {
+            cron_id = extract_field_value(line);
+        } else if lower.contains("humanschedule") || lower.contains("human schedule") {
+            human_schedule = extract_field_value(line);
+        } else if lower.contains("nextfireat") || lower.contains("next fire") {
+            next_fire_at = extract_field_value(line);
+        } else if lower.contains("recurring") {
+            if let Some(value) = extract_field_value(line) {
+                recurring = Some(value.eq_ignore_ascii_case("true"));
+            }
+        }
+    }
+    (cron_id, human_schedule, next_fire_at, recurring)
+}
+
+fn background_task_observation_from_tool_call_update(
+    session_id: &str,
+    update: &Value,
+    status: &str,
+    message: &str,
+) -> Option<Value> {
+    let title = update.get("title").and_then(Value::as_str)?;
+    if !is_background_task_tool_title(title) {
+        return None;
+    }
+
+    let tool_call_id = update
+        .get("toolCallId")
+        .and_then(Value::as_str)
+        .unwrap_or("tool-call");
+    let is_error = status == "failed";
+    let terminal_state = background_task_terminal_state(status, is_error);
+    let task_id = extract_task_id_from_text(message).or_else(|| Some(tool_call_id.to_string()));
+    let output_path = extract_output_path_from_text(message);
+    let (cron_id, human_schedule, next_fire_at, recurring) = parse_cron_fields(message);
+
+    Some(json!({
+        "session_id": session_id,
+        "tool_call_id": tool_call_id,
+        "tool_name": title,
+        "task_id": task_id,
+        "snapshot": message,
+        "terminal_state": terminal_state,
+        "output_path": output_path,
+        "cron_id": cron_id,
+        "human_schedule": human_schedule,
+        "next_fire_at": next_fire_at,
+        "recurring": recurring,
+    }))
 }
 
 fn tool_call_update_message(update: &Value) -> String {
@@ -1569,7 +1784,9 @@ mod tests {
     fn normalize_workspace_path_rejects_escape() {
         let workspace = std::env::temp_dir().join("kimi-acp-workspace-test");
         std::fs::create_dir_all(&workspace).expect("temp workspace");
-        let err = normalize_workspace_path(r"..\secret.txt", &workspace).unwrap_err();
+        let sep = std::path::MAIN_SEPARATOR;
+        let err =
+            normalize_workspace_path(&format!("..{sep}secret.txt"), &workspace).unwrap_err();
         assert!(err.contains("outside the session workspace"));
         let _ = std::fs::remove_dir_all(&workspace);
     }
@@ -1772,6 +1989,7 @@ mod tests {
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0]["name"], "compact");
         assert_eq!(commands[0]["input_hint"], "optional instruction");
+        assert_eq!(commands[0]["source"], "runtime");
         assert_eq!(commands[1]["name"], "help");
         assert!(commands[1]["input_hint"].is_null());
     }
@@ -1798,7 +2016,9 @@ mod tests {
             .clone();
         assert_eq!(commands.len(), 3);
         assert_eq!(commands[0]["name"], "skill:demo");
+        assert_eq!(commands[0]["source"], "runtime:skill");
         assert_eq!(commands[1]["name"], "plugin.foo");
+        assert_eq!(commands[1]["source"], "runtime:plugin");
         assert_eq!(commands[1]["description"], "From command field");
         assert_eq!(commands[2]["name"], "unknown-2");
         assert_eq!(commands[2]["description"], "missing name");
@@ -1833,5 +2053,62 @@ mod tests {
         assert!(payload["context_usage"].is_null());
         assert_eq!(payload["context_tokens"], 1000);
         assert!(payload["max_context_tokens"].is_null());
+    }
+
+    fn load_acp_fixture(version: &str, name: &str) -> Value {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src/test-fixtures/acp")
+            .join(version)
+            .join(name);
+        let text = std::fs::read_to_string(&path).expect("fixture readable");
+        serde_json::from_str(&text).expect("fixture json")
+    }
+
+    #[test]
+    fn maps_v031_config_option_update_fixture() {
+        let update = load_acp_fixture("v0.31", "config_option_update.notification.json");
+        let messages = translate_session_update("sess-desktop-fixture-031", &update);
+        assert_eq!(messages.len(), 1);
+        let parsed = parse_wire_message(&messages[0]);
+        assert_eq!(parsed["params"]["type"], "ConfigOptionUpdate");
+        assert_eq!(parsed["params"]["payload"]["status"], "known");
+        let options = parsed["params"]["payload"]["options"]
+            .as_array()
+            .expect("options");
+        assert_eq!(options.len(), 3);
+    }
+
+    #[test]
+    fn translate_session_config_snapshot_emits_config_option_update() {
+        let response = load_acp_fixture("v0.31", "session_new.result.json");
+        let state =
+            crate::acp_capabilities::parse_session_config_from_response("sess-031", &response);
+        let message = translate_session_config_snapshot("sess-031", &state);
+        let parsed = parse_wire_message(&message);
+        assert_eq!(parsed["params"]["type"], "ConfigOptionUpdate");
+        assert_eq!(parsed["params"]["payload"]["session_id"], "sess-031");
+    }
+
+    #[test]
+    fn maps_task_output_completed_fixture_to_tool_result() {
+        let update = load_acp_fixture("v0.31", "task_output_completed.notification.json");
+        let messages = translate_session_update("sess-1", &update);
+        assert_eq!(messages.len(), 2);
+        let parsed = parse_wire_message(&messages[0]);
+        assert_eq!(parsed["params"]["type"], "ToolResult");
+        let output = parsed["params"]["payload"]["return_value"]["output"]
+            .as_str()
+            .unwrap_or("");
+        assert!(output.contains("Task completed"));
+        let observed = parse_wire_message(&messages[1]);
+        assert_eq!(observed["params"]["type"], "BackgroundTaskObserved");
+        assert_eq!(observed["params"]["payload"]["tool_name"], "TaskOutput");
+        assert_eq!(observed["params"]["payload"]["terminal_state"], "completed");
+    }
+
+    #[test]
+    fn unknown_session_update_fixture_emits_nothing() {
+        let update = load_acp_fixture("v0.31", "unknown_session_update.notification.json");
+        assert!(translate_session_update("sess-1", &update).is_empty());
     }
 }

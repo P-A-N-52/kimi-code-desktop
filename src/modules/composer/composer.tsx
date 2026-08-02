@@ -71,6 +71,7 @@ type ComposerProps = {
   thinkingEffort: string;
   modelControlsDisabled?: boolean;
   modelUpdating?: boolean;
+  thinkingControlsVisible?: boolean;
   onSelectModel: (name: string) => void;
   onToggleThinking: (enabled: boolean) => void;
   onSelectThinkingEffort: (effort: string) => void;
@@ -100,6 +101,7 @@ export function Composer({
   thinkingEffort,
   modelControlsDisabled = false,
   modelUpdating = false,
+  thinkingControlsVisible,
   onSelectModel,
   onToggleThinking,
   onSelectThinkingEffort,
@@ -608,6 +610,7 @@ export function Composer({
             thinkingEffort={thinkingEffort}
             disabled={modelControlsDisabled || sendDisabled}
             updating={modelUpdating}
+            thinkingControlsVisible={thinkingControlsVisible}
             onSelectModel={onSelectModel}
             onToggleThinking={onToggleThinking}
             onSelectThinkingEffort={onSelectThinkingEffort}

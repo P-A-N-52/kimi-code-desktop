@@ -1,6 +1,7 @@
-import { Check, Download, RefreshCw, TriangleAlert } from "lucide-react";
+import { Check, Download, RefreshCw, Settings, TriangleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { RuntimeReadiness } from "@/lib/tauri-api";
+import { isRuntimeConfigIncomplete } from "@/lib/runtime-readiness";
 import { cn } from "@/lib/utils";
 import { Button } from "@/ui/button";
 
@@ -13,6 +14,7 @@ export function ReadinessOverlay({
 	onRetry,
 	onContinue,
 	onOpenDownload,
+	onOpenSettings,
 }: {
 	checking: boolean;
 	readiness: RuntimeReadiness | null;
@@ -20,8 +22,10 @@ export function ReadinessOverlay({
 	onRetry: () => void;
 	onContinue: () => void;
 	onOpenDownload: () => void;
+	onOpenSettings: () => void;
 }) {
 	const [showSlowHint, setShowSlowHint] = useState(false);
+	const configIncomplete = isRuntimeConfigIncomplete(readiness);
 
 	useEffect(() => {
 		if (!checking) {
@@ -102,26 +106,64 @@ export function ReadinessOverlay({
 								</div>
 							))}
 						</div>
-						{readiness.issues.length > 0 && (
-							<p className="text-center text-[12px] text-danger">
-								{readiness.issues[0]}
-							</p>
+						{configIncomplete ? (
+							<>
+								<div className="flex flex-col gap-1.5 text-center">
+									<p className="text-[12px] font-medium text-danger">需要完成 Kimi Code 配置</p>
+									<p className="text-[11px] text-muted">
+										{readiness.config.error
+											? "配置文件无法读取或解析。请在设置的 Providers 中修正配置后重试。"
+											: !readiness.config.exists
+												? "尚未找到配置文件。请在设置的 Providers 中添加 Provider、模型和凭据来源。"
+												: "配置尚未完成。请在设置的 Providers 中完成 Provider、模型和凭据来源。"}
+									</p>
+									{readiness.config.error && (
+										<p className="font-mono text-[10.5px] text-danger">
+											{readiness.config.error}
+										</p>
+									)}
+								</div>
+								<div className="flex gap-2">
+									<Button variant="primary" onClick={onOpenSettings}>
+										<Settings size={12} strokeWidth={1.5} />
+										打开配置设置
+									</Button>
+									{!readiness.externalCli.available && (
+										<Button variant="ghost" onClick={onOpenDownload}>
+											<Download size={12} strokeWidth={1.5} />
+											前往下载
+										</Button>
+									)}
+									<Button variant="ghost" onClick={onRetry}>
+										<RefreshCw size={12} strokeWidth={1.5} />
+										重试
+									</Button>
+								</div>
+							</>
+						) : (
+							<>
+								{readiness.issues.length > 0 && (
+									<p className="text-center text-[12px] text-danger">
+										{readiness.issues[0]}
+									</p>
+								)}
+								<div className="flex gap-2">
+									{!readiness.externalCli.available && (
+										<Button variant="primary" onClick={onOpenDownload}>
+											<Download size={12} strokeWidth={1.5} />
+											前往下载
+										</Button>
+									)}
+									<Button variant="ghost" onClick={onRetry}>
+										<RefreshCw size={12} strokeWidth={1.5} />
+										重试
+									</Button>
+									<Button variant="ghost" onClick={onContinue}>
+										仍要继续
+									</Button>
+								</div>
+							</>
 						)}
-						<div className="flex gap-2">
-							{!readiness.externalCli.available && (
-								<Button variant="primary" onClick={onOpenDownload}>
-									<Download size={12} strokeWidth={1.5} />
-									前往下载
-								</Button>
-							)}
-							<Button variant="ghost" onClick={onRetry}>
-								<RefreshCw size={12} strokeWidth={1.5} />
-								重试
-							</Button>
-							<Button variant="ghost" onClick={onContinue}>
-								仍要继续
-							</Button>
-						</div>
 					</>
 				) : null}
 			</div>

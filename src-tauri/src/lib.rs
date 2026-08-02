@@ -1,4 +1,5 @@
 pub mod acp;
+pub mod acp_capabilities;
 pub mod acp_desktop;
 pub mod acp_translate;
 pub mod commands;
@@ -11,10 +12,12 @@ pub mod mcp_config;
 pub mod native_menu;
 pub mod notify;
 pub mod oauth_login;
+pub mod provider_config;
 pub mod runtime_backend;
 pub mod runtime_check;
 pub mod security;
 pub mod session_files;
+pub mod session_influence;
 pub mod session_store;
 pub mod skills;
 #[cfg(test)]
@@ -29,16 +32,23 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     runtime_check::configure_macos_cli_path();
 
-    let app = tauri::Builder::default()
-        // Register this first so a second launch is intercepted before any
-        // other plugin or application state is initialized.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    // `builder` is only reassigned on Windows, where single-instance applies.
+    #[cfg_attr(not(target_os = "windows"), allow(unused_mut))]
+    let mut builder = tauri::Builder::default();
+    // Register this first so a second launch is intercepted before any
+    // other plugin or application state is initialized.
+    // single-instance is Windows-only; other platforms build without it.
+    #[cfg(target_os = "windows")]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
             }
-        }))
+        }));
+    }
+    let app = builder
         .plugin(tauri_plugin_notification::init())
         .manage(acp::AcpProcessManager::new())
         .manage(acp_desktop::AcpDesktopClient::new())
@@ -47,6 +57,7 @@ pub fn run() {
             commands::wire_disconnect,
             commands::wire_send,
             commands::wire_status,
+            commands::wire_list_workers,
             commands::list_sessions,
             commands::get_session,
             commands::replay_session_history,
@@ -77,10 +88,13 @@ pub fn run() {
             commands::list_work_dirs,
             commands::get_startup_dir,
             commands::list_available_skills,
+            commands::get_session_influence_snapshot,
             commands::pick_files,
             commands::pick_folder,
+            commands::save_text_file_dialog,
             commands::get_global_config,
             commands::get_config_toml,
+            commands::get_providers_overview,
             commands::update_config_toml,
             commands::get_mcp_config,
             commands::update_mcp_config,
@@ -90,6 +104,8 @@ pub fn run() {
             commands::hide_window,
             commands::get_app_version,
             commands::get_kimi_cli_version,
+            commands::get_agent_runtime_capabilities,
+            commands::get_session_config_state,
             commands::check_runtime_readiness,
             commands::open_kimi_login,
             commands::start_kimi_login,

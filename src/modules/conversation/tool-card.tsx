@@ -13,12 +13,13 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import type { LiveMessage } from "@/hooks/types";
-import { getToolPresentation, type ToolPresentation } from "@/lib/tool-events/tool-registry";
+import { getToolPresentation, isBackgroundOrCronObservationTool, type ToolPresentation } from "@/lib/tool-events/tool-registry";
 import { cn } from "@/lib/utils";
 import { isAskUserToolCall } from "@/modules/statusbar/permission-mode";
 import { Expandable } from "@/ui/expandable";
 import { StatusDot } from "@/ui/status-dot";
 import { AgentToolCard } from "./agent-tool-card";
+import { BackgroundTaskToolCard } from "./background-task-tool-card";
 import { Attachments } from "./attachments";
 import { findDiffDisplay } from "./diff-display";
 import { computeDiffLines } from "./diff-view";
@@ -183,6 +184,9 @@ function GenericToolCard({
 
 export function ToolCard({ toolCall, defaultOpen }: { toolCall: ToolCall; defaultOpen?: boolean }) {
   const presentation = getToolPresentation(toolCall.title);
+  if (isBackgroundOrCronObservationTool(presentation.canonicalName)) {
+    return <BackgroundTaskToolCard toolCall={toolCall} defaultOpen={defaultOpen} />;
+  }
   if (looksLikeAgentSwarm(toolCall)) {
     return <SwarmToolCard toolCall={toolCall} />;
   }

@@ -9,6 +9,7 @@ import { SessionFromJSON } from "../lib/api/models/Session";
 import { apiClient } from "../lib/apiClient";
 import { getAuthHeader, getAuthToken } from "../lib/auth";
 import { useI18n } from "../lib/i18n";
+import type { WorkspaceFileEntry } from "../lib/workspace-file-entry";
 import {
 	isTauri,
 	createSession as tauriCreateSession,
@@ -35,11 +36,7 @@ const LEADING_DOT_SLASH_REGEX = /^\.\/+/;
 const LEADING_SLASH_REGEX = /^\/+/;
 const TRAILING_WHITESPACE_REGEX = /\s+$/;
 
-export type SessionFileEntry = {
-	name: string;
-	type: "directory" | "file";
-	size?: number;
-};
+export type SessionFileEntry = WorkspaceFileEntry;
 
 type UseSessionsReturn = {
 	/** List of sessions (API Session type) */
@@ -242,9 +239,10 @@ export function useSessions(
 
 	// Loading and error states
 	const [isLoading, setIsLoading] = useState(false);
-	const [isLoadingMore, setIsLoadingMore] = useState(false);
 	const [isLoadingArchived, setIsLoadingArchived] = useState(false);
-	const [isLoadingMoreArchived, setIsLoadingMoreArchived] = useState(false);
+	// Lists are fully loaded on refresh; keep these fields for sidebar API compatibility.
+	const isLoadingMore = false;
+	const isLoadingMoreArchived = false;
 	const [error, setError] = useState<string | null>(null);
 
 	const [hasMoreSessions, setHasMoreSessions] = useState(false);
@@ -429,7 +427,7 @@ export function useSessions(
 				if (document.visibilityState !== "visible") {
 					return;
 				}
-				if (isLoading || isLoadingMore) {
+				if (isLoading) {
 					return;
 				}
 				refreshSessions();
@@ -437,7 +435,7 @@ export function useSessions(
 			isTauri() ? TAURI_AUTO_REFRESH_MS : AUTO_REFRESH_MS,
 		);
 		return () => window.clearInterval(interval);
-	}, [enabled, isLoading, isLoadingMore, refreshSessions, searchQuery]);
+	}, [enabled, isLoading, refreshSessions, searchQuery]);
 
 	/**
 	 * Refresh a single session's data from API

@@ -1,6 +1,6 @@
 use crate::acp::{resolve_acp_command_validated, validate_kimi_acp_command};
 use serde::Serialize;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -108,10 +108,20 @@ pub async fn check_runtime_readiness(_app: &AppHandle) -> RuntimeReadiness {
     check_kimi_code_runtime_readiness()
 }
 
+fn prepare_kimi_code_config_readiness() -> ConfigReadiness {
+    let config_creation_error = ensure_kimi_code_config_file().err();
+    let mut config = check_kimi_code_config_readiness();
+    if let Some(error) = config_creation_error {
+        config.error = Some(format!("Failed to prepare Kimi Code config.toml: {error}"));
+    }
+    config
+}
+
 fn check_kimi_code_runtime_readiness() -> RuntimeReadiness {
     let mut checks = Vec::new();
     let mut issues = Vec::new();
     let mut warnings = Vec::new();
+    let config = prepare_kimi_code_config_readiness();
 
     let program = match resolve_acp_command_validated() {
         Ok(program) => {
@@ -131,7 +141,8 @@ fn check_kimi_code_runtime_readiness() -> RuntimeReadiness {
                 status: CheckStatus::Error,
                 detail: error,
             });
-            return build_kimi_code_runtime_readiness(checks, issues, warnings, None, None);
+            append_config_readiness(&config, &mut checks, &mut issues);
+            return build_kimi_code_runtime_readiness(checks, issues, warnings, None, None, config);
         }
     };
 
@@ -191,65 +202,7 @@ fn check_kimi_code_runtime_readiness() -> RuntimeReadiness {
         });
     }
 
-    let config = check_kimi_code_config_readiness();
-    match &config {
-        ConfigReadiness {
-            path: Some(path),
-            exists: true,
-            ready: true,
-            ..
-        } => {
-            checks.push(RuntimeReadinessCheck {
-                id: "kimiCodeConfig",
-                label: "Kimi Code config.toml",
-                status: CheckStatus::Ok,
-                detail: format!("Kimi Code config is readable: {path}"),
-            });
-        }
-        ConfigReadiness {
-            path: Some(_path),
-            exists: true,
-            ready: false,
-            error: Some(error),
-            ..
-        } => {
-            issues.push(error.clone());
-            checks.push(RuntimeReadinessCheck {
-                id: "kimiCodeConfig",
-                label: "Kimi Code config.toml",
-                status: CheckStatus::Error,
-                detail: error.clone(),
-            });
-        }
-        ConfigReadiness {
-            path: Some(path),
-            exists: false,
-            ..
-        } => {
-            let detail = format!(
-                "Kimi Code config path resolved but file is not present yet: {path}. Configure a provider or run `kimi migrate` if migrating from legacy."
-            );
-            warnings.push(detail.clone());
-            checks.push(RuntimeReadinessCheck {
-                id: "kimiCodeConfig",
-                label: "Kimi Code config.toml",
-                status: CheckStatus::Warning,
-                detail,
-            });
-        }
-        ConfigReadiness {
-            error: Some(error), ..
-        } => {
-            issues.push(error.clone());
-            checks.push(RuntimeReadinessCheck {
-                id: "kimiCodeConfig",
-                label: "Kimi Code config.toml",
-                status: CheckStatus::Error,
-                detail: error.clone(),
-            });
-        }
-        _ => {}
-    }
+    append_config_readiness(&config, &mut checks, &mut issues);
 
     if let Some(hint) = legacy_migration_hint() {
         warnings.push(hint.clone());
@@ -261,7 +214,75 @@ fn check_kimi_code_runtime_readiness() -> RuntimeReadiness {
         });
     }
 
-    build_kimi_code_runtime_readiness(checks, issues, warnings, Some(program), version)
+    build_kimi_code_runtime_readiness(checks, issues, warnings, Some(program), version, config)
+}
+
+fn append_config_readiness(
+    config: &ConfigReadiness,
+    checks: &mut Vec<RuntimeReadinessCheck>,
+    issues: &mut Vec<String>,
+) {
+    if let Some(error) = config.error.clone() {
+        issues.push(error.clone());
+        checks.push(RuntimeReadinessCheck {
+            id: "kimiCodeConfig",
+            label: "Kimi Code config.toml",
+            status: CheckStatus::Error,
+            detail: error,
+        });
+        return;
+    }
+
+    if config.ready {
+        let detail = config
+            .path
+            .as_deref()
+            .map(|path| format!("Kimi Code config is ready: {path}"))
+            .unwrap_or_else(|| "Kimi Code config is ready.".to_string());
+        checks.push(RuntimeReadinessCheck {
+            id: "kimiCodeConfig",
+            label: "Kimi Code config.toml",
+            status: CheckStatus::Ok,
+            detail,
+        });
+        return;
+    }
+
+    let detail = if !config.exists {
+        "Kimi Code config.toml is missing.".to_string()
+    } else {
+        incomplete_config_detail(config)
+    };
+    issues.push(detail.clone());
+    checks.push(RuntimeReadinessCheck {
+        id: "kimiCodeConfig",
+        label: "Kimi Code config.toml",
+        status: CheckStatus::Error,
+        detail,
+    });
+}
+
+fn incomplete_config_detail(config: &ConfigReadiness) -> String {
+    let mut missing = Vec::new();
+    if !config.has_default_model {
+        missing.push("default_model");
+    }
+    if !config.has_provider_section {
+        missing.push("[providers.*]");
+    }
+    if !config.has_model_section {
+        missing.push("[models.*]");
+    }
+    if !config.has_credential_source {
+        missing.push("credential source");
+    }
+    if missing.is_empty() {
+        missing.push("default model binding");
+    }
+    format!(
+        "Kimi Code config.toml is incomplete: {}.",
+        missing.join(", ")
+    )
 }
 
 fn build_kimi_code_runtime_readiness(
@@ -270,8 +291,8 @@ fn build_kimi_code_runtime_readiness(
     warnings: Vec<String>,
     program: Option<String>,
     version: Option<String>,
+    config: ConfigReadiness,
 ) -> RuntimeReadiness {
-    let config = check_kimi_code_config_readiness();
     let available = program.is_some() && version.is_some();
     let external_error = if program.is_some() && version.is_none() {
         Some("Kimi Code CLI version could not be resolved.".to_string())
@@ -407,6 +428,25 @@ pub fn parse_kimi_code_version_output(output: &str) -> Option<String> {
     parse_version_from_output(output)
 }
 
+pub fn ensure_kimi_code_config_file() -> Result<PathBuf, String> {
+    let path = kimi_code_config_path()?;
+    ensure_config_file_at(&path)?;
+    Ok(path)
+}
+
+fn ensure_config_file_at(path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
+    }
+
+    match OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && path.is_file() => Ok(()),
+        Err(error) => Err(format!("Failed to create {}: {error}", path.display())),
+    }
+}
+
 fn check_kimi_code_config_readiness() -> ConfigReadiness {
     let path = match kimi_code_config_path() {
         Ok(path) => path,
@@ -428,7 +468,7 @@ fn check_kimi_code_config_readiness() -> ConfigReadiness {
     let path_string = path.to_string_lossy().to_string();
     if !path.exists() {
         return ConfigReadiness {
-            path: Some(path_string),
+            path: Some(path_string.clone()),
             exists: false,
             ready: false,
             has_default_model: false,
@@ -452,24 +492,13 @@ fn check_kimi_code_config_readiness() -> ConfigReadiness {
                 has_model_section: false,
                 has_credential_source: false,
                 credential_sources: Vec::new(),
-                error: Some(format!("Failed to read {}: {}", path.display(), error)),
+                error: Some(format!("Failed to read {}: {error}", path.display())),
             };
         }
     };
 
-    match content.parse::<toml::Value>() {
-        Ok(_) => ConfigReadiness {
-            path: Some(path_string),
-            exists: true,
-            ready: true,
-            has_default_model: false,
-            has_provider_section: false,
-            has_model_section: false,
-            has_credential_source: false,
-            credential_sources: Vec::new(),
-            error: None,
-        },
-        Err(error) => ConfigReadiness {
+    if content.trim().is_empty() {
+        return ConfigReadiness {
             path: Some(path_string),
             exists: true,
             ready: false,
@@ -478,9 +507,210 @@ fn check_kimi_code_config_readiness() -> ConfigReadiness {
             has_model_section: false,
             has_credential_source: false,
             credential_sources: Vec::new(),
-            error: Some(format!("Invalid Kimi Code config TOML: {error}")),
-        },
+            error: None,
+        };
     }
+
+    let parsed = match content.parse::<toml::Value>() {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return ConfigReadiness {
+                path: Some(path_string),
+                exists: true,
+                ready: false,
+                has_default_model: false,
+                has_provider_section: false,
+                has_model_section: false,
+                has_credential_source: false,
+                credential_sources: Vec::new(),
+                error: Some(format!("Invalid Kimi Code config TOML: {error}")),
+            };
+        }
+    };
+
+    let Some(root) = parsed.as_table() else {
+        return ConfigReadiness {
+            path: Some(path_string),
+            exists: true,
+            ready: false,
+            has_default_model: false,
+            has_provider_section: false,
+            has_model_section: false,
+            has_credential_source: false,
+            credential_sources: Vec::new(),
+            error: Some("Invalid Kimi Code config TOML: root must be a table.".to_string()),
+        };
+    };
+
+    if root.is_empty() {
+        return ConfigReadiness {
+            path: Some(path_string),
+            exists: true,
+            ready: false,
+            has_default_model: false,
+            has_provider_section: false,
+            has_model_section: false,
+            has_credential_source: false,
+            credential_sources: Vec::new(),
+            error: None,
+        };
+    }
+
+    let default_model = non_empty_toml_string(root.get("default_model"));
+    let providers = root.get("providers").and_then(toml::Value::as_table);
+    let models = root.get("models").and_then(toml::Value::as_table);
+    let has_default_model = default_model.is_some();
+    let has_provider_section = providers.map(|table| !table.is_empty()).unwrap_or(false);
+    let has_model_section = models.map(|table| !table.is_empty()).unwrap_or(false);
+    let kimi_login_present = crate::managed_usage::credentials_present();
+    let credential_sources = collect_credential_sources(providers, kimi_login_present);
+    let has_credential_source = !credential_sources.is_empty();
+
+    let default_model_table = default_model
+        .and_then(|name| models.and_then(|table| table.get(name)))
+        .and_then(toml::Value::as_table);
+    let default_provider_name = default_model_table
+        .and_then(|table| non_empty_toml_string(table.get("provider")))
+        .or(default_model);
+    let default_provider_table = default_provider_name
+        .and_then(|name| providers.and_then(|table| table.get(name)))
+        .and_then(toml::Value::as_table);
+    let default_provider_type =
+        default_provider_table.and_then(|table| non_empty_toml_string(table.get("type")));
+    let default_model_binding_ready = default_model_table
+        .and_then(|table| non_empty_toml_string(table.get("model")))
+        .is_some()
+        && default_provider_type.is_some();
+    let default_provider_has_credential = default_provider_table
+        .map(|table| provider_has_credential(table, default_provider_type, kimi_login_present))
+        .unwrap_or(false);
+
+    let mut missing = Vec::new();
+    if !has_default_model {
+        missing.push("default_model".to_string());
+    }
+    if !has_provider_section {
+        missing.push("[providers.*]".to_string());
+    }
+    if !has_model_section {
+        missing.push("[models.*]".to_string());
+    }
+    if has_default_model && !default_model_binding_ready {
+        missing.push(format!(
+            "model binding for '{0}'",
+            default_model.unwrap_or_default()
+        ));
+    }
+    if default_model_binding_ready && !default_provider_has_credential {
+        missing.push(format!(
+            "credential source for provider '{0}'",
+            default_provider_name.unwrap_or_default()
+        ));
+    }
+
+    let ready = missing.is_empty();
+
+    ConfigReadiness {
+        path: Some(path_string),
+        exists: true,
+        ready,
+        has_default_model,
+        has_provider_section,
+        has_model_section,
+        has_credential_source,
+        credential_sources,
+        error: None,
+    }
+}
+
+fn non_empty_toml_string(value: Option<&toml::Value>) -> Option<&str> {
+    value
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn collect_credential_sources(
+    providers: Option<&toml::map::Map<String, toml::Value>>,
+    kimi_login_present: bool,
+) -> Vec<String> {
+    let mut sources = Vec::new();
+    let Some(providers) = providers else {
+        return sources;
+    };
+
+    for provider in providers.values() {
+        let Some(table) = provider.as_table() else {
+            continue;
+        };
+        let provider_type = non_empty_toml_string(table.get("type"));
+        if non_empty_toml_string(table.get("api_key")).is_some() {
+            push_unique_credential_source(&mut sources, "config api_key");
+        }
+        if provider_api_key_env_is_available(table) {
+            push_unique_credential_source(&mut sources, "config api_key_env");
+        }
+        if provider_env_table_has_api_key(table) {
+            push_unique_credential_source(&mut sources, "config env");
+        }
+        if provider_type
+            .map(|value| value.eq_ignore_ascii_case("kimi"))
+            .unwrap_or(false)
+            && kimi_login_present
+        {
+            push_unique_credential_source(&mut sources, "Kimi credential file");
+        }
+    }
+
+    sources
+}
+
+fn push_unique_credential_source(sources: &mut Vec<String>, source: &str) {
+    if !sources.iter().any(|existing| existing == source) {
+        sources.push(source.to_string());
+    }
+}
+
+fn provider_has_credential(
+    table: &toml::map::Map<String, toml::Value>,
+    provider_type: Option<&str>,
+    kimi_login_present: bool,
+) -> bool {
+    non_empty_toml_string(table.get("api_key")).is_some()
+        || provider_api_key_env_is_available(table)
+        || provider_env_table_has_api_key(table)
+        || (provider_type
+            .map(|value| value.eq_ignore_ascii_case("kimi"))
+            .unwrap_or(false)
+            && kimi_login_present)
+}
+
+fn provider_api_key_env_is_available(table: &toml::map::Map<String, toml::Value>) -> bool {
+    non_empty_toml_string(table.get("api_key_env"))
+        .map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+fn provider_env_table_has_api_key(table: &toml::map::Map<String, toml::Value>) -> bool {
+    table
+        .get("env")
+        .and_then(toml::Value::as_table)
+        .map(|env| {
+            env.iter().any(|(name, value)| {
+                is_api_key_name(name) && non_empty_toml_string(Some(value)).is_some()
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn is_api_key_name(name: &str) -> bool {
+    let lowered = name.to_ascii_lowercase();
+    lowered.contains("api_key") || lowered.ends_with("_key") || lowered == "apikey"
 }
 
 fn run_kimi_command(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
@@ -550,10 +780,19 @@ fn user_home_dir() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        kimi_code_config_file_path, kimi_code_home_dir_from_values, legacy_migration_hint,
-        parse_kimi_code_version_output, parse_version_from_output, prepend_macos_cli_paths,
+        append_config_readiness, build_kimi_code_runtime_readiness,
+        check_kimi_code_config_readiness, ensure_kimi_code_config_file, kimi_code_config_file_path,
+        kimi_code_home_dir_from_values, legacy_migration_hint, parse_kimi_code_version_output,
+        parse_version_from_output, prepare_kimi_code_config_readiness, prepend_macos_cli_paths,
     };
+    use crate::test_env::lock::{env_lock, set_kimi_code_home};
+    use std::fs;
     use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
+
+    fn write_config(temp: &TempDir, content: &str) {
+        fs::write(temp.path().join("config.toml"), content).expect("config written");
+    }
 
     #[test]
     fn macos_cli_paths_prefer_uv_and_homebrew_locations_without_duplicates() {
@@ -606,10 +845,19 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
     fn kimi_config_path_uses_kimi_code_home() {
         let path = kimi_code_config_file_path("config.toml", None, Some(Path::new(r"C:\Users\u")))
             .unwrap();
         assert_eq!(path, PathBuf::from(r"C:\Users\u\.kimi-code\config.toml"));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn kimi_config_path_uses_kimi_code_home_posix() {
+        let path = kimi_code_config_file_path("config.toml", None, Some(Path::new("/home/u")))
+            .unwrap();
+        assert_eq!(path, PathBuf::from("/home/u/.kimi-code/config.toml"));
     }
 
     #[test]
@@ -633,12 +881,257 @@ mod tests {
     }
 
     #[test]
+    fn ensure_config_file_is_idempotent_and_preserves_existing_content() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = set_kimi_code_home(temp.path());
+
+        let path = ensure_kimi_code_config_file().expect("config created");
+        assert!(path.is_file());
+        assert_eq!(fs::read_to_string(&path).expect("config readable"), "");
+
+        let existing = "default_model = \"demo\"\n[providers.demo]\napi_key = \"keep-me\"\n";
+        fs::write(&path, existing).expect("existing config written");
+        assert_eq!(ensure_kimi_code_config_file().unwrap(), path);
+        assert_eq!(
+            fs::read_to_string(path).expect("config preserved"),
+            existing
+        );
+    }
+
+    #[test]
+    fn production_config_readiness_creates_missing_config_before_check() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = set_kimi_code_home(temp.path());
+
+        let config = prepare_kimi_code_config_readiness();
+        let path = temp.path().join("config.toml");
+        assert!(path.is_file());
+        assert_eq!(fs::read_to_string(&path).expect("config readable"), "");
+        assert_eq!(config.path, Some(path.to_string_lossy().to_string()));
+        assert!(config.exists);
+        assert!(!config.ready);
+        assert!(config.error.is_none());
+
+        let mut checks = Vec::new();
+        let mut issues = Vec::new();
+        append_config_readiness(&config, &mut checks, &mut issues);
+        assert_eq!(checks.len(), 1);
+        assert!(issues.iter().any(|issue| issue.contains("incomplete")));
+    }
+
+    #[test]
+    fn missing_config_is_not_ready_and_is_blocking() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = set_kimi_code_home(temp.path());
+
+        let config = check_kimi_code_config_readiness();
+        assert!(!config.exists);
+        assert!(!config.ready);
+        assert!(!config.has_default_model);
+        assert!(!config.has_provider_section);
+        assert!(!config.has_model_section);
+        assert!(!config.has_credential_source);
+        assert!(config.error.is_none());
+
+        let mut checks = Vec::new();
+        let mut issues = Vec::new();
+        append_config_readiness(&config, &mut checks, &mut issues);
+        assert_eq!(checks.len(), 1);
+        assert!(issues.iter().any(|issue| issue.contains("missing")));
+        let readiness =
+            build_kimi_code_runtime_readiness(checks, issues, Vec::new(), None, None, config);
+        assert!(!readiness.ok);
+        assert!(readiness.has_blocking_issues);
+    }
+
+    #[test]
+    fn empty_config_is_not_ready_with_false_structure_flags() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = set_kimi_code_home(temp.path());
+        ensure_kimi_code_config_file().expect("empty config created");
+
+        let config = check_kimi_code_config_readiness();
+        assert!(config.exists);
+        assert!(!config.ready);
+        assert!(!config.has_default_model);
+        assert!(!config.has_provider_section);
+        assert!(!config.has_model_section);
+        assert!(!config.has_credential_source);
+        assert!(config.error.is_none());
+
+        let mut checks = Vec::new();
+        let mut issues = Vec::new();
+        append_config_readiness(&config, &mut checks, &mut issues);
+        assert_eq!(checks.len(), 1);
+        assert!(issues.iter().any(|issue| issue.contains("incomplete")));
+    }
+
+    #[test]
+    fn incomplete_config_reports_existing_structure_flags() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = set_kimi_code_home(temp.path());
+        write_config(
+            &temp,
+            r#"default_model = "demo"
+
+[providers.demo]
+type = "openai"
+
+[models.demo]
+provider = "demo"
+model = "gpt-test"
+"#,
+        );
+
+        let config = check_kimi_code_config_readiness();
+        assert!(config.exists);
+        assert!(!config.ready);
+        assert!(config.has_default_model);
+        assert!(config.has_provider_section);
+        assert!(config.has_model_section);
+        assert!(!config.has_credential_source);
+        assert!(config.error.is_none());
+
+        let mut checks = Vec::new();
+        let mut issues = Vec::new();
+        append_config_readiness(&config, &mut checks, &mut issues);
+        assert_eq!(checks.len(), 1);
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("credential source")));
+    }
+
+    #[test]
+    fn invalid_config_is_not_ready_and_does_not_report_structure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = set_kimi_code_home(temp.path());
+        write_config(&temp, "default_model = [");
+
+        let config = check_kimi_code_config_readiness();
+        assert!(config.exists);
+        assert!(!config.ready);
+        assert!(!config.has_default_model);
+        assert!(!config.has_provider_section);
+        assert!(!config.has_model_section);
+        assert!(!config.has_credential_source);
+        assert!(config.error.as_deref().unwrap_or("").contains("Invalid"));
+    }
+
+    #[test]
+    fn api_key_provider_is_ready_without_kimi_login() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = set_kimi_code_home(temp.path());
+        write_config(
+            &temp,
+            r#"default_model = "demo"
+
+[providers.demo]
+type = "openai"
+api_key = "test-api-key"
+
+[models.demo]
+provider = "demo"
+model = "gpt-test"
+"#,
+        );
+
+        let config = check_kimi_code_config_readiness();
+        assert!(config.ready);
+        assert!(config.has_default_model);
+        assert!(config.has_provider_section);
+        assert!(config.has_model_section);
+        assert!(config.has_credential_source);
+        assert_eq!(config.credential_sources, vec!["config api_key"]);
+        assert!(config.error.is_none());
+    }
+
+    #[test]
+    fn api_key_env_provider_is_ready_without_kimi_login() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _lock = env_lock();
+        let previous_home = std::env::var_os("KIMI_CODE_HOME");
+        let previous_key = std::env::var_os("RUNTIME_CHECK_TEST_API_KEY");
+        std::env::set_var("KIMI_CODE_HOME", temp.path());
+        std::env::set_var("RUNTIME_CHECK_TEST_API_KEY", "test-api-key");
+        write_config(
+            &temp,
+            r#"default_model = "demo"
+
+[providers.demo]
+type = "openai"
+api_key_env = "RUNTIME_CHECK_TEST_API_KEY"
+
+[models.demo]
+provider = "demo"
+model = "gpt-test"
+"#,
+        );
+
+        let config = check_kimi_code_config_readiness();
+        assert!(config.ready);
+        assert!(config.has_credential_source);
+        assert_eq!(config.credential_sources, vec!["config api_key_env"]);
+        assert!(config.error.is_none());
+
+        match previous_home {
+            Some(value) => std::env::set_var("KIMI_CODE_HOME", value),
+            None => std::env::remove_var("KIMI_CODE_HOME"),
+        }
+        match previous_key {
+            Some(value) => std::env::set_var("RUNTIME_CHECK_TEST_API_KEY", value),
+            None => std::env::remove_var("RUNTIME_CHECK_TEST_API_KEY"),
+        }
+    }
+
+    #[test]
+    fn provider_env_table_is_a_usable_credential_source() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _home = set_kimi_code_home(temp.path());
+        write_config(
+            &temp,
+            r#"default_model = "demo"
+
+[providers.demo]
+type = "openai"
+
+[providers.demo.env]
+OPENAI_API_KEY = "test-api-key"
+
+[models.demo]
+provider = "demo"
+model = "gpt-test"
+"#,
+        );
+
+        let config = check_kimi_code_config_readiness();
+        assert!(config.ready);
+        assert_eq!(config.credential_sources, vec!["config env"]);
+    }
+
+    #[test]
     fn legacy_migration_hint_is_none_without_legacy_dir() {
         let temp = tempfile::tempdir().expect("tempdir");
+        let _lock = env_lock();
+        let previous_kimi_home = std::env::var_os("KIMI_CODE_HOME");
+        let previous_userprofile = std::env::var_os("USERPROFILE");
+        let previous_home = std::env::var_os("HOME");
+        std::env::set_var("KIMI_CODE_HOME", temp.path());
         std::env::set_var("USERPROFILE", temp.path());
         std::env::set_var("HOME", temp.path());
+
         assert!(legacy_migration_hint().is_none());
-        std::env::remove_var("USERPROFILE");
-        std::env::remove_var("HOME");
+
+        match previous_kimi_home {
+            Some(value) => std::env::set_var("KIMI_CODE_HOME", value),
+            None => std::env::remove_var("KIMI_CODE_HOME"),
+        }
+        match previous_userprofile {
+            Some(value) => std::env::set_var("USERPROFILE", value),
+            None => std::env::remove_var("USERPROFILE"),
+        }
+        match previous_home {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
     }
 }

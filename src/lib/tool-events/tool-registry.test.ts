@@ -29,6 +29,14 @@ describe("tool registry", () => {
     expect(isTodoTool("TodoList")).toBe(true);
   });
 
+  it("registers Cron observation tools under task category", () => {
+    expect(getToolPresentation("CronList")).toMatchObject({
+      canonicalName: "CronList",
+      displayName: "Cron List",
+      category: "task",
+    });
+  });
+
   it("registers AgentSwarm under the agent category", () => {
     expect(getToolPresentation("AgentSwarm")).toEqual({
       canonicalName: "AgentSwarm",
