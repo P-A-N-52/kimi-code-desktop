@@ -29,12 +29,13 @@ export function TasksTab({
   const goal = useToolEventsStore((state) => state.currentGoal);
   const todoItems = useToolEventsStore((state) => state.todoItems);
   const newFiles = useToolEventsStore((state) => state.newFiles);
-  const backgroundTasks = useBackgroundTasksStore((state) =>
-    state.backgroundTasks.filter((task) => task.sessionId === sessionId),
-  );
-  const cronSchedules = useBackgroundTasksStore((state) =>
-    state.cronSchedules.filter((schedule) => schedule.sessionId === sessionId),
-  );
+  // Select the stable arrays and filter in render; a `.filter()` inside the
+  // selector returns a fresh array every snapshot and makes
+  // useSyncExternalStore loop ("Maximum update depth exceeded").
+  const allBackgroundTasks = useBackgroundTasksStore((state) => state.backgroundTasks);
+  const allCronSchedules = useBackgroundTasksStore((state) => state.cronSchedules);
+  const backgroundTasks = allBackgroundTasks.filter((task) => task.sessionId === sessionId);
+  const cronSchedules = allCronSchedules.filter((schedule) => schedule.sessionId === sessionId);
   const uniqueNewFiles = [...new Set(newFiles)];
 
   if (
