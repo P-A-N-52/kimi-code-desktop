@@ -5,6 +5,19 @@ import type { GoalItem } from "@/lib/goal";
 import { UI_LANGUAGE_STORAGE_KEY, UiLanguageProvider } from "@/lib/i18n";
 import { StatusStrip } from "./status-strip";
 
+const { agentTasksMock } = vi.hoisted(() => ({
+  agentTasksMock: vi.fn<() => Array<{ id: string; sessionId: string; status: string }>>(() => []),
+}));
+
+vi.mock("@/lib/agent-monitor/store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/agent-monitor/store")>();
+  return {
+    ...actual,
+    useAgentMonitorStore: (selector: (state: { tasks: unknown[] }) => unknown) =>
+      selector({ tasks: agentTasksMock() }),
+  };
+});
+
 const ACTIVE_GOAL: GoalItem = {
   objective: "Ship visible Goal controls",
   status: "active",
@@ -123,5 +136,33 @@ describe("StatusStrip Goal controls", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "恢复 Goal" }));
     expect(onGoalControl).toHaveBeenCalledWith("resume");
+  });
+});
+
+describe("StatusStrip task running indicator", () => {
+  beforeEach(() => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, "zh-CN");
+    agentTasksMock.mockReturnValue([]);
+  });
+
+  it("hides the badge when no agent tasks are active", () => {
+    renderStatusStrip(<StatusStrip {...baseProps} />);
+    expect(screen.queryByText(/task running/)).toBeNull();
+  });
+
+  it("shows [1 task running] for a single active task", () => {
+    agentTasksMock.mockReturnValue([{ id: "t1", sessionId: "s1", status: "running" }]);
+    renderStatusStrip(<StatusStrip {...baseProps} />);
+    expect(screen.getByText(/\[1 task running\]/)).toBeDefined();
+  });
+
+  it("shows the plural form and counts only active statuses", () => {
+    agentTasksMock.mockReturnValue([
+      { id: "t1", sessionId: "s1", status: "running" },
+      { id: "t2", sessionId: "s2", status: "queued" },
+      { id: "t3", sessionId: "s1", status: "success" },
+    ]);
+    renderStatusStrip(<StatusStrip {...baseProps} />);
+    expect(screen.getByText(/\[2 tasks running\]/)).toBeDefined();
   });
 });
