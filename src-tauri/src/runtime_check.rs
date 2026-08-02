@@ -855,8 +855,8 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "windows"))]
     fn kimi_config_path_uses_kimi_code_home_posix() {
-        let path = kimi_code_config_file_path("config.toml", None, Some(Path::new("/home/u")))
-            .unwrap();
+        let path =
+            kimi_code_config_file_path("config.toml", None, Some(Path::new("/home/u"))).unwrap();
         assert_eq!(path, PathBuf::from("/home/u/.kimi-code/config.toml"));
     }
 

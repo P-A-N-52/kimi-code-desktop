@@ -598,6 +598,87 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Cancel Goal": "取消 Goal",
   "Cancel current Goal": "取消当前 Goal",
   "Completion criterion:": "完成条件：",
+  "Global config written; new derived subagents use this model. The main session model is unchanged; idle sessions apply after reconnect, busy sessions need a later reconnect.":
+    "已写入全局 [secondary_model]；新派生的子代理将使用此模型。主会话 model 不变；空闲会话重连后生效，忙碌会话需稍后重连。",
+  Failed: "失败",
+  "Read-only observation: Desktop does not control background tasks or Cron directly.":
+    "只读观察：Desktop 不直接控制后台任务或 Cron。",
+  "Output path:": "输出路径：",
+  "(Waiting for the Agent to return a snapshot or completion notification)":
+    "（等待 Agent 返回快照或完成通知）",
+  "Failed to switch session model": "切换会话模型失败",
+  "Check the ACP connection or try again later.": "请检查 ACP 连接或稍后重试。",
+  "The current runtime cannot modify the session model": "当前运行时无法修改会话模型",
+  "Upgrade Kimi Code or check the ACP connection.": "请升级 Kimi Code 或检查 ACP 连接。",
+  "Failed to update session Thinking": "更新会话 Thinking 失败",
+  "The current runtime cannot modify session Thinking": "当前运行时无法修改会话 Thinking",
+  "Model binding": "模型绑定",
+  "Upstream:": "上游：",
+  "No model binding yet": "暂无模型绑定",
+  "View a summary of providers, model bindings, and capabilities. This only validates the local structure and does not send connection tests to third-party providers.":
+    "查看 Provider、模型绑定与 capabilities 摘要。此处只做本地结构校验，不会向第三方 Provider 发送连接测试。",
+  "“Provider configured” only means a credential source exists in config.toml / login state; it does not mean the current session will definitely work. The actual model/thinking follows the model menu in the chat area.":
+    "「Provider 已配置」只表示 config.toml / 登录状态里存在凭据来源；不等于当前会话一定可用。实际 model/thinking 以聊天区模型菜单为准。",
+  "Kimi account signed in": "Kimi 账号已登录",
+  "Default model:": "默认模型：",
+  "No provider configured yet. Add one in the advanced editor below.":
+    "尚未配置 Provider。可在下方高级编辑器中添加。",
+  "Structural issue": "结构问题",
+  "Kimi Code configuration required": "需要完成 Kimi Code 配置",
+  "Open configuration settings": "打开配置设置",
+  "Failed to update Secondary model": "更新 Secondary model 失败",
+  "Failed to clear Secondary model": "清除 Secondary model 失败",
+  "Failed to update Secondary thinking effort": "更新 Secondary 思考档位失败",
+  "Experimental features": "实验功能",
+  "Custom Agent discovery": "自定义 Agent 发现",
+  "Saved locally in this desktop app only. When enabled, scans custom Agents; when disabled, Plugins, Skills, and running agent tasks are still kept.":
+    "仅在此桌面应用本地保存。开启后扫描自定义 Agent；关闭时仍保留 Plugins、Skills 和运行中代理任务。",
+  "Global defaults for new sessions. The actual model/thinking of a connected session follows the model menu in the chat area; add or edit model definitions in Config.":
+    "新会话的全局默认。当前已连接会话的实际 model/thinking 以聊天区模型菜单为准；在 Config 中添加或编辑模型定义。",
+  "Secondary model (experimental)": "Secondary model（实验）",
+  "Default model for subagents": "子代理默认模型",
+  "(Not configured)": "（未配置）",
+  "Corresponds to the official `/secondary_model` and `[secondary_model].model`; not the session model switch in the chat area.":
+    "对应官方 `/secondary_model` 与 `[secondary_model].model`；不是聊天区的会话 model 切换。",
+  "Currently overridden by the KIMI_SECONDARY_MODEL environment variable for the config.toml display value.":
+    "当前由环境变量 KIMI_SECONDARY_MODEL 覆盖 config.toml 显示值。",
+  "The current secondary model is not resolved in `[models]`; new subagents will bind only after saving a valid alias.":
+    "当前 secondary model 未在 `[models]` 中解析，保存合法 alias 后新子代理才会绑定。",
+  "Secondary thinking effort": "Secondary 思考档位",
+  "Currently overridden by the KIMI_SECONDARY_EFFORT environment variable for the config.toml display value.":
+    "当前由环境变量 KIMI_SECONDARY_EFFORT 覆盖 config.toml 显示值。",
+  "Advanced: edit the full config.toml directly. Only TOML structure is validated before saving; idle sessions restart to apply after saving.":
+    "高级：直接编辑完整 config.toml。保存前仅做 TOML 结构校验；保存后空闲会话会重启以应用。",
+  "The current session has no AI reply to copy": "当前会话还没有可复制的 AI 回复",
+  "Last AI reply copied": "已复制最后一条 AI 回复",
+  "Copy failed": "复制失败",
+  "Export Markdown is only available in the desktop app": "导出 Markdown 仅在桌面应用中可用",
+  "Session exported": "会话已导出",
+  "Export failed": "导出失败",
+  "Export Markdown…": "导出 Markdown…",
+  "Running tasks": "运行中任务",
+  "Session influence factors": "会话影响因素",
+  "Refresh influence factors": "刷新影响因素",
+  "Custom Agent discovery is off; Plugins, Skills, and running agent tasks are still kept.":
+    "自定义 Agent 发现已关闭；Plugins、Skills 和运行中代理任务仍会保留。",
+  Detected: "检测到",
+  ": may permanently override the main Agent system prompt (body is hidden by default).":
+    "：可能永久覆盖主 Agent 系统提示词（正文默认不展示）。",
+  "No installed plugin metadata found": "未发现已安装 plugin 元数据",
+  "No disk Skill found": "未发现磁盘 Skill",
+  plus: "另有",
+  "Skill(s) not expanded": "个 Skill 未展开",
+  Disk: "磁盘",
+  "Enabled by config": "配置启用",
+  "Same-name lower-priority source:": "同名低优先级来源：",
+  "Disk ·": "磁盘 ·",
+  "Background tasks (read-only)": "后台任务（只读）",
+  "From Task/TaskOutput results the Agent has observed; Desktop does not provide direct stop or control.":
+    "来自 Agent 已观察到的 Task/TaskOutput 结果；Desktop 不提供直接停止或控制。",
+  "Cron schedules (cached)": "Cron 调度（缓存）",
+  "Only shows CronCreate/CronList results the Agent has returned; no Desktop control API.":
+    "仅展示 Agent 已返回的 CronCreate/CronList 结果；无 Desktop 控制 API。",
+  "Next:": "下次：",
 };
 
 const EN_US_RESTORE_TRANSLATIONS = Object.entries(ZH_CN_TRANSLATIONS).reduce<

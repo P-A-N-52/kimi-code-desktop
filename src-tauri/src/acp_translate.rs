@@ -1785,8 +1785,7 @@ mod tests {
         let workspace = std::env::temp_dir().join("kimi-acp-workspace-test");
         std::fs::create_dir_all(&workspace).expect("temp workspace");
         let sep = std::path::MAIN_SEPARATOR;
-        let err =
-            normalize_workspace_path(&format!("..{sep}secret.txt"), &workspace).unwrap_err();
+        let err = normalize_workspace_path(&format!("..{sep}secret.txt"), &workspace).unwrap_err();
         assert!(err.contains("outside the session workspace"));
         let _ = std::fs::remove_dir_all(&workspace);
     }

@@ -483,11 +483,8 @@ mod tests {
         let workspace = std::env::temp_dir().join("kimi-session-files-workspace");
         std::fs::create_dir_all(&workspace).expect("temp workspace");
         let sep = std::path::MAIN_SEPARATOR;
-        let err = resolve_session_file(
-            &workspace,
-            &format!("..{sep}..{sep}etc{sep}passwd"),
-        )
-        .unwrap_err();
+        let err =
+            resolve_session_file(&workspace, &format!("..{sep}..{sep}etc{sep}passwd")).unwrap_err();
         assert!(err.contains("outside"));
         let _ = std::fs::remove_dir_all(&workspace);
     }
