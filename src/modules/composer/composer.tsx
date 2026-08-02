@@ -72,6 +72,8 @@ type ComposerProps = {
   modelControlsDisabled?: boolean;
   modelUpdating?: boolean;
   thinkingControlsVisible?: boolean;
+  /** Async gate before the model dropdown opens (lazy-connect config load). */
+  onModelPickerOpen?: () => Promise<boolean>;
   onSelectModel: (name: string) => void;
   onToggleThinking: (enabled: boolean) => void;
   onSelectThinkingEffort: (effort: string) => void;
@@ -102,6 +104,7 @@ export function Composer({
   modelControlsDisabled = false,
   modelUpdating = false,
   thinkingControlsVisible,
+  onModelPickerOpen,
   onSelectModel,
   onToggleThinking,
   onSelectThinkingEffort,
@@ -611,6 +614,7 @@ export function Composer({
             disabled={modelControlsDisabled || sendDisabled}
             updating={modelUpdating}
             thinkingControlsVisible={thinkingControlsVisible}
+            onBeforeOpen={onModelPickerOpen}
             onSelectModel={onSelectModel}
             onToggleThinking={onToggleThinking}
             onSelectThinkingEffort={onSelectThinkingEffort}

@@ -14,10 +14,11 @@ import type { AgentRuntimeCapabilities } from "@/lib/acp-capabilities";
 import { emptyAgentRuntimeCapabilities } from "@/lib/acp-capabilities";
 import { notifyGlobalConfigApplied } from "@/lib/config-update-toast";
 import {
-  canUseSessionConfigOption,
-  getSessionConfigOption,
-  getSessionConfigOptionValue,
-  prefersSetConfigOptionRpc,
+	canUseSessionConfigOption,
+	getSessionConfigOption,
+	getSessionConfigOptionValue,
+	prefersSetConfigOptionRpc,
+	sessionHasConfigOption,
 } from "@/lib/session-config-state";
 import { parseGoalCommand } from "@/lib/goal";
 import {
@@ -342,9 +343,12 @@ export function ConversationView({
   }, [canUseSessionThinking, config?.defaultThinking, sessionConfig]);
   const modelControlsDisabled =
     stream.status !== "ready" ||
-    agentRuntime.capabilitiesStale === true ||
-    !canUseSessionModel;
+    agentRuntime.capabilitiesStale === true;
   const modelUpdating = isUpdating || stream.sessionConfigUpdating;
+
+  // Latest session config for async polling (lazy-connect load below).
+  const sessionConfigRef = useRef(stream.sessionConfigState);
+  sessionConfigRef.current = stream.sessionConfigState;
 
   const handleSelectModel = useCallback(
     async (name: string) => {
@@ -367,6 +371,27 @@ export function ConversationView({
     },
     [canSetSessionModel, canUseSessionModel, displaySelectedModel, stream],
   );
+
+  // Opening the model picker while the session config is still unknown
+  // (lazy-connect before the first prompt) connects the ACP wire so
+  // session/resume fills configOptions, then waits for the config to land
+  // before opening the dropdown.
+  const handleModelPickerOpen = useCallback(async (): Promise<boolean> => {
+    if (sessionHasConfigOption(sessionConfigRef.current, "model")) {
+      return true;
+    }
+    if (stream.status === "submitted" || stream.status === "streaming") {
+      return false;
+    }
+    stream.connect();
+    for (let attempt = 0; attempt < 16; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (sessionHasConfigOption(sessionConfigRef.current, "model")) {
+        return true;
+      }
+    }
+    return false;
+  }, [stream]);
 
   const handleToggleThinking = useCallback(
     async (enabled: boolean) => {
@@ -885,6 +910,7 @@ export function ConversationView({
             modelControlsDisabled={modelControlsDisabled}
             modelUpdating={modelUpdating}
             thinkingControlsVisible={canUseSessionThinking}
+            onModelPickerOpen={handleModelPickerOpen}
             onSelectModel={(name) => void handleSelectModel(name)}
             onToggleThinking={(enabled) => void handleToggleThinking(enabled)}
             onSelectThinkingEffort={(effort) => void handleSelectThinkingEffort(effort)}
