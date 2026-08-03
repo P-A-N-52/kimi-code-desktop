@@ -9,6 +9,8 @@ describe("tool registry", () => {
     ["Bash", "Shell", "Shell"],
     ["WebSearch", "SearchWeb", "Web Search"],
     ["TodoList", "SetTodoList", "Todo List"],
+    ["Todo List", "SetTodoList", "Todo List"],
+    ["todo_list", "SetTodoList", "Todo List"],
   ])("normalizes %s", (rawName, canonicalName, displayName) => {
     expect(getToolPresentation(rawName)).toMatchObject({
       canonicalName,
@@ -27,6 +29,7 @@ describe("tool registry", () => {
   it("recognizes current write and todo names", () => {
     expect(isWriteTool("Write")).toBe(true);
     expect(isTodoTool("TodoList")).toBe(true);
+    expect(isTodoTool("Todo List")).toBe(true);
   });
 
   it("registers Cron observation tools under task category", () => {

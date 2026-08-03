@@ -296,7 +296,11 @@ export function useSessions(
 		setSessions((current) =>
 			current.map((session) =>
 				session.sessionId === status.sessionId
-					? { ...session, status }
+					? {
+							...session,
+							status,
+							isRunning: status.state === "busy" || status.state === "idle",
+						}
 					: session,
 			),
 		);

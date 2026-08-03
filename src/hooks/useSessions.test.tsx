@@ -165,6 +165,34 @@ describe("useSessions archived preload", () => {
     expect(result.current.searchQuery).toBe("second");
   });
 
+  it("updates the running flag immediately from live session status", async () => {
+    mocks.listSessions.mockResolvedValue([session("active")]);
+
+    const { result } = renderHook(() => useSessions(), { wrapper: I18nWrapper });
+    await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+
+    act(() => {
+      result.current.applySessionStatus({
+        sessionId: "active",
+        state: "busy",
+        seq: 1,
+        updatedAt: new Date("2026-08-03T00:00:00Z"),
+      });
+    });
+    expect(result.current.sessions[0]?.isRunning).toBe(true);
+    expect(result.current.sessions[0]?.status?.state).toBe("busy");
+
+    act(() => {
+      result.current.applySessionStatus({
+        sessionId: "active",
+        state: "stopped",
+        seq: 2,
+        updatedAt: new Date("2026-08-03T00:00:01Z"),
+      });
+    });
+    expect(result.current.sessions[0]?.isRunning).toBe(false);
+  });
+
   it("ignores stale refresh results after a newer refresh completes", async () => {
     let resolveFirst: ((value: Session[]) => void) | undefined;
     let resolveSecond: ((value: Session[]) => void) | undefined;

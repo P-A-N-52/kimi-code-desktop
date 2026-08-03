@@ -196,8 +196,6 @@ export default function App() {
     [sessions, selectedSessionId],
   );
 
-  const anyRunning = useMemo(() => sessions.some((s) => s.isRunning), [sessions]);
-
   const handleSessionStatus = useCallback(
     (status: SessionStatus) => {
       applySessionStatus(status);
@@ -564,7 +562,6 @@ export default function App() {
         sidebar={
           <AppSidebar
             collapsed={!sidebarOpen}
-            running={anyRunning}
             onToggleCollapsed={() => setSidebarOpen((v) => !v)}
             onNewSession={handleNewSession}
             onOpenSettings={() => openSettings()}

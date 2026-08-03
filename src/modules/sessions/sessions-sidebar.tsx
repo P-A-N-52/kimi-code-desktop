@@ -20,6 +20,7 @@ import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { Button } from "@/ui/button";
 import { Kbd } from "@/ui/kbd";
+import { StatusDot } from "@/ui/status-dot";
 import {
   groupSessionsByDay,
   groupSessionsByWorkDir,
@@ -30,6 +31,10 @@ import {
   writeExpandedGroupKeys,
   writeSessionGroupMode,
 } from "./session-groups";
+import {
+  getSessionRuntimeIndicator,
+  sessionRuntimeIndicatorLabel,
+} from "./session-runtime-indicator";
 import {
   STALE_ARCHIVE_DAY_OPTIONS,
   type StaleArchiveDays,
@@ -70,6 +75,7 @@ function SessionItem({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.title ?? "");
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const runtimeIndicator = getSessionRuntimeIndicator(session);
 
   useEffect(() => {
     if (!editing) return;
@@ -149,8 +155,18 @@ function SessionItem({
             className="min-w-0 flex-1 text-left"
           >
             <span className="flex items-center gap-1.5 truncate text-[13px] font-medium text-foreground">
-              {session.isRunning && (
-                <span className="size-[5px] shrink-0 animate-breathe rounded-full bg-success" />
+              {runtimeIndicator !== "hidden" && (
+                <StatusDot
+                  status={
+                    runtimeIndicator === "working"
+                      ? "running"
+                      : runtimeIndicator === "error"
+                        ? "error"
+                        : "ok"
+                  }
+                  className="size-[5px]"
+                  title={sessionRuntimeIndicatorLabel(runtimeIndicator)}
+                />
               )}
               <span className="min-w-0 flex-1 truncate">{session.title || "未命名会话"}</span>
               {groupMode === "project" && (

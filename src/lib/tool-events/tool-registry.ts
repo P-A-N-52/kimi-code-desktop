@@ -73,11 +73,7 @@ const ALIASES: Record<string, string> = {
   crondelete: "CronDelete",
 };
 
-const BACKGROUND_TASK_OBSERVATION_TOOLS = new Set([
-  "TaskList",
-  "TaskOutput",
-  "TaskStop",
-]);
+const BACKGROUND_TASK_OBSERVATION_TOOLS = new Set(["TaskList", "TaskOutput", "TaskStop"]);
 
 const CRON_OBSERVATION_TOOLS = new Set(["CronCreate", "CronList", "CronDelete"]);
 
@@ -85,7 +81,11 @@ const CRON_OBSERVATION_TOOLS = new Set(["CronCreate", "CronList", "CronDelete"])
 const TASK_CONTROL_TOOLS = new Set(["TaskStop", "CronCreate", "CronDelete", "CronList"]);
 
 export function getToolPresentation(rawName: string): ToolPresentation {
-  const canonicalName = ALIASES[rawName.toLowerCase()] ?? rawName;
+  // ACP implementations may expose the same built-in tool as `TodoList`,
+  // `Todo List`, or `todo_list`. Normalize separators for alias lookup while
+  // preserving the original name for unknown-tool fallback rendering.
+  const aliasKey = rawName.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const canonicalName = ALIASES[aliasKey] ?? rawName;
   const presentation = PRESENTATIONS[canonicalName];
   return {
     canonicalName,
@@ -116,7 +116,5 @@ export function isTaskControlTool(rawName: string): boolean {
 
 export function isBackgroundOrCronObservationTool(rawName: string): boolean {
   const canonical = getToolPresentation(rawName).canonicalName;
-  return (
-    BACKGROUND_TASK_OBSERVATION_TOOLS.has(canonical) || CRON_OBSERVATION_TOOLS.has(canonical)
-  );
+  return BACKGROUND_TASK_OBSERVATION_TOOLS.has(canonical) || CRON_OBSERVATION_TOOLS.has(canonical);
 }

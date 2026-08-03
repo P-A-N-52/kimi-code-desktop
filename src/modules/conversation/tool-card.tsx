@@ -11,7 +11,7 @@ import {
   Target,
   Wrench,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { LiveMessage } from "@/hooks/types";
 import { getToolPresentation, isBackgroundOrCronObservationTool, type ToolPresentation } from "@/lib/tool-events/tool-registry";
 import { cn } from "@/lib/utils";
@@ -25,7 +25,7 @@ import { findDiffDisplay } from "./diff-display";
 import { computeDiffLines } from "./diff-view";
 import { SwarmToolCard } from "./swarm-tool-card";
 import { TermView } from "./term-view";
-import { ToolDisplayContent } from "./tool-display-content";
+import { TodoItems, ToolDisplayContent } from "./tool-display-content";
 
 type ToolCall = NonNullable<LiveMessage["toolCall"]>;
 
@@ -57,6 +57,16 @@ function summarizeInput(input: unknown): string {
 
 function isRunningState(state: ToolCall["state"]): boolean {
   return state === "input-streaming" || state === "input-available";
+}
+
+function hasTodoItems(input: unknown): boolean {
+  if (Array.isArray(input)) return input.length > 0;
+  if (typeof input !== "object" || input === null) return false;
+  const record = input as Record<string, unknown>;
+  return (
+    (Array.isArray(record.todos) && record.todos.length > 0) ||
+    (Array.isArray(record.items) && record.items.length > 0)
+  );
 }
 
 /** Match Rust `canonical_agent_tool_name` swarm shape — history/edge titles may not say AgentSwarm. */
@@ -102,7 +112,15 @@ function GenericToolCard({
   // Generic tools must not treat subagent flags as running — those belong to
   // Agent/Swarm cards only. Progress ticks use extras.in_progress.
   const running = isRunningState(toolCall.state) || extrasInProgress;
+  const isTodo = presentation.category === "todo";
   const [open, setOpen] = useState(defaultOpen ?? running);
+  // Todo cards stay open while running and collapse once complete; the
+  // semantic list remains available on demand (issue #13).
+  useEffect(() => {
+    if (isTodo && !running) {
+      setOpen(false);
+    }
+  }, [isTodo, running]);
   const diff = findDiffDisplay(toolCall.display);
   const diffStats = diff ? computeDiffLines(diff) : null;
 
@@ -149,7 +167,15 @@ function GenericToolCard({
       </button>
       <Expandable open={open} data-slot="tool-body">
         <div className="border-t border-line">
-          {toolCall.isError && toolCall.errorText ? (
+          {isTodo ? (
+            hasTodoItems(toolCall.input) ? (
+              <TodoItems data={toolCall.input} />
+            ) : toolCall.display?.length ? (
+              <ToolDisplayContent display={toolCall.display} />
+            ) : (
+              <div className="p-3 font-mono text-[11px] text-faint">（无输出）</div>
+            )
+          ) : toolCall.isError && toolCall.errorText ? (
             <div className="p-3 font-mono text-[11.5px] text-danger">{toolCall.errorText}</div>
           ) : toolCall.display?.length ? (
             <ToolDisplayContent display={toolCall.display} />

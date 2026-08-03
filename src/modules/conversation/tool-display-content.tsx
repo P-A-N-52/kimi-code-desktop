@@ -76,7 +76,7 @@ function SearchResults({ data }: { data: unknown }) {
   );
 }
 
-function TodoItems({ data }: { data: unknown }) {
+export function TodoItems({ data }: { data: unknown }) {
   const record = asRecord(data);
   const items = Array.isArray(data)
     ? data

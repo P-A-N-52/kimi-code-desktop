@@ -4,30 +4,44 @@ import { useTheme } from "@/hooks/use-theme";
 import { isMacOS } from "@/hooks/utils";
 import { cn } from "@/lib/utils";
 import { IconButton } from "@/ui/icon-button";
+import { StatusDot } from "@/ui/status-dot";
+import {
+  sessionRuntimeIndicatorLabel,
+  summarizeSessionRuntimeIndicators,
+} from "./session-runtime-indicator";
 import { SessionsSidebar, type SessionsSidebarProps } from "./sessions-sidebar";
 
 export function AppSidebar({
 	collapsed,
-	running,
 	onToggleCollapsed,
 	onNewSession,
 	onOpenSettings,
 	...sessionsProps
 }: SessionsSidebarProps & {
 	collapsed: boolean;
-	running: boolean;
 	onToggleCollapsed: () => void;
 	onNewSession: () => void;
 	onOpenSettings: () => void;
 }) {
 	const macOS = isMacOS();
 	const { theme, toggleThemeWithTransition } = useTheme();
+	const runtimeIndicator = summarizeSessionRuntimeIndicators(sessionsProps.sessions);
 
 	const brandBlock = (
 		<div className="relative flex size-[26px] items-center justify-center rounded-r1 bg-bright font-mono text-[13px] font-semibold text-background">
 			K
-			{running && (
-				<span className="absolute -right-[2px] -top-[2px] size-[6px] animate-breathe rounded-full bg-success" />
+			{runtimeIndicator !== "hidden" && (
+				<StatusDot
+					status={
+						runtimeIndicator === "working"
+							? "running"
+							: runtimeIndicator === "error"
+								? "error"
+								: "ok"
+					}
+					className="absolute -right-[2px] -top-[2px] size-[6px]"
+					title={sessionRuntimeIndicatorLabel(runtimeIndicator)}
+				/>
 			)}
 		</div>
 	);

@@ -360,6 +360,7 @@ pub struct AcpProcessManager {
 
 struct AcpManagerState {
     workers: Mutex<HashMap<String, Arc<AcpWorker>>>,
+    connect_ops: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -438,8 +439,18 @@ impl AcpProcessManager {
         Self {
             inner: Arc::new(AcpManagerState {
                 workers: Mutex::new(HashMap::new()),
+                connect_ops: Mutex::new(HashMap::new()),
             }),
         }
+    }
+
+    fn connect_op(&self, session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut connect_ops = self.inner.connect_ops.lock().unwrap();
+        Arc::clone(
+            connect_ops
+                .entry(session_id.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
     }
 
     pub fn get_status(&self, session_id: &str) -> Option<RuntimeStatus> {
@@ -514,6 +525,13 @@ impl AcpProcessManager {
         session_id: String,
         connection_id: Option<String>,
     ) -> Result<(), String> {
+        // Resolving cwd, authenticating, and resuming happen before the worker
+        // enters the map. Serialize that whole sequence per session so two
+        // concurrent wire_connect calls cannot both spawn and then replace
+        // each other's live ACP worker. Different sessions remain concurrent.
+        let connect_op = self.connect_op(&session_id);
+        let _connect_guard = connect_op.lock().await;
+
         let stale_worker = {
             let mut workers = self.inner.workers.lock().unwrap();
             if let Some(existing) = workers.get(&session_id) {
@@ -1638,7 +1656,9 @@ async fn handle_set_permission_mode(
     params: Value,
 ) -> Result<(), String> {
     let next_mode = permission_mode_from_params(&params)?;
-    ensure_mode_change_idle(worker)?;
+    // Permission mode hot-switches mid-turn (issue #13): session/set_mode only
+    // affects subsequent permission requests, so an in-flight prompt is fine.
+    // Plan/swarm/goal handlers keep the idle gate.
     let _mode_guard = worker.mode_ops.lock().await;
 
     let previous_mode = *worker.permission_mode.lock().unwrap();
@@ -3454,6 +3474,23 @@ mod tests {
         manager.inner.workers.lock().unwrap().remove("session-b");
         assert_eq!(manager.list_workers().len(), 1);
         assert_eq!(manager.list_workers()[0].session_id, "session-a");
+    }
+
+    #[test]
+    fn connect_operations_are_shared_per_session_only() {
+        let manager = AcpProcessManager::new();
+        let session_a_first = manager.connect_op("session-a");
+        let session_a_second = manager.connect_op("session-a");
+        let session_b = manager.connect_op("session-b");
+
+        assert!(Arc::ptr_eq(&session_a_first, &session_a_second));
+        assert!(!Arc::ptr_eq(&session_a_first, &session_b));
+
+        let session_a_guard = session_a_first.try_lock().expect("first session-a connect");
+        assert!(session_a_second.try_lock().is_err());
+        assert!(session_b.try_lock().is_ok());
+        drop(session_a_guard);
+        assert!(session_a_second.try_lock().is_ok());
     }
 
     #[test]

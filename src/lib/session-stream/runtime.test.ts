@@ -402,4 +402,42 @@ describe("createSessionRuntime", () => {
       vi.useRealTimers();
     }
   });
+
+  it("does not reconnect or keep waiting after a connected prompt dispatch fails", async () => {
+    vi.useFakeTimers();
+    try {
+      const promptError = new Error(
+        "ACP session/prompt failed: code=-32001 message=ACP session shutting down",
+      );
+      mocks.wireSend.mockImplementation((_sessionId: string, rawMessage: string) => {
+        const message = JSON.parse(rawMessage) as { method?: string };
+        return message.method === "prompt" ? Promise.reject(promptError) : Promise.resolve();
+      });
+      const runtime = createSessionRuntime({ sessionId: "session-1", autoConnect: false });
+
+      runtime.start();
+      await flushPromises();
+      expect(runtime.getSnapshot().status).toBe("ready");
+
+      await runtime.sendMessage("Run the concurrent test");
+      await flushPromises();
+
+      await vi.waitFor(() => {
+        expect(runtime.getSnapshot().status).toBe("error");
+      });
+      const failed = runtime.getSnapshot();
+      expect(failed.isAwaitingFirstResponse).toBe(false);
+      expect(failed.error?.message).toContain("ACP session shutting down");
+      expect(mocks.wireConnect).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(1500);
+      await flushPromises();
+      expect(mocks.wireConnect).toHaveBeenCalledTimes(1);
+      expect(runtime.getSnapshot().status).toBe("error");
+      expect(runtime.getSnapshot().isAwaitingFirstResponse).toBe(false);
+      runtime.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

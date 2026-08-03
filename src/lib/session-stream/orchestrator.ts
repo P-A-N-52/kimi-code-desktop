@@ -88,6 +88,7 @@ export type SessionRuntimeActions = {
 type OrchestratorEntry = {
   runtime: SessionRuntime;
   lastVisibleAt: number;
+  started: boolean;
 };
 
 export type SessionStreamOrchestrator = {
@@ -147,14 +148,16 @@ export function createSessionStreamOrchestrator(): SessionStreamOrchestrator {
   const getOrCreate = (sessionId: string, options: SessionRuntimeOptions) => {
     const existing = runtimes.get(sessionId);
     if (existing) {
-      existing.runtime.updateOptions(options);
+      // Wire dispatch stays owned by the single global listener below; never
+      // let option refreshes re-enable the per-session listener (issue #12).
+      existing.runtime.updateOptions({ ...options, registerPerSessionListener: false });
       return { runtime: existing.runtime, created: false };
     }
     const runtime = createSessionRuntime({
       ...options,
       registerPerSessionListener: false,
     });
-    runtimes.set(sessionId, { runtime, lastVisibleAt: Date.now() });
+    runtimes.set(sessionId, { runtime, lastVisibleAt: Date.now(), started: false });
     runtime.subscribe(() => {
       // Forward engine updates only while this session is on screen.
       if (visibleSessionId === sessionId) {
@@ -258,14 +261,17 @@ export function createSessionStreamOrchestrator(): SessionStreamOrchestrator {
         emit();
         return;
       }
-      const { runtime, created } = getOrCreate(sessionId, options);
+      const { runtime } = getOrCreate(sessionId, options);
       const entry = runtimes.get(sessionId) as OrchestratorEntry;
       entry.lastVisibleAt = Date.now();
       visibleSessionId = sessionId;
       const wantsLive = Boolean(options.autoConnect);
-      if (created) {
+      const shouldStart = !entry.started;
+      if (shouldStart) {
         // start() owns the full per-session bootstrap (replay / autoConnect);
-        // it must run exactly once so it can never wipe a background state.
+        // actionsFor() may have created the runtime during render, so track
+        // lifecycle startup independently from object creation.
+        entry.started = true;
         runtime.start();
       } else {
         const snapshot = runtime.getSnapshot();
@@ -277,7 +283,7 @@ export function createSessionStreamOrchestrator(): SessionStreamOrchestrator {
           runtime.connect();
         }
       }
-      enforceLiveWorkerCap(wantsLive && created ? [sessionId] : []);
+      enforceLiveWorkerCap(wantsLive && shouldStart ? [sessionId] : []);
       emit();
     },
 

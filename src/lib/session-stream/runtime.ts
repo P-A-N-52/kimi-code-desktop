@@ -3758,7 +3758,10 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
     }
   };
 
-  const flushPendingModeUpdates = async (connection: StreamConnection) => {
+  const flushPendingModeUpdates = async (
+    connection: StreamConnection,
+    onlyPermission = false,
+  ) => {
     const runFlush = async () => {
       // Drain until empty so updates queued while we were sending are not dropped.
       for (;;) {
@@ -3770,13 +3773,13 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
         if (pending.permissionMode) {
           updates.push(["set_permission_mode", { mode: pending.permissionMode }]);
         }
-        if (typeof pending.planMode === "boolean") {
+        if (!onlyPermission && typeof pending.planMode === "boolean") {
           updates.push(["set_plan_mode", { enabled: pending.planMode }]);
         }
-        if (typeof pending.swarmMode === "boolean") {
+        if (!onlyPermission && typeof pending.swarmMode === "boolean") {
           updates.push(["set_swarm_mode", { enabled: pending.swarmMode }]);
         }
-        if (typeof pending.goalMode === "boolean") {
+        if (!onlyPermission && typeof pending.goalMode === "boolean") {
           updates.push(["set_goal_mode", { enabled: pending.goalMode }]);
         }
         if (updates.length === 0) {
@@ -3874,9 +3877,10 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
       await Promise.resolve(ws.send(JSON.stringify(message)));
       console.log("[SessionStream] Sent pending message after connect:", pendingMessage.text);
     } catch (err) {
-      if (pendingMessageRef.current === null) {
-        pendingMessageRef.current = pendingMessage;
-      }
+      // A dispatched prompt failure is terminal. Keeping it queued lets the
+      // outer connection bootstrap mistake the failure for a connect error
+      // and silently resend it forever.
+      pendingMessageRef.current = null;
       promptRequestIdsRef.current.delete(messageId);
       optimisticUserMessagesRef.current.shift();
       if (pendingMessage.goalSwitchWasArmed && useToolEventsStore.getState().currentGoal === null) {
@@ -4719,6 +4723,38 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
         wsRef.current = null;
       };
 
+      const handleTauriPostConnectError = (err: unknown) => {
+        if (wsRef.current !== connection) {
+          return;
+        }
+        const setupError = err instanceof Error ? err : new Error(String(err));
+        console.error("[SessionStream] Tauri wire setup or dispatch failed:", setupError);
+
+        // sendPendingMessage already records prompt failures. Initialize,
+        // replay, or mode flush failures still need the same terminal cleanup.
+        if (errorRef.current?.message !== setupError.message) {
+          setError(setupError);
+          onError?.(setupError);
+        }
+        awaitingIdleRef.current = false;
+        setAwaitingFirstResponse(false);
+        setStatus("error");
+        clearStepRetryStatus();
+        pendingMessageRef.current = null;
+        promptRequestIdsRef.current.clear();
+        cancelRequestIdsRef.current.clear();
+        initializeIdRef.current = null;
+        replayIdRef.current = null;
+        initializeRetryCountRef.current = 0;
+        if (historyCompleteTimeoutRef.current !== null) {
+          window.clearTimeout(historyCompleteTimeoutRef.current);
+          historyCompleteTimeoutRef.current = null;
+        }
+        setIsReplayingHistory(false);
+        isReplayingRef.current = false;
+        completeStreamingMessages();
+      };
+
       try {
         if (registerPerSessionListener) {
           const unlisten = onWireMessage(sessionId, (message) => {
@@ -4807,8 +4843,8 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
                 }
               }
             }, 15_000);
-          })
-          .catch(handleTauriConnectError);
+          }, handleTauriConnectError)
+          .catch(handleTauriPostConnectError);
       } catch (err) {
         handleTauriConnectError(err);
       }
@@ -5209,13 +5245,15 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
     setPermissionMode(mode);
 
     const connection = wsRef.current;
-    const canFlushImmediately =
+    // Permission mode hot-switches even mid-turn (issue #13): any open,
+    // initialized connection may carry the write. While busy, drain only the
+    // permission update so queued plan/swarm/goal writes keep waiting for idle.
+    const canSendNow =
       connection?.readyState === STREAM_OPEN &&
-      statusRef.current === "ready" &&
       initializeIdRef.current === null &&
       replayIdRef.current === null;
-    if (canFlushImmediately && connection) {
-      void flushPendingModeUpdates(connection).catch((error) => {
+    if (canSendNow && connection) {
+      void flushPendingModeUpdates(connection, statusRef.current !== "ready").catch((error) => {
         console.warn("[SessionStream] Failed to set permission mode:", error);
       });
       return true;
@@ -5961,7 +5999,15 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
     onError = nextOptions.onError;
     onSessionStatus = nextOptions.onSessionStatus;
     onFirstTurnComplete = nextOptions.onFirstTurnComplete;
-    registerPerSessionListener = nextOptions.registerPerSessionListener ?? true;
+    // Only an explicit value may change the transport mode. The G5 orchestrator
+    // creates engines with registerPerSessionListener=false and owns wire
+    // dispatch via its single global listener; option refreshes from the React
+    // adapter omit this field, and resetting it to true here re-enabled the
+    // per-session listener on the next connect, applying every live wire
+    // message twice (duplicated text deltas / tool cards, issue #12).
+    if (typeof nextOptions.registerPerSessionListener === "boolean") {
+      registerPerSessionListener = nextOptions.registerPerSessionListener;
+    }
     // Option forwarding only. The state-derived ref mirrors are synced at
     // wire-event / action boundaries (syncRefsFromState) so that timer-driven
     // state changes behave like the former render-deferred ref sync.

@@ -120,6 +120,7 @@ function makeStream(
     currentStep: 0,
     goalCompletionEpoch: 0,
     isConnected: true,
+    connectionPhase: "connected",
     sendMessage,
     runLocalInfoCommand: vi.fn(),
     respondToApproval: vi.fn(),
@@ -147,6 +148,41 @@ function makeStream(
     ...overrides,
   };
 }
+
+describe("ConversationView ACP reconnect", () => {
+  it("offers reconnect for a disconnected ACP error and guards repeated clicks", () => {
+    const reconnect = vi.fn();
+    const stream = makeStream(vi.fn(), {
+      status: "error",
+      isConnected: false,
+      connectionPhase: "disconnected",
+      error: new Error("ACP connection closed"),
+      reconnect,
+    });
+    renderConversation("reconnectable-error", stream);
+
+    const button = screen.getByRole("button", { name: "重新连接" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(
+      (screen.getByRole("button", { name: "正在重连…" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it("keeps Composer usable and omits reconnect for an ordinary prompt error", () => {
+    const stream = makeStream(vi.fn(), {
+      status: "error",
+      connectionPhase: "connected",
+      error: new Error("Prompt rejected: invalid argument"),
+    });
+    renderConversation("prompt-error", stream);
+
+    expect(screen.queryByRole("button", { name: "重新连接" })).toBeNull();
+    expect(screen.getByTestId("composer-disabled").textContent).toBe("false");
+  });
+});
 
 function conversation(
   sessionId: string,

@@ -139,6 +139,35 @@ describe("StatusStrip Goal controls", () => {
   });
 });
 
+describe("StatusStrip permission hot-switch (issue #13)", () => {
+  beforeEach(() => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, "zh-CN");
+  });
+
+  it("keeps the permission pill enabled during busy turns", () => {
+    const onPermissionModeChange = vi.fn();
+    renderStatusStrip(
+      <StatusStrip
+        {...baseProps}
+        modeControlsDisabled={true}
+        permissionModeDisabled={false}
+        onPermissionModeChange={onPermissionModeChange}
+      />,
+    );
+
+    const pill = screen.getByRole("button", { name: /manual/ }) as HTMLButtonElement;
+    expect(pill.disabled).toBe(false);
+    fireEvent.click(pill);
+    fireEvent.click(screen.getByText("yolo"));
+    expect(onPermissionModeChange).toHaveBeenCalledWith("yolo");
+
+    // plan/swarm pills keep the busy gating.
+    expect((screen.getByRole("button", { name: /plan/ }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+});
+
 describe("StatusStrip task running indicator", () => {
   beforeEach(() => {
     window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, "zh-CN");

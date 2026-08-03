@@ -1,4 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useToolEventsStore } from "@/lib/tool-events/store";
 import { SessionStreamOrchestratorProvider } from "@/lib/session-stream/provider";
@@ -731,6 +732,52 @@ describe("useSessionStream Tauri watchdog", () => {
 
 		expect(result.current.planMode).toBe(true);
 		expect(result.current.permissionMode).toBe("auto");
+
+		act(() => {
+			expect(result.current.sendSetPermissionMode("yolo")).toBe(true);
+		});
+		await flushPromises();
+
+		expect(result.current.permissionMode).toBe("yolo");
+		expect(
+			mocks.wireSend.mock.calls
+				.map(([, message]) => JSON.parse(message))
+				.find((message) => message.method === "set_permission_mode"),
+		).toMatchObject({
+			method: "set_permission_mode",
+			params: { mode: "yolo" },
+		});
+	});
+
+	it("hot-switches permission mode while the session is busy", async () => {
+		const { result } = renderHook(() =>
+			useSessionStream({
+				sessionId: "session-1",
+				baseUrl: "http://localhost:5173",
+				autoConnect: true,
+			}),
+		);
+
+		await flushPromises();
+		completeReplay();
+		await flushPromises();
+
+		act(() => {
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					method: "session_status",
+					params: {
+						session_id: "session-1",
+						state: "busy",
+						seq: 2,
+						updated_at: "2026-01-01T00:00:01Z",
+					},
+				}),
+			);
+		});
+		expect(result.current.status).toBe("streaming");
+		mocks.wireSend.mockClear();
 
 		act(() => {
 			expect(result.current.sendSetPermissionMode("yolo")).toBe(true);
@@ -2823,9 +2870,9 @@ describe("G5 multi-active-session mode (flag on)", () => {
 
 	/** Answer initialize + replay RPCs through the orchestrator's global listener. */
 	function completeReplayGlobal(sessionId: string) {
-		const sentMessages = mocks.wireSend.mock.calls.map(([, rawMessage]) =>
-			JSON.parse(rawMessage),
-		);
+		const sentMessages = mocks.wireSend.mock.calls
+			.filter(([sentSessionId]) => sentSessionId === sessionId)
+			.map(([, rawMessage]) => JSON.parse(rawMessage));
 		const initialize = sentMessages.find((message) => message.method === "initialize");
 		const replay = sentMessages.find((message) => message.method === "replay");
 		if (initialize) {
@@ -2849,6 +2896,59 @@ describe("G5 multi-active-session mode (flag on)", () => {
 			});
 		}
 	}
+
+	it("keeps the global listener alive through StrictMode and routes two sessions", async () => {
+		const strictWrapper = ({ children }: { children: React.ReactNode }) => (
+			<StrictMode>
+				<SessionStreamOrchestratorProvider>{children}</SessionStreamOrchestratorProvider>
+			</StrictMode>
+		);
+		const { rerender, result } = renderHook(
+			(props: { sessionId: string }) =>
+				useSessionStream({
+					sessionId: props.sessionId,
+					baseUrl: "http://localhost:5173",
+					autoConnect: true,
+				}),
+			{ initialProps: { sessionId: "session-a" }, wrapper: strictWrapper },
+		);
+
+		await flushPromises();
+		expect(globalWireHandler).not.toBeNull();
+		completeReplayGlobal("session-a");
+		await flushPromises();
+		act(() => {
+			globalWireHandler?.({
+				session_id: "session-a",
+				message: JSON.stringify({
+					jsonrpc: "2.0",
+					method: "event",
+					params: { type: "ContentPart", payload: { type: "text", text: "from a" } },
+				}),
+			});
+		});
+		expect(result.current.messages).toEqual([
+			expect.objectContaining({ variant: "text", content: "from a" }),
+		]);
+
+		rerender({ sessionId: "session-b" });
+		await flushPromises();
+		completeReplayGlobal("session-b");
+		await flushPromises();
+		act(() => {
+			globalWireHandler?.({
+				session_id: "session-b",
+				message: JSON.stringify({
+					jsonrpc: "2.0",
+					method: "event",
+					params: { type: "ContentPart", payload: { type: "text", text: "from b" } },
+				}),
+			});
+		});
+		expect(result.current.messages).toEqual([
+			expect.objectContaining({ variant: "text", content: "from b" }),
+		]);
+	});
 
 	it("keeps the running background worker alive when switching sessions (flipped G5 Phase 0 baseline)", async () => {
 		const { rerender, result } = renderHook(

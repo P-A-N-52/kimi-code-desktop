@@ -59,6 +59,7 @@ export function StatusStrip({
   onGoalModeChange,
   onGoalControl,
   modeControlsDisabled,
+  permissionModeDisabled,
   contextUsage,
   tokenUsage,
   contextTokens = null,
@@ -75,6 +76,8 @@ export function StatusStrip({
   onGoalModeChange: (enabled: boolean) => void;
   onGoalControl?: (action: "pause" | "resume" | "cancel") => Promise<unknown>;
   modeControlsDisabled: boolean;
+  /** Permission pill only; defaults to modeControlsDisabled. Busy turns must keep it enabled (issue #13). */
+  permissionModeDisabled?: boolean;
   contextUsage: number;
   tokenUsage: TokenUsage | null;
   contextTokens?: number | null;
@@ -92,6 +95,7 @@ export function StatusStrip({
     (state) => state.tasks.filter((task) => isActiveAgentStatus(task.status)).length,
   );
   const current = MODES.find((m) => m.key === permissionMode) ?? MODES[0];
+  const permissionDisabled = permissionModeDisabled ?? modeControlsDisabled;
   const runGoalControl = (action: "pause" | "resume" | "cancel") => {
     if (!onGoalControl || goalControlPending) return;
     setGoalControlPending(action);
@@ -114,7 +118,7 @@ export function StatusStrip({
       <div ref={menuRef} className="relative">
         <StatusPill
           tone={permissionMode === "auto" ? "amber" : permissionMode === "yolo" ? "red" : "neutral"}
-          disabled={modeControlsDisabled}
+          disabled={permissionDisabled}
           onClick={() => setMenuOpen((v) => !v)}
         >
           <current.icon size={12} strokeWidth={1.5} />
