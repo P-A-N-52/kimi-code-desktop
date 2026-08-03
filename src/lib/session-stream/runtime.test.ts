@@ -154,7 +154,6 @@ describe("createSessionRuntime", () => {
     expect(snapshot.messages[0].isStreaming).toBe(true);
     expect(snapshot.isReplayingHistory).toBe(false);
     expect(snapshot.status).toBe("streaming");
-    expect(snapshot.lastEventAt).toBeGreaterThan(0);
     expect(notified.length).toBeGreaterThan(0);
     expect(notified).toContain("messages=1");
 
@@ -171,6 +170,105 @@ describe("createSessionRuntime", () => {
     runtime.setMessages((prev) => [...prev, { id: "m2", role: "assistant", content: "x" }]);
     expect(runtime.getSnapshot().messages).toHaveLength(2);
     expect(notified.length).toBe(notifiedAfterUnsubscribe);
+  });
+
+  it("batches scalar StatusUpdate fields into one snapshot notification", () => {
+    const runtime = createSessionRuntime({ sessionId: "session-1" });
+    let notifications = 0;
+    runtime.subscribe(() => {
+      notifications += 1;
+    });
+
+    runtime.handleWireMessage(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: {
+          type: "StatusUpdate",
+          payload: {
+            context_usage: 0.5,
+            context_tokens: 10,
+            max_context_tokens: 100,
+            plan_mode: true,
+            permission_mode: "auto",
+            swarm_mode: true,
+            goal_mode: true,
+          },
+        },
+      }),
+    );
+
+    expect(notifications).toBe(1);
+    expect(runtime.getSnapshot()).toMatchObject({
+      contextUsage: 0.5,
+      contextTokens: 10,
+      maxContextTokens: 100,
+      planMode: true,
+      permissionMode: "auto",
+      swarmMode: true,
+      goalMode: true,
+    });
+  });
+
+  it("throttles long streaming content flushes while preserving final content", () => {
+    vi.useFakeTimers();
+    const originalRequestAnimationFrame = window.requestAnimationFrame;
+    const originalCancelAnimationFrame = window.cancelAnimationFrame;
+    const pendingFrames = new Map<number, FrameRequestCallback>();
+    let nextFrameId = 0;
+    window.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+      const id = ++nextFrameId;
+      pendingFrames.set(id, callback);
+      return id;
+    }) as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = ((id: number) => {
+      pendingFrames.delete(id);
+    }) as typeof window.cancelAnimationFrame;
+
+    const runFrame = () => {
+      const first = pendingFrames.entries().next().value as
+        | [number, FrameRequestCallback]
+        | undefined;
+      if (!first) {
+        return;
+      }
+      pendingFrames.delete(first[0]);
+      first[1](0);
+    };
+
+    try {
+      const runtime = createSessionRuntime({ sessionId: "session-1" });
+      runtime.handleWireMessage(contentPartWire("a"));
+      runtime.handleWireMessage(contentPartWire("b"));
+      runFrame();
+      expect(runtime.getSnapshot().messages[0].content).toBe("ab");
+
+      const mediumDelta = "m".repeat(2100);
+      runtime.handleWireMessage(contentPartWire(mediumDelta));
+      runFrame();
+      expect(runtime.getSnapshot().messages[0].content).toBe("ab");
+      vi.advanceTimersByTime(59);
+      runFrame();
+      expect(runtime.getSnapshot().messages[0].content).toBe("ab");
+      vi.advanceTimersByTime(1);
+      runFrame();
+      expect(runtime.getSnapshot().messages[0].content).toBe(`ab${mediumDelta}`);
+
+      const longDelta = "l".repeat(6000);
+      runtime.handleWireMessage(contentPartWire(longDelta));
+      runFrame();
+      expect(runtime.getSnapshot().messages[0].content).toBe(`ab${mediumDelta}`);
+      vi.advanceTimersByTime(119);
+      runFrame();
+      expect(runtime.getSnapshot().messages[0].content).toBe(`ab${mediumDelta}`);
+      vi.advanceTimersByTime(1);
+      runFrame();
+      expect(runtime.getSnapshot().messages[0].content).toBe(`ab${mediumDelta}${longDelta}`);
+    } finally {
+      window.requestAnimationFrame = originalRequestAnimationFrame;
+      window.cancelAnimationFrame = originalCancelAnimationFrame;
+      vi.useRealTimers();
+    }
   });
 
   it("applies functional setMessages updates against the latest messages", () => {

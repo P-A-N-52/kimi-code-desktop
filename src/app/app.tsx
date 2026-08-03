@@ -6,10 +6,12 @@ import { useSessionStream } from "@/hooks/useSessionStream";
 import { DirectoryNotFoundError, useSessions } from "@/hooks/useSessions";
 import { getApiBaseUrl, hasPlatformModifier } from "@/hooks/utils";
 import type { SessionStatus, UploadSessionFileResponse } from "@/lib/api/models";
+import { clearBackgroundTasksSession } from "@/lib/background-tasks/sync";
 import { useDomTranslations, useI18n } from "@/lib/i18n";
 import { classifyIdleReason } from "@/lib/idle-turn";
 import { openKimiCodeWebsite } from "@/lib/kimi-code-link";
 import { shouldPauseForRuntimeReadiness } from "@/lib/runtime-readiness";
+import { useSessionStreamOrchestrator } from "@/lib/session-stream/provider";
 import {
   checkRuntimeReadiness,
   isTauri,
@@ -20,8 +22,6 @@ import {
   showWindow,
 } from "@/lib/tauri-api";
 import { useToolEventsStore } from "@/lib/tool-events/store";
-import { clearBackgroundTasksSession } from "@/lib/background-tasks/sync";
-import { useSessionStreamOrchestrator } from "@/lib/session-stream/provider";
 import { ConversationView } from "@/modules/conversation/conversation-view";
 import { GoalCancelConfirmation } from "@/modules/conversation/goal-cancel-confirmation";
 import { ReadinessOverlay } from "@/modules/readiness/readiness-overlay";
@@ -29,6 +29,7 @@ import { AppSidebar } from "@/modules/sessions/app-sidebar";
 import { SettingsDialog, type SettingsTab } from "@/modules/settings/settings-dialog";
 import { type SessionModeDraft, shouldAutoApprove } from "@/modules/statusbar/permission-mode";
 import { Topbar } from "@/modules/topbar/topbar";
+import { useDesktopUpdate } from "@/modules/update/desktop-update";
 import { ChangesPanel, type WorkspaceTab } from "@/modules/workspace/changes-panel";
 import {
   deriveChanges,
@@ -51,6 +52,7 @@ export default function App() {
   useTheme();
   useDomTranslations();
   const { resolvedLanguage, t } = useI18n();
+  const desktopUpdate = useDesktopUpdate();
 
   useLayoutEffect(() => {
     if (isTauri()) {
@@ -565,6 +567,7 @@ export default function App() {
             onToggleCollapsed={() => setSidebarOpen((v) => !v)}
             onNewSession={handleNewSession}
             onOpenSettings={() => openSettings()}
+            updateAvailable={desktopUpdate !== null}
             sessions={sessions}
             archivedSessions={archivedSessions}
             selectedId={selectedSessionId}

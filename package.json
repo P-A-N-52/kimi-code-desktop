@@ -39,6 +39,8 @@
     "tauri:build": "npm run release:msi",
     "tauri:build:raw-msi": "tauri build --bundles msi",
     "tauri:build:nsis": "tauri build --bundles nsis",
+    "bench:long-session": "node scripts/bench-long-session.mjs",
+    "gen:long-session-fixture": "node scripts/gen-long-session-fixture.mjs",
     "version:sync": "node scripts/sync-version.js",
     "version:set": "node scripts/sync-version.js"
   },

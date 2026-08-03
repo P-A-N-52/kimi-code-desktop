@@ -5,6 +5,8 @@ import { cn } from "@/lib/utils";
 import { Expandable } from "@/ui/expandable";
 import { StatusDot } from "@/ui/status-dot";
 
+const MAX_VISIBLE_STEPS = 60;
+
 function titleCase(value?: string): string {
   if (!value) return "子代理";
   return `${value.charAt(0).toUpperCase()}${value.slice(1)} 代理`;
@@ -106,6 +108,7 @@ export function SubagentSteps({
   compact?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen ?? Boolean(running));
+  const [showAll, setShowAll] = useState(false);
   const toolCount = useMemo(
     () => steps?.filter((step) => step.kind === "tool-call").length ?? 0,
     [steps],
@@ -118,6 +121,11 @@ export function SubagentSteps({
     [steps],
   );
   const preview = useMemo(() => latestStepPreview(steps), [steps]);
+  const hasMoreSteps = (steps?.length ?? 0) > MAX_VISIBLE_STEPS;
+  const visibleSteps = useMemo(
+    () => (showAll ? steps : steps?.slice(-MAX_VISIBLE_STEPS)) ?? [],
+    [showAll, steps],
+  );
 
   useEffect(() => {
     if (running) setOpen(true);
@@ -159,8 +167,27 @@ export function SubagentSteps({
       </button>
       <Expandable open={open}>
         <div className="mt-2 space-y-1.5 border-l border-line pl-3 text-[11px] leading-relaxed">
-          {steps?.length ? (
-            steps.map((step, index) => <Step key={`${step.kind}-${index}`} step={step} />)
+          {hasMoreSteps && !showAll ? (
+            <div className="font-mono text-[10.5px] text-faint">
+              {`… 其余 ${(steps?.length ?? 0) - MAX_VISIBLE_STEPS} 条`}
+            </div>
+          ) : null}
+          {visibleSteps.length ? (
+            <>
+              {visibleSteps.map((step, index) => (
+                <Step key={`${step.kind}-${index}`} step={step} />
+              ))}
+              {hasMoreSteps ? (
+                <button
+                  type="button"
+                  aria-expanded={showAll}
+                  onClick={() => setShowAll((value) => !value)}
+                  className="font-mono text-[10.5px] text-muted hover:text-foreground"
+                >
+                  {showAll ? "收起" : "展开全部"}
+                </button>
+              ) : null}
+            </>
           ) : (
             <div className="font-mono text-[10.5px] text-faint">等待子代理步骤…</div>
           )}

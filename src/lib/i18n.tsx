@@ -71,6 +71,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Close side chat": "关闭侧聊",
   "Close sidebar": "关闭侧边栏",
   "Close workspace files panel": "关闭工作区文件面板",
+  Collapse: "收起",
   "Collapse agent monitor": "折叠 Agent 监控",
   "Collapse sidebar": "折叠侧边栏",
   "Collapse skills panel": "折叠技能面板",
@@ -120,6 +121,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
     "回车提交 · Shift+回车换行 · Esc 取消",
   Env: "环境变量",
   "Env overrides": "环境变量覆盖",
+  "Expand all": "展开全部",
   "Expand sidebar": "展开侧边栏",
   "Expand workspace panel": "展开工作区面板",
   "Extra skill directories": "额外技能目录",
@@ -346,6 +348,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Settings saved": "设置已保存",
   "Show API key": "显示 API 密钥",
   "Show in Finder": "在 Finder 中显示",
+  "Show full output": "显示完整输出",
   "Show thinking stream": "显示思考流",
   "Side Chat": "侧聊",
   "Skills Library": "技能库",
@@ -793,6 +796,16 @@ export function translateUiString(value: string, language: ResolvedUiLanguage): 
 }
 
 function restoreCore(core: string): string | null {
+  if (core === "展开全部") {
+    return "Expand all";
+  }
+  if (core === "收起") {
+    return "Collapse";
+  }
+  if (core === "显示完整输出") {
+    return "Show full output";
+  }
+
   const direct = EN_US_RESTORE_TRANSLATIONS[core];
   if (direct) {
     return direct;
@@ -801,6 +814,11 @@ function restoreCore(core: string): string | null {
   const olderMessagesMatch = core.match(/^加载更早消息（剩余 (\d+) 条）$/);
   if (olderMessagesMatch) {
     return `Load earlier messages (${olderMessagesMatch[1]} remaining)`;
+  }
+
+  const truncatedOutputMatch = core.match(/^输出已截断（共 (\d+) 行）$/);
+  if (truncatedOutputMatch) {
+    return `Output truncated (${truncatedOutputMatch[1]} lines)`;
   }
 
   return null;

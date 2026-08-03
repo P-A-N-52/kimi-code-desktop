@@ -15,7 +15,7 @@
  * visible snapshot and forwards actions through this object.
  */
 
-import { listenEvent } from "@/lib/tauri-api";
+import { listenEvent, parseWireEventPayload } from "@/lib/tauri-api";
 import { emptySessionConfigState } from "@/lib/session-config-state";
 import type { LiveMessage } from "@/hooks/types";
 import type { UploadSessionFileResponse } from "@/lib/api/models";
@@ -54,7 +54,6 @@ export const EMPTY_SESSION_VIEW: SessionViewState = {
   sessionConfigUpdating: false,
   connectionPhase: "disconnected",
   connectionId: null,
-  lastEventAt: 0,
   updatedAt: 0,
 };
 
@@ -170,19 +169,17 @@ export function createSessionStreamOrchestrator(): SessionStreamOrchestrator {
   // Single global wire:message listener (G5 §5.5): route by session_id, drop
   // events for sessions without a runtime. Registered exactly once at creation.
   unlistenGlobal = listenEvent("wire:message", (payload) => {
-    const eventPayload = payload as { session_id?: unknown; message?: unknown } | undefined;
-    if (
-      !eventPayload ||
-      typeof eventPayload.session_id !== "string" ||
-      typeof eventPayload.message !== "string"
-    ) {
+    const parsed = parseWireEventPayload(payload);
+    if (!parsed) {
       return;
     }
-    const entry = runtimes.get(eventPayload.session_id);
+    const entry = runtimes.get(parsed.sessionId);
     if (!entry) {
       return;
     }
-    entry.runtime.handleWireMessage(eventPayload.message);
+    for (const message of parsed.messages) {
+      entry.runtime.handleWireMessage(message);
+    }
   });
 
   const collectLiveSessionIds = (): string[] => {

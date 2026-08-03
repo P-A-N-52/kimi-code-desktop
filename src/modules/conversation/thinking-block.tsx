@@ -18,8 +18,13 @@ export function ThinkingBlock({
 	const open = userOpen ?? streaming;
 
 	useEffect(() => {
-		if (!streaming || !open || !bodyRef.current) return;
-		bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+		if (!streaming || !open) return;
+		const frame = requestAnimationFrame(() => {
+			const body = bodyRef.current;
+			if (!body) return;
+			body.scrollTop = body.scrollHeight;
+		});
+		return () => cancelAnimationFrame(frame);
 	}, [thinking, streaming, open]);
 
 	const label = streaming

@@ -11,7 +11,7 @@ import {
   Target,
   Wrench,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { LiveMessage } from "@/hooks/types";
 import { getToolPresentation, isBackgroundOrCronObservationTool, type ToolPresentation } from "@/lib/tool-events/tool-registry";
 import { cn } from "@/lib/utils";
@@ -121,8 +121,8 @@ function GenericToolCard({
       setOpen(false);
     }
   }, [isTodo, running]);
-  const diff = findDiffDisplay(toolCall.display);
-  const diffStats = diff ? computeDiffLines(diff) : null;
+  const diff = useMemo(() => findDiffDisplay(toolCall.display), [toolCall.display]);
+  const diffStats = useMemo(() => (diff ? computeDiffLines(diff) : null), [diff]);
 
   let status: React.ReactNode = null;
   if (running) {

@@ -94,7 +94,7 @@ English: ACP-to-frontend wire compatibility translation lives in `src-tauri/src/
 - `useSessionStream` 是 live/replay wire 的统一归一化入口，AppShell 只持有一个 active-session stream。新增 wire/tool/media/subagent/steering 事件时必须同时核对类型契约、live dispatcher、`session_store` replay、state store、语义 UI 与 generic fallback。
 - 不要恢复已删除的 legacy component tree；V2 `src/modules/` 组件与现有 Zustand stores 是当前 UI 主路径。
 - `~/.kimi-code` 属于用户运行时数据；测试不得覆盖真实配置、凭据或历史会话。
-- 日常启动使用 `npm run desktop` 或 `start.bat`；本地 release exe 使用 `npm run desktop:release`；MSI 使用 `npm run release:msi`。
+- 日常启动使用 `npm run desktop`；本地 release exe 使用 `npm run desktop:release`；MSI 使用 `npm run release:msi`。
 - 不要把 `cargo build --release` 当成可运行桌面构建，也不要让旧 exe/MSI 代替当前源码。
 - 运行时需要 PATH 上的 `kimi` 和可用的 `kimi acp`；不得静默回退到 sidecar。
 
@@ -107,7 +107,7 @@ English:
 - `useSessionStream` is the shared live/replay normalization point, and AppShell owns exactly one active-session stream. For wire/tool/media/subagent/steering changes, verify the type contract, live dispatcher, `session_store` replay, state store, semantic UI, and generic fallback together.
 - Do not restore the deleted legacy component tree; V2 components under `src/modules/` and the existing Zustand stores are the current UI path.
 - Treat `~/.kimi-code` as user runtime data; tests must not overwrite real config, credentials, or history.
-- Use `npm run desktop` or `start.bat` for daily launch, `npm run desktop:release` for a local release executable, and `npm run release:msi` for MSI packaging.
+- Use `npm run desktop` for daily launch, `npm run desktop:release` for a local release executable, and `npm run release:msi` for MSI packaging.
 - Do not use `cargo build --release` as the runnable desktop path or substitute stale artifacts for the source tree.
 - Runtime requires `kimi` on PATH and a usable `kimi acp`; never silently fall back to a sidecar.
 

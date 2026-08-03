@@ -27,6 +27,22 @@ const mocks = vi.hoisted(() => ({
 	getSession: vi.fn(),
 	listenEvent: vi.fn(),
 	isMultiActiveSessionsEnabled: vi.fn(),
+	parseWireEventPayload: (payload: unknown) => {
+		if (typeof payload !== "object" || payload === null) return null;
+		const { session_id, message, messages } = payload as {
+			session_id?: unknown;
+			message?: unknown;
+			messages?: unknown;
+		};
+		if (typeof session_id !== "string") return null;
+		if (typeof message === "string") {
+			return { sessionId: session_id, messages: [message] };
+		}
+		if (Array.isArray(messages) && messages.every((item) => typeof item === "string")) {
+			return { sessionId: session_id, messages };
+		}
+		return null;
+	},
 }));
 
 vi.mock("@/lib/tauri-api", () => ({
@@ -47,6 +63,7 @@ vi.mock("@/lib/tauri-api", () => ({
 	getKimiCliVersion: mocks.getKimiCliVersion,
 	getSession: mocks.getSession,
 	listenEvent: mocks.listenEvent,
+	parseWireEventPayload: mocks.parseWireEventPayload,
 }));
 
 vi.mock("@/lib/features", () => ({

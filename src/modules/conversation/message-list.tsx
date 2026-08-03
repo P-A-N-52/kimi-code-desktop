@@ -187,6 +187,7 @@ export function MessageList({
   const scrollRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
   const prependScrollHeightRef = useRef<number | null>(null);
+  const lastRenderedContentKeyRef = useRef<string | null>(null);
   const callbacksRef = useRef({ onRespondApproval, onRespondQuestion, onForkSession });
   callbacksRef.current = { onRespondApproval, onRespondQuestion, onForkSession };
   const stableRespondApproval = useCallback(
@@ -247,10 +248,20 @@ export function MessageList({
       visibleMessages: [...pinnedInteractions, ...timelineMessages.slice(tailStart)],
     };
   }, [timelineMessages, visibleLimit]);
+  const streamingMessage = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].isStreaming) return messages[index];
+    }
+    return undefined;
+  }, [messages]);
+  const streamingMessageId = streamingMessage?.id;
+  const streamingContentLength = streamingMessage?.content?.length ?? 0;
+  const visibleMessageCount = visibleMessages.length;
 
   useEffect(() => {
     if (historyWindow.sessionId === sessionId) return;
     prependScrollHeightRef.current = null;
+    lastRenderedContentKeyRef.current = null;
     followRef.current = true;
     setHistoryWindow({ sessionId, limit: INITIAL_VISIBLE_MESSAGES });
   }, [historyWindow.sessionId, sessionId]);
@@ -291,11 +302,14 @@ export function MessageList({
   });
 
   useEffect(() => {
+    const renderedContentKey = `${streamingMessageId ?? ""}:${streamingContentLength}:${visibleMessageCount}`;
+    if (lastRenderedContentKeyRef.current === renderedContentKey) return;
+    lastRenderedContentKeyRef.current = renderedContentKey;
     const el = scrollRef.current;
     if (el && followRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  });
+  }, [streamingMessageId, streamingContentLength, visibleMessageCount]);
 
   return (
     <div

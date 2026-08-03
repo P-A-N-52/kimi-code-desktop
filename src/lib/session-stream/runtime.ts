@@ -519,6 +519,7 @@ async function replayHistoryMessagesInBatches(
   messages: string[],
   handleMessage: (message: string) => void,
   isCancelled: () => boolean,
+  onBatchComplete?: (hasMore: boolean) => void,
 ): Promise<void> {
   for (let index = 0; index < messages.length; index += HISTORY_REPLAY_CHUNK_SIZE) {
     if (isCancelled()) {
@@ -528,7 +529,9 @@ async function replayHistoryMessagesInBatches(
     for (const message of chunk) {
       handleMessage(message);
     }
-    if (index + HISTORY_REPLAY_CHUNK_SIZE < messages.length) {
+    const hasMore = index + chunk.length < messages.length;
+    onBatchComplete?.(hasMore);
+    if (hasMore) {
       await new Promise<void>((resolve) => {
         if (typeof requestAnimationFrame === "function") {
           requestAnimationFrame(() => resolve());
@@ -766,7 +769,6 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
   let sessionConfigUpdating = false;
   let connectionPhase: ConnectionPhase = "disconnected";
   let connectionId: string | null = null;
-  let lastEventAt = 0;
 
   // ── Refs (was useRef; kept as mutable box objects so access reads verbatim) ──
   const sessionConfigStateRef: { current: SessionConfigState } = {
@@ -801,6 +803,9 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
   const goalHistoryResyncGenerationRef: { current: number } = { current: 0 };
   const goalHistoryResyncActiveRef: { current: boolean } = { current: false };
   const goalHistoryReplayBufferRef: { current: { messages: LiveMessage[] } | null } = {
+    current: null,
+  };
+  const historyReplayBufferRef: { current: { messages: LiveMessage[] } | null } = {
     current: null,
   };
   const latestSessionStatusRef: { current: SessionStatus | null } = { current: null };
@@ -864,6 +869,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
     current: { inThink: false, buffer: "" },
   };
   const streamUpdateFrameRef: { current: number | null } = { current: null };
+  const lastStreamContentFlushAtRef: { current: number | null } = { current: null };
   const thinkingCompletedRef: { current: boolean } = { current: false };
   const flushBufferedStreamUpdateRef: { current: () => void } = { current: () => undefined };
   const flushInlineThinkBufferRef: { current: (isReplay: boolean) => void } = {
@@ -965,7 +971,6 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
       sessionConfigUpdating,
       connectionPhase,
       connectionId,
-      lastEventAt,
       updatedAt: Date.now(),
     };
   };
@@ -1055,9 +1060,6 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
       case "connectionId":
         connectionId = next as string | null;
         break;
-      case "lastEventAt":
-        lastEventAt = next as number;
-        break;
       default:
         break;
     }
@@ -1110,6 +1112,45 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
     emit();
   };
 
+  type StatusUpdateSnapshotFields = Pick<
+    SessionViewState,
+    | "contextUsage"
+    | "contextTokens"
+    | "maxContextTokens"
+    | "tokenUsage"
+    | "planMode"
+    | "permissionMode"
+    | "swarmMode"
+    | "goalMode"
+  >;
+  const applyStatusUpdateFields = (updates: Partial<StatusUpdateSnapshotFields>): void => {
+    let changed = false;
+    const apply = <K extends keyof StatusUpdateSnapshotFields>(
+      key: K,
+      next: StatusUpdateSnapshotFields[K] | undefined,
+    ): void => {
+      if (next === undefined || Object.is(state[key], next)) {
+        return;
+      }
+      applyField(key as keyof SessionViewState, next as SessionViewState[keyof SessionViewState]);
+      changed = true;
+    };
+
+    apply("contextUsage", updates.contextUsage);
+    apply("contextTokens", updates.contextTokens);
+    apply("maxContextTokens", updates.maxContextTokens);
+    apply("tokenUsage", updates.tokenUsage);
+    apply("planMode", updates.planMode);
+    apply("permissionMode", updates.permissionMode);
+    apply("swarmMode", updates.swarmMode);
+    apply("goalMode", updates.goalMode);
+
+    if (changed) {
+      rebuildSnapshot();
+      emit();
+    }
+  };
+
   // Setters (was useState setters; SetStateAction semantics preserved)
   const setMessagesInternal = (
     action: LiveMessage[] | ((prev: LiveMessage[]) => LiveMessage[]),
@@ -1147,10 +1188,10 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
     goalModeRef.current = true;
     setGoalMode(true);
   };
-  // Wrapped setMessages. Goal continuation history is rebuilt offscreen and
-  // committed once, so replay never duplicates the already-rendered first turn.
+  // Wrapped setMessages. History replay is rebuilt offscreen and committed in
+  // batches, so each replay chunk produces one visible message snapshot.
   const setMessages: typeof setMessagesInternal = (action) => {
-    const replayBuffer = goalHistoryReplayBufferRef.current;
+    const replayBuffer = goalHistoryReplayBufferRef.current ?? historyReplayBufferRef.current;
     if (replayBuffer) {
       replayBuffer.messages = typeof action === "function" ? action(replayBuffer.messages) : action;
       return;
@@ -1740,6 +1781,18 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
         return msg;
       }),
     );
+    lastStreamContentFlushAtRef.current = Date.now();
+  };
+
+  const getBufferedStreamFlushInterval = (): number => {
+    const contentLength = currentThinkingRef.current.length + currentTextRef.current.length;
+    if (contentLength > 8000) {
+      return 120;
+    }
+    if (contentLength > 2000) {
+      return 60;
+    }
+    return 0;
   };
 
   const scheduleBufferedStreamUpdate = () => {
@@ -1747,10 +1800,18 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
       return;
     }
 
-    streamUpdateFrameRef.current = window.requestAnimationFrame(() => {
+    const flushOnFrame = () => {
+      const now = Date.now();
+      const lastFlushAt = lastStreamContentFlushAtRef.current;
+      if (lastFlushAt !== null && now - lastFlushAt < getBufferedStreamFlushInterval()) {
+        streamUpdateFrameRef.current = window.requestAnimationFrame(flushOnFrame);
+        return;
+      }
       streamUpdateFrameRef.current = null;
       applyBufferedStreamContent();
-    });
+    };
+
+    streamUpdateFrameRef.current = window.requestAnimationFrame(flushOnFrame);
   };
 
   const flushBufferedStreamUpdate = () => {
@@ -1886,6 +1947,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
     flushBufferedStreamUpdate();
     currentThinkingRef.current = "";
     currentTextRef.current = "";
+    lastStreamContentFlushAtRef.current = null;
     inlineThinkParserRef.current = { inThink: false, buffer: "" };
     thinkingCompletedRef.current = false;
     thinkingMessageIdRef.current = null;
@@ -1983,6 +2045,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
 
   // Reset all state
   const resetState = (preserveSlashCommands = false, preserveSessionState = false) => {
+    historyReplayBufferRef.current = null;
     if (!preserveSessionState) {
       goalHistoryResyncGenerationRef.current += 1;
       goalHistoryResyncActiveRef.current = false;
@@ -3301,24 +3364,26 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
 
       case "StatusUpdate": {
         clearStepRetryStatus();
+        const statusUpdateFields: Partial<StatusUpdateSnapshotFields> = {};
+
         const nextContextUsage = event.payload.context_usage;
         if (typeof nextContextUsage === "number") {
-          setContextUsage(nextContextUsage);
+          statusUpdateFields.contextUsage = nextContextUsage;
         }
 
         const nextContextTokens = event.payload.context_tokens;
         if (typeof nextContextTokens === "number") {
-          setContextTokens(nextContextTokens);
+          statusUpdateFields.contextTokens = nextContextTokens;
         }
 
         const nextMaxContextTokens = event.payload.max_context_tokens;
         if (typeof nextMaxContextTokens === "number") {
-          setMaxContextTokens(nextMaxContextTokens);
+          statusUpdateFields.maxContextTokens = nextMaxContextTokens;
         }
 
         const nextTokenUsage = event.payload.token_usage;
         if (nextTokenUsage) {
-          setTokenUsage(nextTokenUsage);
+          statusUpdateFields.tokenUsage = nextTokenUsage;
         }
 
         const nextPlanMode = event.payload.plan_mode;
@@ -3326,7 +3391,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
           typeof nextPlanMode === "boolean" &&
           typeof pendingModeUpdatesRef.current.planMode !== "boolean"
         ) {
-          setPlanMode(nextPlanMode);
+          statusUpdateFields.planMode = nextPlanMode;
           planModeRef.current = nextPlanMode;
         }
 
@@ -3338,7 +3403,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
             nextPermissionMode === "yolo") &&
           !pendingModeUpdatesRef.current.permissionMode
         ) {
-          setPermissionMode(nextPermissionMode);
+          statusUpdateFields.permissionMode = nextPermissionMode;
           permissionModeRef.current = nextPermissionMode;
         }
 
@@ -3347,14 +3412,8 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
           typeof nextSwarmMode === "boolean" &&
           typeof pendingModeUpdatesRef.current.swarmMode !== "boolean"
         ) {
-          setSwarmMode(nextSwarmMode);
+          statusUpdateFields.swarmMode = nextSwarmMode;
           swarmModeRef.current = nextSwarmMode;
-        }
-
-        if (event.payload.goal_refresh && !isReplay) {
-          void syncGoalSnapshot().catch((error) => {
-            console.warn("[SessionStream] Failed to refresh native Goal:", error);
-          });
         }
 
         const nextGoalMode = event.payload.goal_mode;
@@ -3362,8 +3421,16 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
           typeof nextGoalMode === "boolean" &&
           typeof pendingModeUpdatesRef.current.goalMode !== "boolean"
         ) {
-          setGoalMode(nextGoalMode);
+          statusUpdateFields.goalMode = nextGoalMode;
           goalModeRef.current = nextGoalMode;
+        }
+
+        applyStatusUpdateFields(statusUpdateFields);
+
+        if (event.payload.goal_refresh && !isReplay) {
+          void syncGoalSnapshot().catch((error) => {
+            console.warn("[SessionStream] Failed to refresh native Goal:", error);
+          });
         }
 
         // If we have a message_id, create a special message to display it
@@ -5896,21 +5963,44 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
         isReplayingRef.current = true;
         setIsReplayingHistory(true);
 
+        let replayBuffer: { messages: LiveMessage[] } | null = null;
         try {
           const historyMessages = await replaySessionHistory(targetSessionId);
           if (!isCurrent()) {
             return;
           }
+          replayBuffer = { messages };
+          historyReplayBufferRef.current = replayBuffer;
           await replayHistoryMessagesInBatches(
             historyMessages,
             (message) => handleMessageRef.current(message),
             () => !isCurrent(),
+            (hasMore) => {
+              if (!hasMore || historyReplayBufferRef.current !== replayBuffer || !replayBuffer) {
+                return;
+              }
+              flushBufferedStreamUpdateRef.current();
+              historyReplayBufferRef.current = null;
+              setMessagesInternal(replayBuffer.messages);
+              replayBuffer = { messages };
+              historyReplayBufferRef.current = replayBuffer;
+            },
           );
           if (!isCurrent()) {
+            if (historyReplayBufferRef.current === replayBuffer) {
+              historyReplayBufferRef.current = null;
+            }
             return;
           }
-          flushInlineThinkBufferRef.current(true);
-          flushBufferedStreamUpdateRef.current();
+          if (historyReplayBufferRef.current === replayBuffer && replayBuffer) {
+            flushInlineThinkBufferRef.current(true);
+            flushBufferedStreamUpdateRef.current();
+            historyReplayBufferRef.current = null;
+            setMessagesInternal(replayBuffer.messages);
+          } else {
+            flushInlineThinkBufferRef.current(true);
+            flushBufferedStreamUpdateRef.current();
+          }
           void syncGoalSnapshot(targetSessionId).catch((error) => {
             console.warn("[SessionStream] Failed to restore Goal after history replay:", error);
           });
@@ -5933,6 +6023,9 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
           // omitted them.
           applyPersistedModes();
         } catch (err) {
+          if (historyReplayBufferRef.current === replayBuffer) {
+            historyReplayBufferRef.current = null;
+          }
           if (!isCurrent()) {
             return;
           }
@@ -5986,7 +6079,6 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
    */
   const handleWireMessage = (message: string): void => {
     lastWsMessageTimeRef.current = Date.now();
-    setField("lastEventAt", Date.now());
     handleMessage(message);
     // Ref mirrors update at wire boundaries (the former render-time sync).
     syncRefsFromState();

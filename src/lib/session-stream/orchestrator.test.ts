@@ -19,6 +19,22 @@ const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
   sendNotification: vi.fn(),
   listenEvent: vi.fn(),
+  parseWireEventPayload: (payload: unknown) => {
+    if (typeof payload !== "object" || payload === null) return null;
+    const { session_id, message, messages } = payload as {
+      session_id?: unknown;
+      message?: unknown;
+      messages?: unknown;
+    };
+    if (typeof session_id !== "string") return null;
+    if (typeof message === "string") {
+      return { sessionId: session_id, messages: [message] };
+    }
+    if (Array.isArray(messages) && messages.every((item) => typeof item === "string")) {
+      return { sessionId: session_id, messages };
+    }
+    return null;
+  },
 }));
 
 vi.mock("@/lib/tauri-api", () => ({
@@ -40,6 +56,7 @@ vi.mock("@/lib/tauri-api", () => ({
   getSession: mocks.getSession,
   sendNotification: mocks.sendNotification,
   listenEvent: mocks.listenEvent,
+  parseWireEventPayload: mocks.parseWireEventPayload,
 }));
 
 vi.mock("@/lib/version", () => ({
@@ -215,6 +232,24 @@ describe("session-stream orchestrator (G5 flag on)", () => {
     const textMessages = orchestrator.getSnapshot().messages.filter((m) => m.variant === "text");
     expect(textMessages).toHaveLength(1);
     expect(textMessages[0]?.content).toBe("hello");
+    orchestrator.destroy();
+  });
+
+  it("routes batched wire messages to one session in array order", async () => {
+    const orchestrator = createSessionStreamOrchestrator();
+    orchestrator.attach("session-a", defaultOptions("session-a"));
+    await flushPromises();
+
+    globalWireHandler?.({
+      session_id: "session-a",
+      messages: [
+        sessionStatusMessage("session-a", "busy", 1),
+        sessionStatusMessage("session-a", "idle", 2),
+      ],
+    });
+
+    // The final state proves both messages were routed and retained their order.
+    expect(orchestrator.getSnapshot().sessionStatus?.state).toBe("idle");
     orchestrator.destroy();
   });
 

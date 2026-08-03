@@ -10,11 +10,18 @@ type DiffLine = {
 	text: string;
 };
 
-export function computeDiffLines(data: DiffDisplayData): {
+type DiffResult = {
 	lines: DiffLine[];
 	adds: number;
 	dels: number;
-} {
+};
+
+const diffCache = new WeakMap<DiffDisplayData, DiffResult>();
+
+export function computeDiffLines(data: DiffDisplayData): DiffResult {
+	const cached = diffCache.get(data);
+	if (cached) return cached;
+
 	const patch = structuredPatch("file", "file", data.old_text, data.new_text, "", "");
 	const lines: DiffLine[] = [];
 	let adds = 0;
@@ -36,7 +43,9 @@ export function computeDiffLines(data: DiffDisplayData): {
 			}
 		}
 	}
-	return { lines, adds, dels };
+	const result = { lines, adds, dels };
+	diffCache.set(data, result);
+	return result;
 }
 
 export function DiffView({

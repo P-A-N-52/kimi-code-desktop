@@ -12,6 +12,15 @@ describe("parseDiffDisplay", () => {
 		expect(parseDiffDisplay(null)).toBeNull();
 		expect(parseDiffDisplay("x")).toBeNull();
 	});
+	it("复用同一原始对象引用的解析结果", () => {
+		const raw = { type: "diff", path: "a.ts", old_text: "1", new_text: "2" };
+		expect(parseDiffDisplay(raw)).toBe(parseDiffDisplay(raw));
+	});
+	it("不同原始对象引用不共享解析结果", () => {
+		const first = parseDiffDisplay({ type: "diff", path: "a.ts", old_text: "1", new_text: "2" });
+		const second = parseDiffDisplay({ type: "diff", path: "a.ts", old_text: "1", new_text: "2" });
+		expect(second).not.toBe(first);
+	});
 });
 
 describe("findDiffDisplay", () => {
