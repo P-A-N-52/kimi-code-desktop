@@ -771,6 +771,11 @@ function translateCore(core: string): string | null {
     return `${countMatch[1]} / ${countMatch[2]}`;
   }
 
+  const olderMessagesMatch = core.match(/^Load earlier messages \((\d+) remaining\)$/);
+  if (olderMessagesMatch) {
+    return `加载更早消息（剩余 ${olderMessagesMatch[1]} 条）`;
+  }
+
   return null;
 }
 
@@ -788,7 +793,17 @@ export function translateUiString(value: string, language: ResolvedUiLanguage): 
 }
 
 function restoreCore(core: string): string | null {
-  return EN_US_RESTORE_TRANSLATIONS[core] ?? null;
+  const direct = EN_US_RESTORE_TRANSLATIONS[core];
+  if (direct) {
+    return direct;
+  }
+
+  const olderMessagesMatch = core.match(/^加载更早消息（剩余 (\d+) 条）$/);
+  if (olderMessagesMatch) {
+    return `Load earlier messages (${olderMessagesMatch[1]} remaining)`;
+  }
+
+  return null;
 }
 
 function restoreUiString(value: string): string {

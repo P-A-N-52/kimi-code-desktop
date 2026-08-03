@@ -326,7 +326,7 @@ export function MessageList({
               }}
               className="rounded-r1 border border-line bg-elevated px-3 py-1.5 text-[11px] text-muted transition-colors hover:bg-hover hover:text-foreground"
             >
-              加载更早消息（剩余 {hiddenMessageCount} 条）
+              {`加载更早消息（剩余 ${hiddenMessageCount} 条）`}
             </button>
           </div>
         )}
