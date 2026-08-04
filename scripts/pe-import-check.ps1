@@ -55,12 +55,12 @@ function Read-CString([int]$startOffset, [int]$maxLength) {
 $offset = RvaToOffset $importDirRva
 if ($offset -lt 0) {
     Write-Host "No import table found."
-    exit 1
+    return 1
 }
 
 $descSize = 20
 $step = if ($is64) { 8 } else { 4 }
-$ordinalFlag = if ($is64) { [uint64]0x8000000000000000 } else { [uint64]0x80000000 }
+$ordinalFlag = if ($is64) { [uint64]1 -shl 63 } else { [uint64]1 -shl 31 }
 $dllsChecked = 0
 $missing = 0
 
@@ -116,4 +116,4 @@ for ($d = 0; $d -lt 64; $d++) {
 }
 
 Write-Host "PE import check done: $dllsChecked DLLs checked, $missing missing entries."
-if ($missing -gt 0) { exit 2 }
+if ($missing -gt 0) { return 2 }
