@@ -22,7 +22,7 @@
     "release:macos": "bash scripts/release-macos.sh",
     "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
     "rust:clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
-    "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml --config 'target.\"cfg(windows)\".rustflags=[\"-C\",\"link-arg=/MANIFEST:EMBED\",\"-C\",\"link-arg=/MANIFESTINPUT:scripts/test-windows-manifest.xml\"]'",
+    "rust:test": "node scripts/rust-test.cjs",
     "cursor:acp-milestone0": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-cursor-acp-milestone0.ps1",
     "cursor:acp-milestone0:dry": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-cursor-acp-milestone0.ps1 -DryRun",
     "cursor:acp-milestone0:verify": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-cursor-acp-milestone0.ps1",
