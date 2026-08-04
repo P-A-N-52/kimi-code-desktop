@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import {
 	acpAuthStatusLabel,
 	formatCapabilities,
@@ -7,6 +7,7 @@ import {
 } from "@/lib/provider-overview";
 import { cn } from "@/lib/utils";
 import { Button } from "@/ui/button";
+import { useConfirm } from "@/ui/confirm-dialog";
 import { useProvidersOverview } from "./use-providers-overview";
 
 function StatusBadge({
@@ -109,12 +110,94 @@ function ProviderCard({ provider }: { provider: ProviderSummary }) {
 export function ProvidersPanel({
 	enabled,
 	advancedEditor,
+	advancedEditorDirty = false,
+	onAdvancedEditorDiscard,
+	structuredEditor,
+	structuredEditorDirty = false,
+	onStructuredEditorDiscard,
 }: {
 	enabled: boolean;
 	advancedEditor: ReactNode;
+	advancedEditorDirty?: boolean;
+	onAdvancedEditorDiscard?: () => void;
+	structuredEditor?: ReactNode;
+	structuredEditorDirty?: boolean;
+	onStructuredEditorDiscard?: () => void;
 }) {
 	const { overview, isLoading, error, refresh } = useProvidersOverview({ enabled });
+	const confirm = useConfirm();
 	const [advancedOpen, setAdvancedOpen] = useState(false);
+	const [structuredOpen, setStructuredOpen] = useState(false);
+
+	useEffect(() => {
+		if (!enabled) {
+			setAdvancedOpen(false);
+			setStructuredOpen(false);
+		}
+	}, [enabled]);
+
+	const openStructuredEditor = async () => {
+		if (!structuredEditor) {
+			return;
+		}
+		if (
+			advancedOpen &&
+			advancedEditorDirty &&
+			!(await confirm("高级 config.toml 编辑器有未保存的更改，确定放弃并进入结构化编辑吗？"))
+		) {
+			return;
+		}
+		if (advancedOpen && advancedEditorDirty) {
+			onAdvancedEditorDiscard?.();
+		}
+		setAdvancedOpen(false);
+		setStructuredOpen(true);
+	};
+
+	const closeAdvancedEditor = async () => {
+			if (
+				advancedEditorDirty &&
+				!(await confirm("高级 config.toml 编辑器有未保存的更改，确定放弃并返回摘要吗？"))
+			) {
+				return;
+			}
+			if (advancedEditorDirty) {
+				onAdvancedEditorDiscard?.();
+			}
+			setAdvancedOpen(false);
+		};
+
+		const closeStructuredEditor = async () => {
+		if (
+			structuredEditorDirty &&
+			!(await confirm("结构化模型配置有未保存的更改，确定放弃并返回摘要吗？"))
+		) {
+			return;
+		}
+		if (structuredEditorDirty) {
+			onStructuredEditorDiscard?.();
+		}
+		setStructuredOpen(false);
+	};
+
+	if (structuredOpen && structuredEditor) {
+		return (
+			<div className="flex h-full min-h-0 flex-1 flex-col">
+				<div className="mb-3 flex shrink-0 items-center justify-between gap-3 border-b border-line pb-3">
+					<div>
+						<p className="text-[12.5px] text-foreground">结构化 Provider / 模型配置</p>
+						<p className="mt-1 text-[10.5px] text-faint">
+							保存成功后将刷新 Provider 摘要和其他全局配置消费者。
+						</p>
+					</div>
+					<Button variant="ghost" onClick={() => void closeStructuredEditor()}>
+						返回摘要
+					</Button>
+				</div>
+				{structuredEditor}
+			</div>
+		);
+	}
 
 	return (
 		<div className="flex h-full min-h-0 flex-1 flex-col">
@@ -163,10 +246,15 @@ export function ProvidersPanel({
 				{error ? (
 					<p className="font-mono text-[10.5px] text-danger">{error}</p>
 				) : null}
-				<div className="flex items-center gap-2">
+				<div className="flex flex-wrap items-center gap-2">
 					<Button variant="ghost" disabled={isLoading} onClick={() => void refresh()}>
 						{isLoading ? "刷新中…" : "刷新摘要"}
 					</Button>
+					{structuredEditor ? (
+						<Button variant="primary" onClick={() => void openStructuredEditor()}>
+							编辑模型配置
+						</Button>
+					) : null}
 				</div>
 			</div>
 
@@ -175,7 +263,7 @@ export function ProvidersPanel({
 					<p className="py-8 text-center font-mono text-[11px] text-faint">加载中…</p>
 				) : overview && overview.providers.length === 0 ? (
 					<p className="py-8 text-center font-mono text-[11px] text-faint">
-						尚未配置 Provider。可在下方高级编辑器中添加。
+						尚未配置 Provider。可在下方结构化编辑器或高级编辑器中添加。
 					</p>
 				) : (
 					<div className="space-y-3 pb-3">
@@ -202,7 +290,13 @@ export function ProvidersPanel({
 				<button
 					type="button"
 					className="font-mono text-[10.5px] text-muted underline-offset-2 hover:text-foreground hover:underline"
-					onClick={() => setAdvancedOpen((current) => !current)}
+					onClick={() => {
+							if (advancedOpen) {
+								void closeAdvancedEditor();
+								return;
+							}
+							setAdvancedOpen(true);
+						}}
 				>
 					{advancedOpen ? "收起高级 config.toml 编辑器" : "展开高级 config.toml 编辑器（排障）"}
 				</button>

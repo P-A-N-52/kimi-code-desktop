@@ -692,6 +692,53 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Only shows CronCreate/CronList results the Agent has returned; no Desktop control API.":
     "仅展示 Agent 已返回的 CronCreate/CronList 结果；无 Desktop 控制 API。",
   "Next:": "下次：",
+  "Edit model configuration": "编辑模型配置",
+  "Structured changes are written to a local draft; config.toml updates only after saving.":
+    "结构化修改只会写入本地草稿；点保存后才更新 config.toml。",
+  "Add Provider": "添加 Provider",
+  "Loading config.toml…": "加载 config.toml 中…",
+  "Structured configuration cannot be safely edited right now; switch to the advanced config.toml editor or retry reading.":
+    "当前无法安全编辑结构化配置；请转用高级 config.toml 编辑器或重试读取。",
+  "Retry reading": "重试读取",
+  "No Provider added yet": "尚未添加 Provider",
+  "Delete Provider": "删除 Provider",
+  "Provider name": "Provider 名称",
+  "Provider Type": "Provider 类型",
+  "Shown as a password; it will not appear in summaries, prompts, or logs.":
+    "密码形式显示；不会出现在摘要、提示或日志中。",
+  "Environment variables (TOML)": "环境变量（TOML）",
+  "Custom Headers (TOML)": "自定义 Headers（TOML）",
+  "This is a built-in Kimi Code Provider; its name, type, and deletion are protected, but its connection configuration can still be overridden.":
+    "这是 Kimi Code 内置 Provider；名称、类型和删除操作受到保护，但仍可覆盖连接配置。",
+  "Nested Provider settings detected; they will be preserved when editing fields on this page.":
+    "已检测到嵌套 Provider 设置；编辑本页字段时会保留它们。",
+  "Select or add a Provider to edit its connection configuration.":
+    "选择或添加一个 Provider 后编辑其连接配置。",
+  "No models for this Provider yet": "此 Provider 暂无模型",
+  Default: "默认",
+  "Delete model": "删除模型",
+  "Model alias": "模型别名",
+  "Model Provider": "模型 Provider",
+  "Upstream model": "上游模型",
+  "Supported thinking efforts": "支持的思考档位",
+  "Comma-separated, for example low, high, max.": "以逗号分隔，例如 low, high, max。",
+  "Default thinking effort": "默认思考档位",
+  "When not set, the current model or Kimi Code selects the default effort.":
+    "未设置时，由当前模型或 Kimi Code 选择默认档位。",
+  "(Not set)": "（未设置）",
+  "(Current value, not listed among supported options)": "（当前值，未列入支持项）",
+  "Select or add a model to edit its definition.": "选择或添加模型后编辑其定义。",
+  "Deleting the current default model automatically switches to another configured model.":
+    "删除当前默认模型时会自动切换到另一个已配置模型。",
+  "(No models yet)": "（尚无模型）",
+  "Structured Provider / model configuration": "结构化 Provider / 模型配置",
+  "After saving successfully, the Provider summary and other global configuration consumers will refresh.":
+    "保存成功后将刷新 Provider 摘要和其他全局配置消费者。",
+  "Back to summary": "返回摘要",
+  "No Provider configured yet. Add one in the structured or advanced editor below.":
+    "尚未配置 Provider。可在下方结构化编辑器或高级编辑器中添加。",
+  "Update available": "可更新",
+  "Read failed; the current content will not be saved.": "读取失败，当前内容不会被保存。",
 };
 
 const EN_US_RESTORE_TRANSLATIONS = Object.entries(ZH_CN_TRANSLATIONS).reduce<
