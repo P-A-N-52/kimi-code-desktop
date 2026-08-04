@@ -271,6 +271,24 @@ try {
     }
 
     Invoke-Step "Rust unit tests" {
+        # Tauri test binaries load WebView2Loader.dll at startup. Runner images
+        # and rust caches do not guarantee it is reachable (missing DLL shows up
+        # as 0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND), so add the loader produced
+        # by webview2-com-sys to PATH before running the tests.
+        $loaderCandidates = @(
+            (Get-ChildItem -Path (Join-Path $ProjectRoot "src-tauri\target\debug\build\webview2-com-sys-*\out\WebView2Loader.dll") -ErrorAction SilentlyContinue | Select-Object -First 1),
+            (Get-ChildItem -Path (Join-Path $HOME ".cargo\registry\src\*\webview2-com-sys-*\lib\WebView2Loader.dll") -ErrorAction SilentlyContinue | Select-Object -First 1)
+        )
+        $loader = $loaderCandidates | Where-Object { $_ } | Select-Object -First 1
+        if ($loader) {
+            $loaderDir = $loader.DirectoryName
+            if ($env:PATH -notlike "*$loaderDir*") {
+                $env:PATH = "$loaderDir;$env:PATH"
+            }
+            Write-Host "WebView2Loader.dll: $($loader.FullName)"
+        } else {
+            Write-Warning "WebView2Loader.dll not found; Tauri unit tests may fail to start on this runner."
+        }
         Invoke-Native "npm" @("run", "rust:test")
     }
 
