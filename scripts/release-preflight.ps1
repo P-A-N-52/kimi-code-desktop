@@ -284,6 +284,19 @@ try {
         $loader = $loaderCandidates | Where-Object { $_ } | Select-Object -First 1
         if ($loader) {
             $loaderDir = $loader.DirectoryName
+            # Windows DLL search order starts with the executable's own
+            # directory, then the system directory, then PATH. Recent
+            # windows-latest images ship a mismatched WebView2Loader.dll under
+            # System32, so adding the correct one to PATH is not enough: copy
+            # it next to the test binary (target\debug\deps) to win the search.
+            $depsDir = Join-Path $ProjectRoot "src-tauri\target\debug\deps"
+            $depsLoader = Join-Path $depsDir "WebView2Loader.dll"
+            if (Test-Path $depsDir) {
+                Copy-Item $loader.FullName $depsLoader -Force
+                Write-Host "Copied WebView2Loader.dll -> $depsLoader"
+            } else {
+                Write-Warning "Test deps directory not found: $depsDir"
+            }
             if ($env:PATH -notlike "*$loaderDir*") {
                 $env:PATH = "$loaderDir;$env:PATH"
             }
