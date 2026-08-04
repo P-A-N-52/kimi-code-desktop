@@ -28,7 +28,8 @@ mime_guess = "2"
 
 [dependencies.tauri]
 version = "2"
-features = [ "tray-icon" ]
+default-features = false
+features = [ "wry", "compression", "dynamic-acl", "x11", "dbus", "tray-icon" ]
 
 [dependencies.serde]
 version = "1"

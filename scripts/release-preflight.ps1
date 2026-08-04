@@ -271,20 +271,6 @@ try {
     }
 
     Invoke-Step "Rust unit tests" {
-        # Test binaries carry no application manifest, so they bind the classic
-        # System32 comctl32.dll (v5.82), whose export table lacks
-        # TaskDialogIndirect. tauri-runtime-wry links that import once any
-        # AppHandle code is pulled in, crashing the test exe at startup with
-        # 0xc0000139. Copy the common-controls v6 comctl32.dll from WinSxS next
-        # to the test binary so it wins the DLL search (no mt.exe involved).
-        $depsDir = Join-Path $ProjectRoot "src-tauri\target\debug\deps"
-        $v6Comctl = Get-ChildItem -Path "C:\Windows\WinSxS\amd64_microsoft.windows.common-controls_6595b64144ccf1df_6.0.*\comctl32.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($v6Comctl -and (Test-Path $depsDir)) {
-            Copy-Item $v6Comctl.FullName (Join-Path $depsDir "comctl32.dll") -Force
-            Write-Host "Copied comctl32.dll (v6) -> $($v6Comctl.FullName)"
-        } else {
-            Write-Warning "common-controls v6 comctl32.dll not found in WinSxS; Tauri unit tests may fail to start on this runner."
-        }
         try {
             Invoke-Native "npm" @("run", "rust:test")
         } catch {
