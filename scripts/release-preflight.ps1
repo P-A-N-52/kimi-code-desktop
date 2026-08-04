@@ -271,38 +271,19 @@ try {
     }
 
     Invoke-Step "Rust unit tests" {
-        # Tauri test binaries load WebView2Loader.dll at startup. Runner images
-        # and rust caches do not guarantee it is reachable (missing DLL shows up
-        # as 0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND), so add the loader produced
-        # by webview2-com-sys to PATH before running the tests. webview2-com-sys
-        # copies it into $OUT_DIR/<arch> (e.g. target\debug\build\webview2-com-sys-*\out\x64\).
-        $loaderCandidates = @(
-            (Get-ChildItem -Path (Join-Path $ProjectRoot "src-tauri\target\debug\build\webview2-com-sys-*\out\x64\WebView2Loader.dll") -ErrorAction SilentlyContinue | Select-Object -First 1),
-            (Get-ChildItem -Path (Join-Path $ProjectRoot "src-tauri\target\debug\build\webview2-com-sys-*\out\x86\WebView2Loader.dll") -ErrorAction SilentlyContinue | Select-Object -First 1),
-            (Get-ChildItem -Path (Join-Path $HOME ".cargo\registry\src\*\webview2-com-sys-*\x64\WebView2Loader.dll") -ErrorAction SilentlyContinue | Select-Object -First 1)
-        )
-        $loader = $loaderCandidates | Where-Object { $_ } | Select-Object -First 1
-        if ($loader) {
-            $loaderDir = $loader.DirectoryName
-            # Windows DLL search order starts with the executable's own
-            # directory, then the system directory, then PATH. Recent
-            # windows-latest images ship a mismatched WebView2Loader.dll under
-            # System32, so adding the correct one to PATH is not enough: copy
-            # it next to the test binary (target\debug\deps) to win the search.
-            $depsDir = Join-Path $ProjectRoot "src-tauri\target\debug\deps"
-            $depsLoader = Join-Path $depsDir "WebView2Loader.dll"
-            if (Test-Path $depsDir) {
-                Copy-Item $loader.FullName $depsLoader -Force
-                Write-Host "Copied WebView2Loader.dll -> $depsLoader"
-            } else {
-                Write-Warning "Test deps directory not found: $depsDir"
-            }
-            if ($env:PATH -notlike "*$loaderDir*") {
-                $env:PATH = "$loaderDir;$env:PATH"
-            }
-            Write-Host "WebView2Loader.dll: $($loader.FullName)"
+        # Test binaries carry no application manifest, so they bind the classic
+        # System32 comctl32.dll (v5.82), whose export table lacks
+        # TaskDialogIndirect. tauri-runtime-wry links that import once any
+        # AppHandle code is pulled in, crashing the test exe at startup with
+        # 0xc0000139. Copy the common-controls v6 comctl32.dll from WinSxS next
+        # to the test binary so it wins the DLL search (no mt.exe involved).
+        $depsDir = Join-Path $ProjectRoot "src-tauri\target\debug\deps"
+        $v6Comctl = Get-ChildItem -Path "C:\Windows\WinSxS\amd64_microsoft.windows.common-controls_6595b64144ccf1df_6.0.*\comctl32.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($v6Comctl -and (Test-Path $depsDir)) {
+            Copy-Item $v6Comctl.FullName (Join-Path $depsDir "comctl32.dll") -Force
+            Write-Host "Copied comctl32.dll (v6) -> $($v6Comctl.FullName)"
         } else {
-            Write-Warning "WebView2Loader.dll not found; Tauri unit tests may fail to start on this runner."
+            Write-Warning "common-controls v6 comctl32.dll not found in WinSxS; Tauri unit tests may fail to start on this runner."
         }
         try {
             Invoke-Native "npm" @("run", "rust:test")
