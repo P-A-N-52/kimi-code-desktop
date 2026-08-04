@@ -17,7 +17,7 @@ const path = require("node:path");
 const projectRoot = path.resolve(__dirname, "..");
 const manifestPath = path.resolve(__dirname, "test-windows-manifest.xml");
 
-const manifestInput = `/MANIFESTINPUT:"${manifestPath}"`;
+const manifestInput = `/MANIFESTINPUT:${manifestPath}`;
 const rustflags = ["-C", "link-arg=/MANIFEST:EMBED", "-C", `link-arg=${manifestInput}`];
 
 const args = [
