@@ -304,7 +304,23 @@ try {
         } else {
             Write-Warning "WebView2Loader.dll not found; Tauri unit tests may fail to start on this runner."
         }
-        Invoke-Native "npm" @("run", "rust:test")
+        try {
+            Invoke-Native "npm" @("run", "rust:test")
+        } catch {
+            # 0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND means some imported DLL
+            # lacks an entry point; dump the test exe import table to identify it.
+            $exe = Get-ChildItem -Path (Join-Path $ProjectRoot "src-tauri\target\debug\deps\app_lib-*.exe") -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($exe) {
+                $dumpbin = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($dumpbin) {
+                    Write-Host "==> dumpbin /imports $($exe.Name)"
+                    & $dumpbin.FullName /imports $exe.FullName 2>&1 | Select-Object -First 80
+                } else {
+                    Write-Warning "dumpbin not found; cannot inspect imports."
+                }
+            }
+            throw
+        }
     }
 
     if (-not $SkipTauriBuild) {
