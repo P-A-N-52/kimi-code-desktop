@@ -91,7 +91,7 @@ export function BackgroundTaskToolCard({
           <p className="text-faint">只读观察：Desktop 不直接控制后台任务或 Cron。</p>
           {outputPath ? <p>输出路径：{outputPath}</p> : null}
           {toolCall.output ? (
-            <pre className="overflow-x-auto whitespace-pre-wrap rounded-r1 bg-surface px-2 py-1.5 text-[10.5px]">
+            <pre className="max-h-[24rem] overflow-x-auto overflow-y-auto whitespace-pre-wrap rounded-r1 bg-surface px-2 py-1.5 text-[10.5px]">
               {toolCall.output}
             </pre>
           ) : (

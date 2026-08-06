@@ -271,7 +271,26 @@ try {
     }
 
     Invoke-Step "Rust unit tests" {
-        Invoke-Native "npm" @("run", "rust:test")
+        try {
+            Invoke-Native "npm" @("run", "rust:test")
+        } catch {
+            # 0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND means some imported DLL
+            # lacks an entry point; dump the import table and probe every
+            # imported function to pinpoint the missing one.
+            $exe = Get-ChildItem -Path (Join-Path $ProjectRoot "src-tauri\target\debug\deps\app_lib-*.exe") -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($exe) {
+                $dumpbin = Get-ChildItem -Path "C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($dumpbin) {
+                    Write-Host "==> dumpbin /imports $($exe.Name)"
+                    (& $dumpbin.FullName /imports $exe.FullName 2>&1) | Select-Object -First 500
+                } else {
+                    Write-Warning "dumpbin not found; cannot inspect imports."
+                }
+                Write-Host "==> per-import entry point probe"
+                & (Join-Path $PSScriptRoot "pe-import-check.ps1") -Path $exe.FullName
+            }
+            throw
+        }
     }
 
     if (-not $SkipTauriBuild) {

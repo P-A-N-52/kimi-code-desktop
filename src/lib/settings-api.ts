@@ -26,6 +26,18 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
   return data as T;
 }
 
+function dispatchTextConfigUpdate(resp: UpdateTextConfigResponse): void {
+  window.dispatchEvent(
+    new CustomEvent("kimi:config-update", {
+      detail: {
+        restartedSessionIds: resp.restartedSessionIds ?? [],
+        skippedBusySessionIds: resp.skippedBusySessionIds ?? [],
+        requiresRuntimeReadiness: true,
+      },
+    }),
+  );
+}
+
 export async function getConfigTomlFile(): Promise<TextConfigFile> {
   if (isTauri()) {
     return tauriGetConfigToml();
@@ -41,7 +53,7 @@ export async function updateConfigTomlFile(
     if (!resp.success) {
       throw new Error(resp.error || "Failed to save config.toml");
     }
-    window.dispatchEvent(new Event("kimi:config-update"));
+    dispatchTextConfigUpdate(resp);
     return resp;
   }
   const resp = await apiClient.config.updateConfigTomlApiConfigTomlPut({
@@ -50,7 +62,7 @@ export async function updateConfigTomlFile(
   if (!resp.success) {
     throw new Error(resp.error || "Failed to save config.toml");
   }
-  window.dispatchEvent(new Event("kimi:config-update"));
+  dispatchTextConfigUpdate(resp);
   return resp;
 }
 
@@ -78,7 +90,7 @@ export async function updateMcpConfigFile(
     if (!resp.success) {
       throw new Error(resp.error || "Failed to save mcp.json");
     }
-    window.dispatchEvent(new Event("kimi:config-update"));
+    dispatchTextConfigUpdate(resp);
     return resp;
   }
   const response = await fetch(`${getApiBaseUrl()}/api/config/mcp`, {
@@ -93,6 +105,6 @@ export async function updateMcpConfigFile(
   if (!resp.success) {
     throw new Error(resp.error || "Failed to save mcp.json");
   }
-  window.dispatchEvent(new Event("kimi:config-update"));
+  dispatchTextConfigUpdate(resp);
   return resp;
 }

@@ -2,12 +2,12 @@
 
 use crate::runtime_check::kimi_code_home_dir;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static SESSION_STATE_WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -223,7 +223,9 @@ pub fn delete_session_dir(session_id: &str) -> Result<(), String> {
             "Failed to delete session directory {}: {e}",
             session_dir.display()
         )
-    })
+    })?;
+    clear_latest_turn_usage_cache(session_id);
+    Ok(())
 }
 
 fn state_json_path(session_dir: &Path) -> PathBuf {
@@ -480,6 +482,75 @@ impl SessionUsageSnapshot {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WireFileFingerprint {
+    path: PathBuf,
+    length: u64,
+    modified: Option<SystemTime>,
+}
+
+/// ACP appends wire records outside this process, so the cache is refreshed
+/// whenever the backing wire file changes.
+#[derive(Debug, Clone)]
+struct CachedSessionUsage {
+    fingerprint: WireFileFingerprint,
+    snapshot: Option<SessionUsageSnapshot>,
+}
+
+static LATEST_USAGE_CACHE: OnceLock<Mutex<HashMap<String, CachedSessionUsage>>> = OnceLock::new();
+
+fn latest_usage_cache() -> &'static Mutex<HashMap<String, CachedSessionUsage>> {
+    LATEST_USAGE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn wire_file_fingerprint(path: &Path) -> Option<WireFileFingerprint> {
+    let metadata = fs::metadata(path).ok()?;
+    Some(WireFileFingerprint {
+        path: path.to_path_buf(),
+        length: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
+}
+
+fn cached_latest_turn_usage(
+    session_id: &str,
+    fingerprint: Option<&WireFileFingerprint>,
+) -> Option<Option<SessionUsageSnapshot>> {
+    let fingerprint = fingerprint?;
+    let cache = latest_usage_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = cache.get(session_id)?;
+    (entry.fingerprint == *fingerprint).then(|| entry.snapshot.clone())
+}
+
+fn cache_latest_turn_usage(
+    session_id: &str,
+    fingerprint: Option<WireFileFingerprint>,
+    snapshot: Option<SessionUsageSnapshot>,
+) {
+    let Some(fingerprint) = fingerprint else {
+        return;
+    };
+    latest_usage_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(
+            session_id.to_string(),
+            CachedSessionUsage {
+                fingerprint,
+                snapshot,
+            },
+        );
+}
+
+fn clear_latest_turn_usage_cache(session_id: &str) {
+    latest_usage_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(session_id);
+}
+
 fn usage_field_u64(usage: &Value, keys: &[&str]) -> u64 {
     for key in keys {
         if let Some(value) = usage.get(*key) {
@@ -541,17 +612,7 @@ pub(crate) fn parse_usage_record(record: &Value) -> Option<SessionUsageSnapshot>
     })
 }
 
-/// Read the most recent turn-scoped `usage.record` from the session wire log.
-pub fn latest_turn_usage(session_id: &str) -> Result<Option<SessionUsageSnapshot>, String> {
-    let Some(session_dir) = find_session_dir_by_id(session_id)? else {
-        return Ok(None);
-    };
-    let Some(wire_file) = wire_jsonl_path(&session_dir) else {
-        return Ok(None);
-    };
-    let content = fs::read_to_string(&wire_file)
-        .map_err(|e| format!("Failed to read {}: {e}", wire_file.display()))?;
-
+fn latest_turn_usage_from_content(content: &str) -> Option<SessionUsageSnapshot> {
     let mut latest: Option<SessionUsageSnapshot> = None;
     for line in content.lines() {
         let line = line.trim();
@@ -568,6 +629,31 @@ pub fn latest_turn_usage(session_id: &str) -> Result<Option<SessionUsageSnapshot
                 latest = Some(snapshot);
             }
         }
+    }
+    latest
+}
+
+/// Read the most recent turn-scoped `usage.record` from the session wire log.
+pub fn latest_turn_usage(session_id: &str) -> Result<Option<SessionUsageSnapshot>, String> {
+    let Some(session_dir) = find_session_dir_by_id(session_id)? else {
+        clear_latest_turn_usage_cache(session_id);
+        return Ok(None);
+    };
+    let Some(wire_file) = wire_jsonl_path(&session_dir) else {
+        clear_latest_turn_usage_cache(session_id);
+        return Ok(None);
+    };
+    let fingerprint = wire_file_fingerprint(&wire_file);
+    if let Some(cached) = cached_latest_turn_usage(session_id, fingerprint.as_ref()) {
+        return Ok(cached);
+    }
+
+    let content = fs::read_to_string(&wire_file)
+        .map_err(|e| format!("Failed to read {}: {e}", wire_file.display()))?;
+    let latest = latest_turn_usage_from_content(&content);
+    let refreshed_fingerprint = wire_file_fingerprint(&wire_file);
+    if refreshed_fingerprint == fingerprint {
+        cache_latest_turn_usage(session_id, refreshed_fingerprint, latest.clone());
     }
     Ok(latest)
 }
@@ -586,15 +672,11 @@ pub(crate) struct ResolvedRuntimeModes {
     pub goal_mode: bool,
 }
 
-/// Resolve Plan / permission / Swarm the same way ACP does at worker start:
-/// session wire-log state first, then global defaults, with Swarm from desktop
-/// custom session state.
-pub(crate) fn resolved_runtime_modes(session_id: &str) -> Result<ResolvedRuntimeModes, String> {
+fn resolved_runtime_modes_from_persisted(
+    session_id: &str,
+    persisted: PersistedRuntimeModes,
+) -> Result<ResolvedRuntimeModes, String> {
     let defaults = crate::global_config::runtime_mode_defaults().unwrap_or_default();
-    let persisted = persisted_runtime_modes(session_id).unwrap_or_else(|err| {
-        eprintln!("[session_store] failed to read persisted runtime modes for {session_id}: {err}");
-        PersistedRuntimeModes::default()
-    });
     let permission_mode = persisted
         .permission_mode
         .unwrap_or_else(|| defaults.permission_mode.clone());
@@ -618,8 +700,21 @@ pub(crate) fn resolved_runtime_modes(session_id: &str) -> Result<ResolvedRuntime
     })
 }
 
-fn push_runtime_mode_status(messages: &mut Vec<String>, session_id: &str) -> Result<(), String> {
-    let modes = resolved_runtime_modes(session_id)?;
+/// Resolve Plan / permission / Swarm the same way ACP does at worker start:
+/// session wire-log state first, then global defaults, with Swarm from desktop
+/// custom session state.
+pub(crate) fn resolved_runtime_modes(session_id: &str) -> Result<ResolvedRuntimeModes, String> {
+    let persisted = persisted_runtime_modes(session_id).unwrap_or_else(|err| {
+        eprintln!("[session_store] failed to read persisted runtime modes for {session_id}: {err}");
+        PersistedRuntimeModes::default()
+    });
+    resolved_runtime_modes_from_persisted(session_id, persisted)
+}
+
+fn push_runtime_mode_status(
+    messages: &mut Vec<String>,
+    modes: &ResolvedRuntimeModes,
+) -> Result<(), String> {
     push_event(
         messages,
         "StatusUpdate",
@@ -632,6 +727,21 @@ fn push_runtime_mode_status(messages: &mut Vec<String>, session_id: &str) -> Res
             "goal_mode": modes.goal_mode,
         }),
     )
+}
+
+fn update_persisted_runtime_modes(modes: &mut PersistedRuntimeModes, record: &Value) {
+    match record.get("type").and_then(Value::as_str) {
+        Some("plan_mode.enter") => modes.plan_mode = Some(true),
+        Some("plan_mode.cancel" | "plan_mode.exit") => modes.plan_mode = Some(false),
+        Some("permission.set_mode") => {
+            modes.permission_mode = match record.get("mode").and_then(Value::as_str) {
+                Some("ask" | "default") => Some("manual".to_string()),
+                Some(mode @ ("manual" | "auto" | "yolo")) => Some(mode.to_string()),
+                _ => modes.permission_mode.clone(),
+            };
+        }
+        _ => {}
+    }
 }
 
 /// Read the latest independent Plan and permission states persisted by Kimi Code.
@@ -656,18 +766,7 @@ pub(crate) fn persisted_runtime_modes(session_id: &str) -> Result<PersistedRunti
             .then(|| serde_json::from_str::<Value>(line).ok())
             .flatten()
     }) {
-        match record.get("type").and_then(Value::as_str) {
-            Some("plan_mode.enter") => modes.plan_mode = Some(true),
-            Some("plan_mode.cancel" | "plan_mode.exit") => modes.plan_mode = Some(false),
-            Some("permission.set_mode") => {
-                modes.permission_mode = match record.get("mode").and_then(Value::as_str) {
-                    Some("ask" | "default") => Some("manual".to_string()),
-                    Some(mode @ ("manual" | "auto" | "yolo")) => Some(mode.to_string()),
-                    _ => modes.permission_mode,
-                };
-            }
-            _ => {}
-        }
+        update_persisted_runtime_modes(&mut modes, &record);
     }
 
     Ok(modes)
@@ -815,12 +914,20 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
     let session_dir = find_session_dir_by_id_or_err(session_id)?;
     let Some(wire_file) = wire_jsonl_path(&session_dir) else {
         // Lazy-connect path never starts ACP, so still surface persisted modes.
+        clear_latest_turn_usage_cache(session_id);
+        let modes = resolved_runtime_modes(session_id)?;
+        let session_config = crate::acp_capabilities::resolve_session_config(session_id);
         let mut messages = Vec::new();
-        push_runtime_mode_status(&mut messages, session_id)?;
-        push_session_config_snapshot(&mut messages, session_id)?;
+        push_runtime_mode_status(&mut messages, &modes)?;
+        push_session_config_snapshot_from_state(
+            &mut messages,
+            session_id,
+            session_config.as_ref(),
+        )?;
         return Ok(messages);
     };
 
+    let initial_fingerprint = wire_file_fingerprint(&wire_file);
     let content = fs::read_to_string(&wire_file)
         .map_err(|e| format!("Failed to read {}: {e}", wire_file.display()))?;
 
@@ -846,8 +953,10 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
     let mut next_step = 1u64;
     let mut emitted_turns = HashSet::new();
     let mut latest_usage: Option<SessionUsageSnapshot> = None;
+    let mut persisted_modes = PersistedRuntimeModes::default();
     for record in records {
-        // Capture turn usage in the same pass so callers do not re-read wire.jsonl.
+        // Capture persisted state and turn usage in the same pass as replay.
+        update_persisted_runtime_modes(&mut persisted_modes, &record);
         if let Some(snapshot) = parse_usage_record(&record) {
             let scope = record.get("usageScope").and_then(Value::as_str);
             if scope.is_none() || scope == Some("turn") {
@@ -887,6 +996,11 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
         }
     }
 
+    let refreshed_fingerprint = wire_file_fingerprint(&wire_file);
+    if refreshed_fingerprint == initial_fingerprint {
+        cache_latest_turn_usage(session_id, refreshed_fingerprint, latest_usage.clone());
+    }
+
     if let Some(usage) = latest_usage {
         let used = usage.context_tokens();
         let model = usage.model.as_deref().unwrap_or("");
@@ -908,17 +1022,20 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
 
     // Emit after usage so lazy-connect UIs restore permission / plan / swarm
     // without waiting for an ACP worker (which may never start until a prompt).
-    push_runtime_mode_status(&mut messages, session_id)?;
-    push_session_config_snapshot(&mut messages, session_id)?;
+    let modes = resolved_runtime_modes_from_persisted(session_id, persisted_modes)?;
+    let session_config = crate::acp_capabilities::resolve_session_config(session_id);
+    push_runtime_mode_status(&mut messages, &modes)?;
+    push_session_config_snapshot_from_state(&mut messages, session_id, session_config.as_ref())?;
 
     Ok(messages)
 }
 
-fn push_session_config_snapshot(
+fn push_session_config_snapshot_from_state(
     messages: &mut Vec<String>,
     session_id: &str,
+    state: Option<&crate::acp_capabilities::SessionConfigState>,
 ) -> Result<(), String> {
-    let Some(state) = crate::acp_capabilities::resolve_session_config(session_id) else {
+    let Some(state) = state else {
         return Ok(());
     };
     if state.status != crate::acp_capabilities::SessionConfigStatus::Known
@@ -927,9 +1044,18 @@ fn push_session_config_snapshot(
         return Ok(());
     }
     messages.push(crate::acp_translate::translate_session_config_snapshot(
-        session_id, &state,
+        session_id, state,
     ));
     Ok(())
+}
+
+#[cfg(test)]
+fn push_session_config_snapshot(
+    messages: &mut Vec<String>,
+    session_id: &str,
+) -> Result<(), String> {
+    let state = crate::acp_capabilities::resolve_session_config(session_id);
+    push_session_config_snapshot_from_state(messages, session_id, state.as_ref())
 }
 
 const PERSISTED_SESSION_CONFIG_KEY: &str = "session_config";
@@ -1522,6 +1648,52 @@ mod tests {
         assert_eq!(snapshot.input_cache_read, 300);
         assert_eq!(snapshot.output, 5);
         assert_eq!(snapshot.context_tokens(), 320);
+    }
+
+    #[test]
+    fn latest_turn_usage_refreshes_after_wire_append() {
+        let (_dir, home) = temp_home("usage-cache-refresh");
+        let _guard = set_kimi_code_home(&home);
+        let session_id = "session_usage_cache_refresh";
+        let session_dir = write_session_layout(&home, "wd_cache", session_id);
+        let wire_dir = session_dir.join("agents").join("main");
+        fs::create_dir_all(&wire_dir).expect("wire dir");
+        let wire_file = wire_dir.join("wire.jsonl");
+        fs::write(
+            &wire_file,
+            concat!(
+                r#"{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":10,"output":1},"usageScope":"turn"}"#,
+                "\n"
+            ),
+        )
+        .expect("write initial wire");
+
+        let first = latest_turn_usage(session_id)
+            .expect("read initial usage")
+            .expect("initial snapshot");
+        assert_eq!(first.input_other, 10);
+
+        {
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new()
+                .append(true)
+                .open(&wire_file)
+                .expect("open wire for append");
+            file.write_all(
+                concat!(
+                    r#"{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":20,"output":2},"usageScope":"turn"}"#,
+                    "\n"
+                )
+                .as_bytes(),
+            )
+            .expect("append wire");
+        }
+
+        let latest = latest_turn_usage(session_id)
+            .expect("read refreshed usage")
+            .expect("refreshed snapshot");
+        assert_eq!(latest.input_other, 20);
+        assert_eq!(latest.output, 2);
     }
 
     #[test]

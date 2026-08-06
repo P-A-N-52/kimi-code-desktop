@@ -1,3 +1,4 @@
+import { LoaderCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useGlobalConfig } from "@/hooks/useGlobalConfig";
@@ -21,6 +22,7 @@ import {
 	sessionHasConfigOption,
 } from "@/lib/session-config-state";
 import { parseGoalCommand } from "@/lib/goal";
+import { isReconnectableStreamError } from "@/lib/session-stream/reconnectable-error";
 import {
   findConfigModel,
   modelForcesThinking,
@@ -132,6 +134,9 @@ export function ConversationView({
   const goalQueuePromotionInFlightRef = useRef(false);
   const goalQueueMutationInFlightRef = useRef(false);
   const suppressGoalQueuePromotionRef = useRef(false);
+  const reconnectRequestedRef = useRef(false);
+  const reconnectAttemptStartedRef = useRef(false);
+  const [reconnectRequested, setReconnectRequested] = useState(false);
   const { config, update, isUpdating } = useGlobalConfig();
   const [agentRuntime, setAgentRuntime] = useState<AgentRuntimeCapabilities>(
     emptyAgentRuntimeCapabilities(),
@@ -160,6 +165,9 @@ export function ConversationView({
     };
     goalQueuePromotionInFlightRef.current = false;
     suppressGoalQueuePromotionRef.current = false;
+    reconnectRequestedRef.current = false;
+    reconnectAttemptStartedRef.current = false;
+    setReconnectRequested(false);
 
     if (!isTauri()) return;
     let cancelled = false;
@@ -178,6 +186,20 @@ export function ConversationView({
       cancelled = true;
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!reconnectRequested) return;
+    if (stream.connectionPhase === "reconnecting" || stream.connectionPhase === "connecting") {
+      reconnectAttemptStartedRef.current = true;
+      return;
+    }
+    const reconnected = stream.connectionPhase === "connected" && stream.isConnected;
+    const failed = reconnectAttemptStartedRef.current && stream.connectionPhase === "disconnected";
+    if (!reconnected && !failed) return;
+    reconnectRequestedRef.current = false;
+    reconnectAttemptStartedRef.current = false;
+    setReconnectRequested(false);
+  }, [reconnectRequested, stream.connectionPhase, stream.isConnected]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -807,15 +829,28 @@ export function ConversationView({
     [],
   );
 
-  const streamDead = stream.status === "error";
+  const streamError = stream.status === "error";
+  const reconnectableStreamError =
+    streamError &&
+    isReconnectableStreamError({
+      error: stream.error,
+      connectionPhase: stream.connectionPhase,
+      sessionStatus: stream.sessionStatus,
+    });
+  const reconnectInProgress =
+    reconnectRequested ||
+    stream.connectionPhase === "connecting" ||
+    stream.connectionPhase === "reconnecting";
+  const streamDead = streamError && reconnectableStreamError;
   const connectingSession =
-    !streamDead &&
+    !streamError &&
     ((stream.isReplayingHistory && stream.status !== "ready") ||
       (!stream.isConnected && stream.status === "submitted"));
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
       <MessageList
+        sessionId={sessionId}
         messages={messages}
         isAwaitingFirstResponse={stream.isAwaitingFirstResponse && !streamDead}
         onRespondApproval={(id, decision) => {
@@ -833,7 +868,7 @@ export function ConversationView({
               {stream.isReplayingHistory ? "正在加载会话历史…" : "正在连接会话…"}
             </output>
           )}
-          {streamDead && (
+          {streamError && (
             <div
               role="alert"
               className="mb-2 flex items-center gap-3 rounded-r2 border border-danger/40 bg-danger/10 px-3 py-2"
@@ -846,13 +881,23 @@ export function ConversationView({
                   ? "（高延迟/VPN/凭据异常时请检查网络后重试）"
                   : ""}
               </p>
-              <button
-                type="button"
-                onClick={() => stream.reconnect()}
-                className="shrink-0 rounded-r1 border border-danger/40 bg-elevated px-2.5 py-1 text-[11px] font-medium text-danger transition-colors hover:bg-hover"
-              >
-                重新连接
-              </button>
+              {reconnectableStreamError && (
+                <button
+                  type="button"
+                  disabled={reconnectInProgress}
+                  onClick={() => {
+                    if (reconnectRequestedRef.current) return;
+                    reconnectRequestedRef.current = true;
+                    reconnectAttemptStartedRef.current = false;
+                    setReconnectRequested(true);
+                    stream.reconnect();
+                  }}
+                  className="flex shrink-0 items-center gap-1 rounded-r1 border border-danger/40 bg-elevated px-2.5 py-1 text-[11px] font-medium text-danger transition-colors hover:bg-hover disabled:cursor-wait disabled:opacity-60"
+                >
+                  {reconnectInProgress && <LoaderCircle size={11} className="animate-spin" />}
+                  {reconnectInProgress ? "正在重连…" : "重新连接"}
+                </button>
+              )}
             </div>
           )}
           {commandResult && (
@@ -942,6 +987,7 @@ export function ConversationView({
             modeControlsDisabled={
               stream.status !== "ready" || pendingGoalStart !== null || goalStartPending
             }
+            permissionModeDisabled={pendingGoalStart !== null || goalStartPending}
             contextUsage={stream.contextUsage}
             tokenUsage={stream.tokenUsage}
             contextTokens={stream.contextTokens}

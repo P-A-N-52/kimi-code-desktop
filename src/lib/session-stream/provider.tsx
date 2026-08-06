@@ -29,18 +29,25 @@ export function SessionStreamOrchestratorProvider({
 }: SessionStreamOrchestratorProviderProps) {
   const enabled = isMultiActiveSessionsEnabled();
   const orchestratorRef = useRef<SessionStreamOrchestrator | null>(null);
+  const mountedRef = useRef(false);
   if (enabled && orchestratorRef.current === null) {
     orchestratorRef.current = createSessionStreamOrchestrator();
   }
   const orchestrator = enabled ? orchestratorRef.current : null;
 
   useEffect(() => {
+    mountedRef.current = true;
     // App teardown: unregister the global wire:message listener and disconnect
-    // live workers. Intentionally not `stop()`-ing runtimes: React unmount
-    // (incl. StrictMode double-mount) must not wipe global tool-events stores;
-    // real app exit stops every ACP worker in Rust (RunEvent::ExitRequested).
+    // live workers. StrictMode immediately remounts effects after its simulated
+    // cleanup, so defer destruction by one microtask and cancel it when that
+    // remount occurs. A real unmount leaves mountedRef false and still cleans up.
     return () => {
-      orchestrator?.destroy();
+      mountedRef.current = false;
+      queueMicrotask(() => {
+        if (!mountedRef.current) {
+          orchestrator?.destroy();
+        }
+      });
     };
   }, [orchestrator]);
 

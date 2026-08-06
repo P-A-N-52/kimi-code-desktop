@@ -20,11 +20,11 @@
 
 Kimi Code Desktop 将 Kimi Code 的终端智能体能力带进一个专注、可视、可管理的桌面界面。它不是另一套 AI 运行时：会话、模型、工具调用与智能体能力仍由用户安装的 Kimi Code CLI 提供，桌面端通过 ACP（`kimi acp`）连接，并负责交互、工作区呈现与 Windows / macOS 系统集成。
 
-> 当前源码版本为 `1.1.1`，面向 Windows 与 macOS（Intel 与 Apple Silicon）。
+> 当前源码版本为 `1.1.3`，面向 Windows 与 macOS（Intel 与 Apple Silicon）。
 
 ## 本次贡献 / This contribution
 
-本次贡献以 `v1.1.1` 为基线，分为 macOS Intel 发布支持和桌面端 session 体验修复两部分。应用版本号保持上游版本策略，不把处理器架构写进版本号。
+本次贡献基于当前上游版本，分为 macOS Intel 发布支持和桌面端 session 体验修复两部分。应用版本号保持上游版本策略，不把处理器架构写进版本号。
 
 ### 改善 / Improvements
 
@@ -55,7 +55,7 @@ Kimi Code Desktop 将 Kimi Code 的终端智能体能力带进一个专注、可
 - 不提交或保存 API key、Apple 签名凭据、Codex 配置、本机绝对路径或用户 session 内容。
 - 没有 Apple 签名 secrets 时沿用 ad-hoc/unsigned 降级机制，实际签名和公证状态记录在 release manifest 中。
 
-This contribution is based on upstream `v1.1.1` and covers native Intel macOS distribution plus session, history, workspace, archive, and context-menu fixes. The application version remains a standard `major.minor.patch` value; architecture is recorded in artifact names and manifests.
+This contribution is based on the current upstream version and covers native Intel macOS distribution plus session, history, workspace, archive, and context-menu fixes. The application version remains a standard `major.minor.patch` value; architecture is recorded in artifact names and manifests.
 
 ### Improvements
 

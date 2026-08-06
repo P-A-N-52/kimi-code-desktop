@@ -96,8 +96,6 @@ export type SessionViewState = {
   connectionPhase: ConnectionPhase;
   /** Stable id of the current wire connection attempt (Tauri), if any */
   connectionId: string | null;
-  /** Timestamp (ms) of the last received wire message; 0 if none yet */
-  lastEventAt: number;
   /** Timestamp (ms) of the last snapshot update */
   updatedAt: number;
 };

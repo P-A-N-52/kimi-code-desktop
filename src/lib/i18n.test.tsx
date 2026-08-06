@@ -44,6 +44,15 @@ describe("DOM translations", () => {
     expect(translateUiString("打开设置", "en-US")).toBe("Open settings");
   });
 
+  it("translates the dynamic older-message count in both directions", () => {
+    expect(translateUiString("Load earlier messages (180 remaining)", "zh-CN")).toBe(
+      "加载更早消息（剩余 180 条）",
+    );
+    expect(translateUiString("加载更早消息（剩余 180 条）", "en-US")).toBe(
+      "Load earlier messages (180 remaining)",
+    );
+  });
+
   it("restores translated text and attributes when switching back to English", async () => {
     const user = userEvent.setup();
     render(

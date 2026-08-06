@@ -23,8 +23,10 @@ import type { Session } from "@/lib/api/models";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { Button } from "@/ui/button";
+import { useConfirm } from "@/ui/confirm-dialog";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/ui/dialog";
 import { Kbd } from "@/ui/kbd";
+import { StatusDot } from "@/ui/status-dot";
 import {
   groupSessionsByDay,
   groupSessionsByWorkDir,
@@ -36,6 +38,10 @@ import {
   writeExpandedGroupKeys,
   writeSessionGroupMode,
 } from "./session-groups";
+import {
+  getSessionRuntimeIndicator,
+  sessionRuntimeIndicatorLabel,
+} from "./session-runtime-indicator";
 import { STALE_ARCHIVE_DAY_OPTIONS, type StaleArchiveDays } from "./stale-sessions";
 
 const SESSION_SKELETON_KEYS = ["one", "two", "three", "four", "five", "six"] as const;
@@ -103,6 +109,7 @@ function SessionItem({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(session.title ?? "");
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const runtimeIndicator = getSessionRuntimeIndicator(session);
 
   useEffect(() => {
     if (!editing) return;
@@ -195,8 +202,18 @@ function SessionItem({
             className="min-w-0 flex-1 text-left"
           >
             <span className="flex items-center gap-1.5 truncate text-[13px] font-medium text-foreground">
-              {session.isRunning && (
-                <span className="size-[5px] shrink-0 animate-breathe rounded-full bg-success" />
+              {runtimeIndicator !== "hidden" && (
+                <StatusDot
+                  status={
+                    runtimeIndicator === "working"
+                      ? "running"
+                      : runtimeIndicator === "error"
+                        ? "error"
+                        : "ok"
+                  }
+                  className="size-[5px]"
+                  title={sessionRuntimeIndicatorLabel(runtimeIndicator)}
+                />
               )}
               <span className="min-w-0 flex-1 truncate">{session.title || "未命名会话"}</span>
               {groupMode === "project" && (
@@ -293,6 +310,7 @@ export type SessionsSidebarProps = {
 
 export function SessionsSidebar(props: SessionsSidebarProps) {
   const { resolvedLanguage, t } = useI18n();
+  const confirm = useConfirm();
   const [mode, setMode] = useState<SidebarMode>("active");
   const [groupMode, setGroupMode] = useState<SessionGroupMode>(() => readSessionGroupMode());
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(
@@ -498,15 +516,17 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
 
   const confirmDeleteSession = (session: Session) => {
     const title = session.title || (resolvedLanguage === "zh-CN" ? "未命名会话" : "Untitled");
-    if (
-      window.confirm(
+    void confirm({
+      message:
         resolvedLanguage === "zh-CN"
           ? `确定永久删除“${title}”吗？`
           : `Permanently delete "${title}"?`,
-      )
-    ) {
-      props.onDelete(session.sessionId);
-    }
+      title: resolvedLanguage === "zh-CN" ? "删除会话" : "Delete session",
+      confirmLabel: resolvedLanguage === "zh-CN" ? "删除" : "Delete",
+      danger: true,
+    }).then((confirmed) => {
+      if (confirmed) props.onDelete(session.sessionId);
+    });
   };
 
   const toggleGroup = (key: string) => {
@@ -595,11 +615,15 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
     if (actionsBusy) return;
     if (
       action === "delete" &&
-      !window.confirm(
-        resolvedLanguage === "zh-CN"
-          ? `确定永久删除选中的 ${ids.length} 个会话吗？`
-          : `Permanently delete the ${ids.length} selected sessions?`,
-      )
+      !(await confirm({
+        message:
+          resolvedLanguage === "zh-CN"
+            ? `确定永久删除选中的 ${ids.length} 个会话吗？`
+            : `Permanently delete the ${ids.length} selected sessions?`,
+        title: resolvedLanguage === "zh-CN" ? "删除会话" : "Delete sessions",
+        confirmLabel: resolvedLanguage === "zh-CN" ? "删除" : "Delete",
+        danger: true,
+      }))
     )
       return;
     setBulkBusy(true);
@@ -618,11 +642,13 @@ export function SessionsSidebar(props: SessionsSidebarProps) {
     setStaleMenuOpen(false);
     if (actionsBusy) return;
     if (
-      !window.confirm(
-        resolvedLanguage === "zh-CN"
-          ? `确定归档所有超过 ${days} 天未活跃的会话吗？可在「已归档」中恢复。`
-          : `Archive every session inactive for more than ${days} days? You can restore them from Archived.`,
-      )
+      !(await confirm({
+        message:
+          resolvedLanguage === "zh-CN"
+            ? `确定归档所有超过 ${days} 天未活跃的会话吗？可在「已归档」中恢复。`
+            : `Archive every session inactive for more than ${days} days? You can restore them from Archived.`,
+        confirmLabel: resolvedLanguage === "zh-CN" ? "归档" : "Archive",
+      }))
     ) {
       return;
     }

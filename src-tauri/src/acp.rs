@@ -7,11 +7,15 @@ use crate::acp_translate::{
     translate_acp_lifecycle_notification, translate_session_config_snapshot,
     translate_session_update, wire_event_message,
 };
-use crate::wire_events::{emit_wire_message, RestartWorkersSummary, RuntimeStatus};
+use crate::wire_events::{
+    emit_wire_message as emit_raw_wire_message,
+    emit_wire_messages_batch as emit_raw_wire_messages_batch, RestartWorkersSummary, RuntimeStatus,
+};
 use crate::{global_config, goal_queue, goal_store, session_files, session_store};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -28,6 +32,8 @@ const ACP_RPC_TIMEOUT_DEFAULT_SECS: u64 = 120;
 // generic RPC timeout.
 const ACP_PROMPT_TIMEOUT_DEFAULT_SECS: u64 = 3600;
 const ACP_HELP_TIMEOUT: Duration = Duration::from_secs(5);
+const ACP_TEXT_FLUSH_WINDOW: Duration = Duration::from_millis(30);
+const ACP_TEXT_FLUSH_MAX_BYTES: usize = 8 * 1024;
 const GOAL_BRIDGE_POLL_INTERVAL: Duration = Duration::from_millis(200);
 const GOAL_BRIDGE_HANDOFF_GRACE: Duration = Duration::from_secs(2);
 const GOAL_TERMINAL_QUIET_PERIOD: Duration = Duration::from_secs(2);
@@ -360,6 +366,7 @@ pub struct AcpProcessManager {
 
 struct AcpManagerState {
     workers: Mutex<HashMap<String, Arc<AcpWorker>>>,
+    connect_ops: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -403,8 +410,62 @@ pub(crate) struct PendingPermission {
     options: Vec<Value>,
 }
 
+struct TextWireAggregator {
+    pending_messages: Vec<String>,
+    pending_bytes: usize,
+    max_bytes: usize,
+}
+
+impl TextWireAggregator {
+    fn new(max_bytes: usize) -> Self {
+        assert!(max_bytes > 0, "text flush threshold must be positive");
+        Self {
+            pending_messages: Vec::new(),
+            pending_bytes: 0,
+            max_bytes,
+        }
+    }
+
+    fn push(&mut self, message: String) -> bool {
+        self.pending_bytes = self.pending_bytes.saturating_add(message.len());
+        self.pending_messages.push(message);
+        self.pending_bytes >= self.max_bytes
+    }
+
+    fn take(&mut self) -> Vec<String> {
+        self.pending_bytes = 0;
+        std::mem::take(&mut self.pending_messages)
+    }
+
+    fn clear(&mut self) {
+        self.pending_messages.clear();
+        self.pending_bytes = 0;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pending_messages.is_empty()
+    }
+}
+
+impl Default for TextWireAggregator {
+    fn default() -> Self {
+        Self::new(ACP_TEXT_FLUSH_MAX_BYTES)
+    }
+}
+
+#[derive(Default)]
+struct WireOutputState {
+    text: TextWireAggregator,
+    flush_timer_started: bool,
+    last_plan_message: Option<String>,
+    last_config_message: Option<String>,
+}
+
 pub(crate) struct AcpWorker {
     session_id: String,
+    // Keep the app handle on the worker so shutdown paths such as stop_all,
+    // which cannot receive one from their caller, can still flush pending text.
+    app_handle: Option<AppHandle>,
     connection_id: Mutex<Option<String>>,
     workspace_cwd: Mutex<Option<PathBuf>>,
     status: Mutex<RuntimeStatus>,
@@ -412,6 +473,7 @@ pub(crate) struct AcpWorker {
     // session is shared so a long-running `session/prompt` request cannot
     // block reverse-request responses or `session/cancel` notifications.
     rpc: Mutex<Option<Arc<AcpRpcSession>>>,
+    wire_output: Mutex<WireOutputState>,
     status_seq: AtomicU64,
     in_flight_prompt_ids: Mutex<HashSet<String>>,
     pending_permission_ids: Mutex<HashMap<String, PendingPermission>>,
@@ -438,8 +500,18 @@ impl AcpProcessManager {
         Self {
             inner: Arc::new(AcpManagerState {
                 workers: Mutex::new(HashMap::new()),
+                connect_ops: Mutex::new(HashMap::new()),
             }),
         }
+    }
+
+    fn connect_op(&self, session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut connect_ops = self.inner.connect_ops.lock().unwrap();
+        Arc::clone(
+            connect_ops
+                .entry(session_id.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
     }
 
     pub fn get_status(&self, session_id: &str) -> Option<RuntimeStatus> {
@@ -514,6 +586,13 @@ impl AcpProcessManager {
         session_id: String,
         connection_id: Option<String>,
     ) -> Result<(), String> {
+        // Resolving cwd, authenticating, and resuming happen before the worker
+        // enters the map. Serialize that whole sequence per session so two
+        // concurrent wire_connect calls cannot both spawn and then replace
+        // each other's live ACP worker. Different sessions remain concurrent.
+        let connect_op = self.connect_op(&session_id);
+        let _connect_guard = connect_op.lock().await;
+
         let stale_worker = {
             let mut workers = self.inner.workers.lock().unwrap();
             if let Some(existing) = workers.get(&session_id) {
@@ -538,6 +617,7 @@ impl AcpProcessManager {
 
         let worker = Arc::new(AcpWorker {
             session_id: session_id.clone(),
+            app_handle: Some(app.clone()),
             connection_id: Mutex::new(connection_id),
             workspace_cwd: Mutex::new(Some(cwd.clone())),
             status: Mutex::new(RuntimeStatus {
@@ -550,6 +630,7 @@ impl AcpProcessManager {
                 updated_at: now_ms(),
             }),
             rpc: Mutex::new(None),
+            wire_output: Mutex::new(WireOutputState::default()),
             status_seq: AtomicU64::new(0),
             in_flight_prompt_ids: Mutex::new(HashSet::new()),
             pending_permission_ids: Mutex::new(HashMap::new()),
@@ -855,9 +936,9 @@ impl AcpProcessManager {
 
         match method {
             Some("initialize") => {
-                emit_wire_message(
+                emit_worker_wire_message(
                     app,
-                    &session_id,
+                    &worker,
                     json!({
                         "jsonrpc": "2.0",
                         "id": id,
@@ -868,7 +949,7 @@ impl AcpProcessManager {
                 set_worker_status(app, &worker, "idle", Some("initialized"), None);
                 emit_mode_status_wire(app, &worker);
                 emit_usage_status_wire(app, &worker, None);
-                emit_session_config_wire(app, &worker.session_id);
+                emit_session_config_wire(app, &worker);
                 Ok(())
             }
             Some("replay") => handle_replay(app, &worker, id).await,
@@ -1057,6 +1138,7 @@ pub(crate) fn spawn_acp_probe_worker(
 fn new_probe_worker() -> AcpWorker {
     AcpWorker {
         session_id: "__desktop_probe__".to_string(),
+        app_handle: None,
         connection_id: Mutex::new(None),
         workspace_cwd: Mutex::new(None),
         status: Mutex::new(RuntimeStatus {
@@ -1069,6 +1151,7 @@ fn new_probe_worker() -> AcpWorker {
             updated_at: now_ms(),
         }),
         rpc: Mutex::new(None),
+        wire_output: Mutex::new(WireOutputState::default()),
         status_seq: AtomicU64::new(0),
         in_flight_prompt_ids: Mutex::new(HashSet::new()),
         pending_permission_ids: Mutex::new(HashMap::new()),
@@ -1168,6 +1251,148 @@ pub(crate) async fn ensure_acp_authenticated(rpc: &mut AcpRpcSession) -> Result<
     Ok(initialize_result)
 }
 
+#[derive(Clone, Copy)]
+enum WireSnapshotKind {
+    Plan,
+    Config,
+}
+
+fn emit_worker_wire_message(app: &AppHandle, worker: &AcpWorker, message: String) {
+    emit_worker_wire_message_with_kind(app, worker, message, None);
+}
+
+fn emit_worker_snapshot_wire_message(
+    app: &AppHandle,
+    worker: &AcpWorker,
+    message: String,
+    kind: WireSnapshotKind,
+) {
+    emit_worker_wire_message_with_kind(app, worker, message, Some(kind));
+}
+
+fn emit_worker_wire_message_with_kind(
+    app: &AppHandle,
+    worker: &AcpWorker,
+    message: String,
+    snapshot_kind: Option<WireSnapshotKind>,
+) {
+    let mut output = worker.wire_output.lock().unwrap();
+    flush_pending_text_wire_messages_locked(app, worker, &mut output);
+
+    if let Some(kind) = snapshot_kind {
+        let last_message = match kind {
+            WireSnapshotKind::Plan => &mut output.last_plan_message,
+            WireSnapshotKind::Config => &mut output.last_config_message,
+        };
+        if last_message.as_deref() == Some(message.as_str()) {
+            return;
+        }
+        *last_message = Some(message.clone());
+    }
+
+    emit_raw_wire_message(app, &worker.session_id, message);
+}
+
+fn queue_worker_text_wire_message(app: &AppHandle, worker: &Arc<AcpWorker>, message: String) {
+    let should_start_timer;
+    {
+        let mut output = worker.wire_output.lock().unwrap();
+        if output.text.push(message) {
+            flush_pending_text_wire_messages_locked(app, worker, &mut output);
+        }
+
+        should_start_timer = !output.flush_timer_started && !output.text.is_empty();
+        if should_start_timer {
+            output.flush_timer_started = true;
+        }
+    }
+
+    if should_start_timer {
+        let app = app.clone();
+        let worker = Arc::clone(worker);
+        tauri::async_runtime::spawn(run_after_delay(
+            tokio::time::sleep(ACP_TEXT_FLUSH_WINDOW),
+            move || flush_worker_text_wire_messages(&app, &worker),
+        ));
+    }
+}
+
+async fn run_after_delay<D, F>(delay: D, action: F)
+where
+    D: Future<Output = ()> + Send + 'static,
+    F: FnOnce() + Send + 'static,
+{
+    delay.await;
+    action();
+}
+
+fn flush_worker_text_wire_messages(app: &AppHandle, worker: &AcpWorker) {
+    let mut output = worker.wire_output.lock().unwrap();
+    output.flush_timer_started = false;
+    emit_pending_text_wire_messages(
+        &mut output,
+        |message| emit_raw_wire_message(app, &worker.session_id, message),
+        |messages| emit_raw_wire_messages_batch(app, &worker.session_id, messages),
+    );
+}
+
+fn emit_text_wire_messages<Single, Batch>(
+    messages: Vec<String>,
+    emit_single: Single,
+    emit_batch: Batch,
+) where
+    Single: FnOnce(String),
+    Batch: FnOnce(Vec<String>),
+{
+    match messages.len() {
+        0 => {}
+        1 => {
+            let Some(message) = messages.into_iter().next() else {
+                return;
+            };
+            emit_single(message);
+        }
+        _ => emit_batch(messages),
+    }
+}
+
+fn emit_pending_text_wire_messages<Single, Batch>(
+    output: &mut WireOutputState,
+    emit_single: Single,
+    emit_batch: Batch,
+) where
+    Single: FnOnce(String),
+    Batch: FnOnce(Vec<String>),
+{
+    emit_text_wire_messages(output.text.take(), emit_single, emit_batch);
+}
+
+fn flush_pending_text_wire_messages_locked(
+    app: &AppHandle,
+    worker: &AcpWorker,
+    output: &mut WireOutputState,
+) {
+    emit_pending_text_wire_messages(
+        output,
+        |message| emit_raw_wire_message(app, &worker.session_id, message),
+        |messages| emit_raw_wire_messages_batch(app, &worker.session_id, messages),
+    );
+}
+
+fn reset_worker_wire_snapshots(worker: &AcpWorker) {
+    let mut output = worker.wire_output.lock().unwrap();
+    output.last_plan_message = None;
+    output.last_config_message = None;
+}
+
+fn clear_worker_wire_output(worker: &AcpWorker) {
+    let mut output = worker.wire_output.lock().unwrap();
+    output.text.clear();
+    output.flush_timer_started = false;
+    output.last_plan_message = None;
+    output.last_config_message = None;
+}
+
 fn set_worker_status(
     app: &AppHandle,
     worker: &AcpWorker,
@@ -1223,9 +1448,9 @@ fn emit_session_status_wire(
     reason: Option<&str>,
     detail: Option<&str>,
 ) {
-    emit_wire_message(
+    emit_worker_wire_message(
         app,
-        &worker.session_id,
+        worker,
         json!({
             "jsonrpc": "2.0",
             "method": "session_status",
@@ -1393,15 +1618,15 @@ fn mode_status_payload_for(
 }
 
 fn emit_mode_status_wire(app: &AppHandle, worker: &AcpWorker) {
-    emit_wire_message(
+    emit_worker_wire_message(
         app,
-        &worker.session_id,
+        worker,
         wire_event_message("StatusUpdate", mode_status_payload(worker)),
     );
 }
 
-fn emit_session_config_wire(app: &AppHandle, session_id: &str) {
-    let Some(state) = crate::acp_capabilities::resolve_session_config(session_id) else {
+fn emit_session_config_wire(app: &AppHandle, worker: &AcpWorker) {
+    let Some(state) = crate::acp_capabilities::resolve_session_config(&worker.session_id) else {
         return;
     };
     if state.status != crate::acp_capabilities::SessionConfigStatus::Known
@@ -1409,10 +1634,11 @@ fn emit_session_config_wire(app: &AppHandle, session_id: &str) {
     {
         return;
     }
-    emit_wire_message(
+    emit_worker_snapshot_wire_message(
         app,
-        session_id,
-        translate_session_config_snapshot(session_id, &state),
+        worker,
+        translate_session_config_snapshot(&worker.session_id, &state),
+        WireSnapshotKind::Config,
     );
 }
 
@@ -1420,9 +1646,9 @@ fn emit_config_option_error(app: &AppHandle, worker: &AcpWorker, id: Option<Valu
     let Some(id) = id else {
         return;
     };
-    emit_wire_message(
+    emit_worker_wire_message(
         app,
-        &worker.session_id,
+        worker,
         json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -1480,9 +1706,9 @@ fn emit_usage_status_wire(app: &AppHandle, worker: &AcpWorker, prompt_result: Op
         .map(session_store::SessionUsageSnapshot::to_token_usage_json)
         .unwrap_or(Value::Null);
 
-    emit_wire_message(
+    emit_worker_wire_message(
         app,
-        &worker.session_id,
+        worker,
         wire_event_message(
             "StatusUpdate",
             json!({
@@ -1563,9 +1789,9 @@ fn emit_mode_response(app: &AppHandle, worker: &AcpWorker, id: Option<Value>) {
     let Some(id) = id else {
         return;
     };
-    emit_wire_message(
+    emit_worker_wire_message(
         app,
-        &worker.session_id,
+        worker,
         json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -1653,7 +1879,9 @@ async fn handle_set_permission_mode(
     params: Value,
 ) -> Result<(), String> {
     let next_mode = permission_mode_from_params(&params)?;
-    ensure_mode_change_idle(worker)?;
+    // Permission mode hot-switches mid-turn (issue #13): session/set_mode only
+    // affects subsequent permission requests, so an in-flight prompt is fine.
+    // Plan/swarm/goal handlers keep the idle gate.
     let _mode_guard = worker.mode_ops.lock().await;
 
     let previous_mode = *worker.permission_mode.lock().unwrap();
@@ -1846,9 +2074,9 @@ async fn handle_set_config_option(
     }
 
     if let Some(id) = id {
-        emit_wire_message(
+        emit_worker_wire_message(
             app,
-            &worker.session_id,
+            worker,
             json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -1872,6 +2100,7 @@ async fn handle_replay(
         .clone()
         .ok_or_else(|| "ACP session workspace is not ready".to_string())?;
     *worker.last_session_update_at.lock().unwrap() = None;
+    reset_worker_wire_snapshots(worker);
     set_worker_status(app, worker, "busy", Some("replay"), None);
     let response = {
         let rpc = active_worker_rpc(worker)?;
@@ -1901,9 +2130,9 @@ async fn handle_replay(
     wait_for_session_update_quiescence(worker, Duration::from_millis(150), Duration::from_secs(5))
         .await;
 
-    emit_wire_message(
+    emit_worker_wire_message(
         app,
-        &worker.session_id,
+        worker,
         json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -1913,7 +2142,7 @@ async fn handle_replay(
     );
     set_worker_status(app, worker, "idle", Some("replay_complete"), None);
     emit_usage_status_wire(app, worker, None);
-    emit_session_config_wire(app, &worker.session_id);
+    emit_session_config_wire(app, worker);
     Ok(())
 }
 
@@ -2121,10 +2350,10 @@ fn goal_cancel_ack_observed(
         && poll.last_goal_terminal_status.as_deref() == Some(expected_status))
 }
 
-fn emit_goal_refresh(app: &AppHandle, session_id: &str) {
-    emit_wire_message(
+fn emit_goal_refresh(app: &AppHandle, worker: &AcpWorker) {
+    emit_worker_wire_message(
         app,
-        session_id,
+        worker,
         wire_event_message(
             "StatusUpdate",
             json!({
@@ -2174,7 +2403,7 @@ async fn bridge_native_goal_continuation(
         return Err("Native Goal journal changed while the prompt was running.".to_string());
     }
     if poll.saw_goal_record {
-        emit_goal_refresh(app, &worker.session_id);
+        emit_goal_refresh(app, worker);
     }
 
     let handoff_started_at = Instant::now();
@@ -2201,7 +2430,7 @@ async fn bridge_native_goal_continuation(
             return Err("Native Goal journal changed while the prompt was running.".to_string());
         }
         if next.saw_goal_record {
-            emit_goal_refresh(app, &worker.session_id);
+            emit_goal_refresh(app, worker);
         }
         poll = next;
     };
@@ -2217,7 +2446,7 @@ async fn bridge_native_goal_continuation(
     }
 
     set_worker_status(app, worker, "busy", Some("goal"), None);
-    emit_goal_refresh(app, &worker.session_id);
+    emit_goal_refresh(app, worker);
     let mut last_journal_activity = Instant::now();
 
     loop {
@@ -2233,7 +2462,7 @@ async fn bridge_native_goal_continuation(
             last_journal_activity = Instant::now();
         }
         if next.saw_goal_record {
-            emit_goal_refresh(app, &worker.session_id);
+            emit_goal_refresh(app, worker);
         }
         poll = next;
 
@@ -2249,7 +2478,7 @@ async fn bridge_native_goal_continuation(
                 return Err("Native Goal journal changed while the prompt was running.".to_string());
             }
             if barrier.saw_goal_record {
-                emit_goal_refresh(app, &worker.session_id);
+                emit_goal_refresh(app, worker);
             }
             if barrier.advanced {
                 last_journal_activity = Instant::now();
@@ -2266,7 +2495,7 @@ async fn bridge_native_goal_continuation(
                 )?
                 && last_journal_activity.elapsed() >= GOAL_TERMINAL_QUIET_PERIOD
             {
-                emit_goal_refresh(app, &worker.session_id);
+                emit_goal_refresh(app, worker);
                 let completed = goal_terminal_was_completed(&poll);
                 return Ok(GoalBridgeOutcome {
                     history_resync: true,
@@ -2289,7 +2518,7 @@ async fn bridge_native_goal_continuation(
                     );
                 }
                 if next.saw_goal_record {
-                    emit_goal_refresh(app, &worker.session_id);
+                    emit_goal_refresh(app, worker);
                 }
                 let snapshot = cursor.snapshot();
                 if goal_cancel_ack_observed(&next, baseline_record, &monitored_goal_id, &snapshot)?
@@ -2485,9 +2714,9 @@ async fn handle_prompt(
         .and_then(|result| result.get("stopReason"))
         .and_then(Value::as_str);
     let status = legacy_prompt_status_from_stop_reason(stop_reason);
-    emit_wire_message(
+    emit_worker_wire_message(
         app,
-        &worker.session_id,
+        worker,
         json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -2556,9 +2785,9 @@ async fn handle_cancel(
 
     set_worker_idle_if_active(app, worker, "cancelled")?;
     if id.is_some() {
-        emit_wire_message(
+        emit_worker_wire_message(
             app,
-            &worker.session_id,
+            worker,
             json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -2635,8 +2864,34 @@ fn stop_worker_best_effort(worker: &AcpWorker, reason: &str) {
 }
 
 fn mark_worker_stopped(worker: &AcpWorker, reason: &str) {
+    let app = worker.app_handle.clone();
+    let session_id = worker.session_id.clone();
+    mark_worker_stopped_with_emitter(worker, reason, move |messages| {
+        if let Some(app) = app.as_ref() {
+            emit_raw_wire_messages_batch(app, &session_id, messages);
+        }
+    });
+}
+
+fn mark_worker_stopped_with_emitter<F>(worker: &AcpWorker, reason: &str, emit: F)
+where
+    F: FnOnce(Vec<String>),
+{
     worker.in_flight_prompt_ids.lock().unwrap().clear();
     worker.pending_permission_ids.lock().unwrap().clear();
+    {
+        let mut output = worker.wire_output.lock().unwrap();
+        output.flush_timer_started = false;
+        let pending_messages = output.text.take();
+        if !pending_messages.is_empty() {
+            // Keep the output lock through the drain so another wire event
+            // cannot overtake the stop flush.
+            emit(pending_messages);
+        }
+    }
+    // Stopping must flush text first, but snapshot messages are still only
+    // caches and must be discarded with the worker.
+    clear_worker_wire_output(worker);
     let seq = worker.status_seq.fetch_add(1, Ordering::SeqCst) + 1;
     let mut status = worker.status.lock().unwrap();
     status.state = "stopped".to_string();
@@ -2839,10 +3094,26 @@ fn handle_acp_notification(
                 emit_mode_status_wire(app, worker);
             }
             if let Some(wire_message) = acp_update_to_wire_event(&worker.session_id, &update) {
-                emit_wire_message(app, &worker.session_id, wire_message);
+                emit_worker_wire_message(app, worker, wire_message);
             } else {
+                let update_kind = update.get("sessionUpdate").and_then(Value::as_str);
+                let is_text_chunk = matches!(
+                    update_kind,
+                    Some("agent_message_chunk" | "agent_thought_chunk" | "thought_message_chunk")
+                );
+                let snapshot_kind = match update_kind {
+                    Some("plan") => Some(WireSnapshotKind::Plan),
+                    Some("config_option_update") => Some(WireSnapshotKind::Config),
+                    _ => None,
+                };
                 for wire_message in translate_session_update(&worker.session_id, &update) {
-                    emit_wire_message(app, &worker.session_id, wire_message);
+                    if is_text_chunk {
+                        queue_worker_text_wire_message(app, worker, wire_message);
+                    } else if let Some(kind) = snapshot_kind {
+                        emit_worker_snapshot_wire_message(app, worker, wire_message, kind);
+                    } else {
+                        emit_worker_wire_message(app, worker, wire_message);
+                    }
                 }
             }
         }
@@ -2853,7 +3124,7 @@ fn handle_acp_notification(
                 eprintln!("[acp] ignored notification: {method}");
             } else {
                 for wire_message in wire_messages {
-                    emit_wire_message(app, &worker.session_id, wire_message);
+                    emit_worker_wire_message(app, worker, wire_message);
                 }
             }
         }
@@ -2881,7 +3152,7 @@ fn handle_acp_reverse_request(
                         options,
                     },
                 );
-                emit_wire_message(app, &worker.session_id, wire_message);
+                emit_worker_wire_message(app, worker, wire_message);
             } else {
                 eprintln!(
                     "[WARN] Unknown ACP permission request (id={request_id}); defaulting to reject"
@@ -3151,6 +3422,163 @@ mod tests {
             next_id: AtomicU64::new(1),
             reader_alive: Arc::new(Mutex::new(true)),
         }
+    }
+
+    #[test]
+    fn text_aggregator_preserves_order_under_high_frequency_pushes() {
+        let mut buffer = TextWireAggregator::default();
+        let expected: Vec<String> = (0..20_000).map(|index| format!("chunk-{index}")).collect();
+        let mut emitted = Vec::new();
+
+        for message in expected.iter().cloned() {
+            if buffer.push(message) {
+                emitted.extend(buffer.take());
+            }
+        }
+        emitted.extend(buffer.take());
+
+        assert_eq!(emitted, expected);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn text_aggregator_flushes_immediately_at_byte_threshold() {
+        let mut buffer = TextWireAggregator::new(ACP_TEXT_FLUSH_MAX_BYTES);
+        let first = "a".repeat(ACP_TEXT_FLUSH_MAX_BYTES - 1);
+
+        assert!(!buffer.push(first.clone()));
+        assert!(buffer.push("b".to_string()));
+        assert_eq!(buffer.take(), vec![first, "b".to_string()]);
+        assert!(buffer.is_empty());
+    }
+
+    #[test]
+    fn text_flush_emits_one_batch_for_multiple_pending_messages() {
+        let mut output = WireOutputState::default();
+        for message in ["first", "second", "third"] {
+            assert!(!output.text.push(message.to_string()));
+        }
+        let mut singles = Vec::new();
+        let mut batches = Vec::new();
+
+        emit_pending_text_wire_messages(
+            &mut output,
+            |message| singles.push(message),
+            |messages| batches.push(messages),
+        );
+
+        assert!(singles.is_empty());
+        assert_eq!(
+            batches,
+            vec![vec![
+                "first".to_string(),
+                "second".to_string(),
+                "third".to_string()
+            ]]
+        );
+        assert!(output.text.is_empty());
+    }
+
+    #[test]
+    fn text_flush_emits_single_pending_message_as_single_event() {
+        let mut output = WireOutputState::default();
+        assert!(!output.text.push("single".to_string()));
+        let mut singles = Vec::new();
+        let mut batches = Vec::new();
+
+        emit_pending_text_wire_messages(
+            &mut output,
+            |message| singles.push(message),
+            |messages| batches.push(messages),
+        );
+
+        assert_eq!(singles, vec!["single"]);
+        assert!(batches.is_empty());
+        assert!(output.text.is_empty());
+    }
+
+    #[tokio::test]
+    async fn text_aggregator_flushes_after_injected_flush_window() {
+        assert_eq!(ACP_TEXT_FLUSH_WINDOW, Duration::from_millis(30));
+
+        let buffer = Arc::new(Mutex::new(TextWireAggregator::default()));
+        assert!(!buffer.lock().unwrap().push("delayed".to_string()));
+        let emitted = Arc::new(Mutex::new(Vec::<Vec<String>>::new()));
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let buffer_for_flush = Arc::clone(&buffer);
+        let emitted_for_flush = Arc::clone(&emitted);
+
+        let task = tokio::spawn(run_after_delay(
+            async move {
+                let _ = release_rx.await;
+            },
+            move || {
+                let messages = buffer_for_flush.lock().unwrap().take();
+                if !messages.is_empty() {
+                    emitted_for_flush.lock().unwrap().push(messages);
+                }
+            },
+        ));
+        tokio::task::yield_now().await;
+        assert!(emitted.lock().unwrap().is_empty());
+        assert!(!task.is_finished());
+
+        release_tx.send(()).expect("release flush timer");
+        task.await.expect("flush timer task");
+        let emitted = emitted.lock().unwrap().clone();
+        assert_eq!(emitted, vec![vec!["delayed".to_string()]]);
+        assert!(buffer.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn terminal_wire_paths_flush_pending_text_without_loss() {
+        for (path, pending) in [
+            ("prompt_complete", "prompt-pending"),
+            ("cancel", "cancel-pending"),
+        ] {
+            let mut output = WireOutputState::default();
+            assert!(!output.text.push(pending.to_string()));
+            let mut singles = Vec::new();
+            let mut batches = Vec::new();
+            emit_pending_text_wire_messages(
+                &mut output,
+                |message| singles.push(message),
+                |messages| batches.push(messages),
+            );
+
+            assert_eq!(singles, vec![pending.to_string()], "{path} path");
+            assert!(batches.is_empty(), "{path} unexpectedly batched");
+            assert!(output.text.is_empty(), "{path} pending text");
+        }
+
+        let worker = new_probe_worker();
+        {
+            let mut output = worker.wire_output.lock().unwrap();
+            assert!(!output.text.push("worker-stop-first".to_string()));
+            assert!(!output.text.push("worker-stop-second".to_string()));
+            output.flush_timer_started = true;
+            output.last_plan_message = Some("cached plan".to_string());
+            output.last_config_message = Some("cached config".to_string());
+        }
+        let mut emitted_batches = Vec::new();
+        mark_worker_stopped_with_emitter(&worker, "worker_stop", |messages| {
+            emitted_batches.push(messages)
+        });
+
+        assert_eq!(
+            emitted_batches,
+            vec![vec![
+                "worker-stop-first".to_string(),
+                "worker-stop-second".to_string()
+            ]]
+        );
+        let output = worker.wire_output.lock().unwrap();
+        assert!(output.text.is_empty());
+        assert!(!output.flush_timer_started);
+        assert!(output.last_plan_message.is_none());
+        assert!(output.last_config_message.is_none());
+        drop(output);
+        assert_eq!(worker.status.lock().unwrap().state, "stopped");
     }
 
     #[test]
@@ -3469,6 +3897,23 @@ mod tests {
         manager.inner.workers.lock().unwrap().remove("session-b");
         assert_eq!(manager.list_workers().len(), 1);
         assert_eq!(manager.list_workers()[0].session_id, "session-a");
+    }
+
+    #[test]
+    fn connect_operations_are_shared_per_session_only() {
+        let manager = AcpProcessManager::new();
+        let session_a_first = manager.connect_op("session-a");
+        let session_a_second = manager.connect_op("session-a");
+        let session_b = manager.connect_op("session-b");
+
+        assert!(Arc::ptr_eq(&session_a_first, &session_a_second));
+        assert!(!Arc::ptr_eq(&session_a_first, &session_b));
+
+        let session_a_guard = session_a_first.try_lock().expect("first session-a connect");
+        assert!(session_a_second.try_lock().is_err());
+        assert!(session_b.try_lock().is_ok());
+        drop(session_a_guard);
+        assert!(session_a_second.try_lock().is_ok());
     }
 
     #[test]

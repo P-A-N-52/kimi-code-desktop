@@ -19,6 +19,22 @@ const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
   sendNotification: vi.fn(),
   listenEvent: vi.fn(),
+  parseWireEventPayload: (payload: unknown) => {
+    if (typeof payload !== "object" || payload === null) return null;
+    const { session_id, message, messages } = payload as {
+      session_id?: unknown;
+      message?: unknown;
+      messages?: unknown;
+    };
+    if (typeof session_id !== "string") return null;
+    if (typeof message === "string") {
+      return { sessionId: session_id, messages: [message] };
+    }
+    if (Array.isArray(messages) && messages.every((item) => typeof item === "string")) {
+      return { sessionId: session_id, messages };
+    }
+    return null;
+  },
 }));
 
 vi.mock("@/lib/tauri-api", () => ({
@@ -40,6 +56,7 @@ vi.mock("@/lib/tauri-api", () => ({
   getSession: mocks.getSession,
   sendNotification: mocks.sendNotification,
   listenEvent: mocks.listenEvent,
+  parseWireEventPayload: mocks.parseWireEventPayload,
 }));
 
 vi.mock("@/lib/version", () => ({
@@ -144,6 +161,96 @@ describe("session-stream orchestrator (G5 flag on)", () => {
     expect(mocks.listenEvent).toHaveBeenCalledWith("wire:message", expect.any(Function));
     orchestrator.destroy();
     expect(mocks.listenEvent.mock.calls[0]?.[0]).toBe("wire:message");
+  });
+
+  it("starts an idle runtime created by actionsFor and replays local history", async () => {
+    mocks.replaySessionHistory.mockResolvedValue([
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: { type: "ContentPart", payload: { type: "text", text: "local history" } },
+      }),
+    ]);
+    const orchestrator = createSessionStreamOrchestrator();
+    const idleOptions = defaultOptions("session-a");
+
+    // React resolves actions during render, before attach() runs in its layout effect.
+    orchestrator.actionsFor("session-a", idleOptions);
+    orchestrator.attach("session-a", idleOptions);
+
+    await vi.waitFor(() => {
+      expect(mocks.replaySessionHistory).toHaveBeenCalledWith("session-a");
+      expect(orchestrator.getSnapshot().messages).toEqual([
+        expect.objectContaining({ variant: "text", content: "local history" }),
+      ]);
+    });
+    expect(mocks.wireConnect).not.toHaveBeenCalled();
+    orchestrator.destroy();
+  });
+
+  it("applies live wire messages exactly once (no per-session listener beside the global one)", async () => {
+    const registered: Array<{ sessionId: string; handler: (message: string) => void }> = [];
+    mocks.onWireMessage.mockImplementation((sessionId: string, handler: (message: string) => void) => {
+      registered.push({ sessionId, handler });
+      return () => undefined;
+    });
+
+    const orchestrator = createSessionStreamOrchestrator();
+    const liveOptions = { ...defaultOptions("session-a"), autoConnect: true };
+
+    // Mirror the React adapter: actionsFor runs during render, attach later in
+    // a layout effect; both refresh options on the existing runtime.
+    orchestrator.actionsFor("session-a", liveOptions);
+    orchestrator.attach("session-a", liveOptions);
+    await vi.waitFor(() => {
+      expect(mocks.wireConnect).toHaveBeenCalledWith("session-a", expect.any(String));
+    });
+    completeReplayFor("session-a");
+    await flushPromises();
+
+    // Further option refreshes (second render, visibility switch back) must not
+    // enable a per-session listener on later connects either.
+    orchestrator.actionsFor("session-a", liveOptions);
+    orchestrator.attach("session-b", defaultOptions("session-b"));
+    orchestrator.attach("session-a", liveOptions);
+    await flushPromises();
+
+    expect(registered).toHaveLength(0);
+
+    // Simulate Tauri delivering one live delta to every active listener: the
+    // global one plus any (buggy) per-session registration.
+    const delta = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "event",
+      params: { type: "ContentPart", payload: { type: "text", text: "hello" } },
+    });
+    globalWireHandler?.({ session_id: "session-a", message: delta });
+    for (const entry of registered.filter((item) => item.sessionId === "session-a")) {
+      entry.handler(delta);
+    }
+
+    const textMessages = orchestrator.getSnapshot().messages.filter((m) => m.variant === "text");
+    expect(textMessages).toHaveLength(1);
+    expect(textMessages[0]?.content).toBe("hello");
+    orchestrator.destroy();
+  });
+
+  it("routes batched wire messages to one session in array order", async () => {
+    const orchestrator = createSessionStreamOrchestrator();
+    orchestrator.attach("session-a", defaultOptions("session-a"));
+    await flushPromises();
+
+    globalWireHandler?.({
+      session_id: "session-a",
+      messages: [
+        sessionStatusMessage("session-a", "busy", 1),
+        sessionStatusMessage("session-a", "idle", 2),
+      ],
+    });
+
+    // The final state proves both messages were routed and retained their order.
+    expect(orchestrator.getSnapshot().sessionStatus?.state).toBe("idle");
+    orchestrator.destroy();
   });
 
   it("shows the empty view before any session is attached", () => {

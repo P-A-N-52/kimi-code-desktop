@@ -12,10 +12,29 @@ export type ChangeEntry = {
 };
 
 type Stats = { adds: number; dels: number };
+type ToolDisplay = NonNullable<NonNullable<LiveMessage["toolCall"]>["display"]>;
+type CachedDiff = {
+  display: ToolDisplay;
+  diff: DiffDisplayData | null;
+  stats?: Stats;
+};
+
+const DERIVED_DIFF_CACHE_LIMIT = 200;
+const derivedDiffCache = new Map<string, CachedDiff>();
 
 function defaultStats(display: DiffDisplayData): Stats {
   const { adds, dels } = computeDiffLines(display);
   return { adds, dels };
+}
+
+function getCachedDiff(message: LiveMessage, display: ToolDisplay): CachedDiff {
+  const cached = derivedDiffCache.get(message.id);
+  if (cached?.display === display) return cached;
+
+  const next = { display, diff: findDiffDisplay(display) };
+  if (derivedDiffCache.size >= DERIVED_DIFF_CACHE_LIMIT) derivedDiffCache.clear();
+  derivedDiffCache.set(message.id, next);
+  return next;
 }
 
 export function deriveChanges(
@@ -23,15 +42,24 @@ export function deriveChanges(
   computeStats: (display: DiffDisplayData) => Stats = defaultStats,
 ): ChangeEntry[] {
   const byPath = new Map<string, ChangeEntry>();
+  const useCachedStats = computeStats === defaultStats;
   for (const message of messages) {
     const display = message.toolCall?.display;
     if (!display) continue;
-    const diff = findDiffDisplay(display);
+    const cached = getCachedDiff(message, display);
+    const diff = cached.diff;
     if (!diff || !diff.path) continue;
     if (byPath.has(diff.path)) byPath.delete(diff.path);
+    let stats: Stats;
+    if (useCachedStats) {
+      if (!cached.stats) cached.stats = defaultStats(diff);
+      stats = cached.stats;
+    } else {
+      stats = computeStats(diff);
+    }
     byPath.set(diff.path, {
       path: diff.path,
-      ...computeStats(diff),
+      ...stats,
       display: diff,
     });
   }

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "@/lib/api/models";
 import { UI_LANGUAGE_STORAGE_KEY, UiLanguageProvider } from "@/lib/i18n";
+import { ConfirmDialogProvider } from "@/ui/confirm-dialog";
 import { SessionsSidebar, type SessionsSidebarProps } from "./sessions-sidebar";
 
 const toastMocks = vi.hoisted(() => ({
@@ -53,7 +54,9 @@ function renderSidebar(overrides: Partial<SessionsSidebarProps> = {}) {
 
   const result = render(
     <UiLanguageProvider>
-      <SessionsSidebar {...props} />
+      <ConfirmDialogProvider>
+        <SessionsSidebar {...props} />
+      </ConfirmDialogProvider>
     </UiLanguageProvider>,
   );
   return { ...result, props };
@@ -66,7 +69,6 @@ describe("SessionsSidebar context menu", () => {
     window.localStorage.clear();
     window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, "zh-CN");
     vi.clearAllMocks();
-    window.confirm = vi.fn(() => true);
     writeText.mockReset();
     writeText.mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
@@ -89,7 +91,7 @@ describe("SessionsSidebar context menu", () => {
     expect(toastMocks.success).toHaveBeenCalledWith("已复制短 ID");
   });
 
-  it("exposes rename, archive, and delete actions", () => {
+  it("exposes rename, archive, and delete actions", async () => {
     const { props } = renderSidebar();
     fireEvent.contextMenu(screen.getByText("会话 abcdef123456"));
     fireEvent.click(screen.getByRole("menuitem", { name: "归档会话" }));
@@ -97,8 +99,8 @@ describe("SessionsSidebar context menu", () => {
 
     fireEvent.contextMenu(screen.getByText("会话 abcdef123456"));
     fireEvent.click(screen.getByRole("menuitem", { name: "删除会话" }));
-    expect(window.confirm).toHaveBeenCalled();
-    expect(props.onDelete).toHaveBeenCalledWith("abcdef123456");
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    await waitFor(() => expect(props.onDelete).toHaveBeenCalledWith("abcdef123456"));
 
     fireEvent.contextMenu(screen.getByText("会话 abcdef123456"));
     fireEvent.click(screen.getByRole("menuitem", { name: "重命名" }));
@@ -144,7 +146,6 @@ describe("SessionsSidebar context menu", () => {
     fireEvent.click(archiveButton);
 
     expect(screen.getByRole("dialog").textContent).toContain("归档项目「demo」？");
-    expect(window.confirm).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "确认归档" }));
     await waitFor(() =>
       expect(props.onArchiveProject).toHaveBeenCalledWith(

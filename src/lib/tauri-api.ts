@@ -40,8 +40,31 @@ export type UpdateTextConfigResponse = {
 
 export type WireEventPayload = {
   session_id: string;
-  message: string;
+  message?: string;
+  messages?: string[];
 };
+
+/**
+ * Unified wire:message payload parser shared by the global orchestrator
+ * listener and per-session runtimes. Accepts the single-message shape
+ * `{ session_id, message }` and the batched shape `{ session_id, messages }`
+ * (array order is the wire order), and returns the expanded message list.
+ * Returns null for malformed payloads.
+ */
+export function parseWireEventPayload(
+  payload: unknown,
+): { sessionId: string; messages: string[] } | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const { session_id, message, messages } = payload as WireEventPayload;
+  if (typeof session_id !== "string") return null;
+  if (typeof message === "string") {
+    return { sessionId: session_id, messages: [message] };
+  }
+  if (Array.isArray(messages) && messages.every((item): item is string => typeof item === "string")) {
+    return { sessionId: session_id, messages };
+  }
+  return null;
+}
 
 export type RuntimeReadinessCheck = {
   id: string;
@@ -337,9 +360,10 @@ function normalizeWorkerStatusView(raw: Record<string, unknown>): WorkerStatusVi
 
 export function onWireMessage(sessionId: string, callback: (message: string) => void): () => void {
   return listenEvent("wire:message", (payload) => {
-    const eventPayload = payload as WireEventPayload | undefined;
-    if (eventPayload?.session_id === sessionId && typeof eventPayload.message === "string") {
-      callback(eventPayload.message);
+    const parsed = parseWireEventPayload(payload);
+    if (!parsed || parsed.sessionId !== sessionId) return;
+    for (const message of parsed.messages) {
+      callback(message);
     }
   });
 }

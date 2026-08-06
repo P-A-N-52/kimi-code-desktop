@@ -48,6 +48,30 @@ describe("ToolCard", () => {
     expect(screen.getByText("Wire the workspace")).toBeTruthy();
   });
 
+  it("renders todo tools semantically and hides raw CLI output", () => {
+    render(
+      <ToolCard
+        toolCall={{
+          ...baseToolCall,
+          title: "TodoList",
+          input: {
+            todos: [
+              { title: "定位渲染层", status: "completed" },
+              { title: "汇总结论", status: "in_progress" },
+            ],
+          },
+          output: "[completed] 定位渲染层\n[in_progress] 汇总结论",
+        }}
+      />,
+    );
+
+    // Completed todo cards collapse; open to inspect the semantic body.
+    fireEvent.click(screen.getByRole("button"));
+    expect(screen.getByText("定位渲染层")).toBeTruthy();
+    expect(screen.getByText("汇总结论")).toBeTruthy();
+    expect(screen.queryByText(/\[completed\]/)).toBeNull();
+  });
+
   it("routes Agent tools to AgentToolCard with structured output", () => {
     render(
       <ToolCard

@@ -885,9 +885,15 @@ default_permission_mode = "unexpected"
     #[test]
     fn update_global_config_fields_rejects_unknown_model() {
         let parsed: toml::Value = SAMPLE_CONFIG.parse().expect("sample config parses");
-        let err =
-            update_fields_on_value(&parsed, Some("missing"), None, None, None, None, None, None)
-                .unwrap_err();
+        let err = update_fields_on_value(
+            &parsed,
+            Some("missing"),
+            None,
+            None,
+            None,
+            SecondaryModelConfigUpdate::default(),
+        )
+        .unwrap_err();
         assert!(err.contains("not found in config"));
     }
 
@@ -986,14 +992,26 @@ capabilities = ["thinking"]
     #[test]
     fn update_global_config_fields_validates_thinking_effort() {
         let parsed: toml::Value = SAMPLE_CONFIG.parse().expect("sample config parses");
-        let updated =
-            update_fields_on_value(&parsed, None, None, Some("low"), None, None, None, None)
-                .expect("supported effort succeeds");
+        let updated = update_fields_on_value(
+            &parsed,
+            None,
+            None,
+            Some("low"),
+            None,
+            SecondaryModelConfigUpdate::default(),
+        )
+        .expect("supported effort succeeds");
         assert_eq!(updated["thinking_effort"], "low");
 
-        let err =
-            update_fields_on_value(&parsed, None, None, Some("medium"), None, None, None, None)
-                .expect_err("unsupported effort is rejected");
+        let err = update_fields_on_value(
+            &parsed,
+            None,
+            None,
+            Some("medium"),
+            None,
+            SecondaryModelConfigUpdate::default(),
+        )
+        .expect_err("unsupported effort is rejected");
         assert!(err.contains("not supported by model 'kimi'"));
     }
 
@@ -1006,9 +1024,15 @@ capabilities = ["thinking"]
         .parse()
         .expect("sample config parses");
 
-        let updated =
-            update_fields_on_value(&parsed, Some("fast"), None, None, None, None, None, None)
-                .expect("model switch succeeds");
+        let updated = update_fields_on_value(
+            &parsed,
+            Some("fast"),
+            None,
+            None,
+            None,
+            SecondaryModelConfigUpdate::default(),
+        )
+        .expect("model switch succeeds");
         assert_eq!(updated["default_model"], "fast");
         assert_eq!(updated["thinking_effort"], "low");
     }
@@ -1161,9 +1185,7 @@ max_context_size = 128000
         default_thinking: Option<bool>,
         thinking_effort: Option<&str>,
         default_plan_mode: Option<bool>,
-        secondary_model: Option<&str>,
-        secondary_default_effort: Option<&str>,
-        secondary_model_experiment_enabled: Option<bool>,
+        secondary_model: SecondaryModelConfigUpdate<'_>,
     ) -> Result<Value, String> {
         let mut next = parsed.clone();
         update_global_config_value(
@@ -1172,11 +1194,7 @@ max_context_size = 128000
             default_thinking,
             thinking_effort,
             default_plan_mode,
-            SecondaryModelConfigUpdate {
-                model: secondary_model,
-                default_effort: secondary_default_effort,
-                experiment_enabled: secondary_model_experiment_enabled,
-            },
+            secondary_model,
         )?;
         Ok(build_global_config_json(&next))
     }
@@ -1207,8 +1225,18 @@ max_context_size = 128000
             ("KIMI_CODE_EXPERIMENTAL_FLAG", None),
             ("KIMI_CODE_EXPERIMENTAL_SECONDARY_MODEL", None),
         ]);
-        let err = update_fields_on_value(&parsed, None, None, None, None, Some("kimi"), None, None)
-            .expect_err("experiment gate blocks writes");
+        let err = update_fields_on_value(
+            &parsed,
+            None,
+            None,
+            None,
+            None,
+            SecondaryModelConfigUpdate {
+                model: Some("kimi"),
+                ..SecondaryModelConfigUpdate::default()
+            },
+        )
+        .expect_err("experiment gate blocks writes");
         assert!(err.contains("EXPERIMENTAL"));
     }
 
@@ -1311,9 +1339,19 @@ default_effort = "high"
         .parse()
         .expect("sample config parses");
 
-        let updated =
-            update_fields_on_value(&parsed, None, None, None, None, Some(""), None, Some(false))
-                .expect("disable succeeds");
+        let updated = update_fields_on_value(
+            &parsed,
+            None,
+            None,
+            None,
+            None,
+            SecondaryModelConfigUpdate {
+                model: Some(""),
+                experiment_enabled: Some(false),
+                ..SecondaryModelConfigUpdate::default()
+            },
+        )
+        .expect("disable succeeds");
         assert_eq!(updated["secondary_model_experiment_enabled"], false);
         assert_eq!(updated["secondary_model_configured"], false);
 

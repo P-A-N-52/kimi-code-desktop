@@ -1,15 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+const { listenMock } = vi.hoisted(() => ({ listenMock: vi.fn() }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => true,
   invoke: invokeMock,
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: (...args: unknown[]) => listenMock(...args),
+}));
+
 import {
   getSessionInfluenceSnapshot,
   listSessions,
+  onWireMessage,
+  parseWireEventPayload,
   updateGlobalConfig,
   updateSessionsArchive,
   updateWorkDirArchive,
@@ -167,5 +174,58 @@ describe("updateWorkDirArchive", () => {
       archived: true,
       sessionIds: ["one", "two"],
     });
+  });
+});
+
+// ── wire:message payload parsing (single + batched) ────────────────────────
+
+describe("parseWireEventPayload", () => {
+  it("parses the single-message shape", () => {
+    expect(parseWireEventPayload({ session_id: "s1", message: "a" })).toEqual({
+      sessionId: "s1",
+      messages: ["a"],
+    });
+  });
+
+  it("parses the batched shape preserving array order", () => {
+    expect(parseWireEventPayload({ session_id: "s1", messages: ["a", "b", "c"] })).toEqual({
+      sessionId: "s1",
+      messages: ["a", "b", "c"],
+    });
+  });
+
+  it("rejects malformed payloads", () => {
+    expect(parseWireEventPayload(null)).toBeNull();
+    expect(parseWireEventPayload("nope")).toBeNull();
+    expect(parseWireEventPayload({ session_id: 42, message: "a" })).toBeNull();
+    expect(parseWireEventPayload({ message: "a" })).toBeNull();
+    expect(parseWireEventPayload({ session_id: "s1" })).toBeNull();
+    expect(parseWireEventPayload({ session_id: "s1", messages: ["a", 1] })).toBeNull();
+  });
+});
+
+describe("onWireMessage", () => {
+  beforeEach(() => {
+    listenMock.mockReset();
+  });
+
+  it("delivers batched messages for the matching session in order", () => {
+    let captured: ((evt: { payload: unknown }) => void) | undefined;
+    listenMock.mockImplementation(
+      (_event: string, handler: (evt: { payload: unknown }) => void) => {
+        captured = handler;
+        return () => undefined;
+      },
+    );
+
+    const received: string[] = [];
+    const unlisten = onWireMessage("s1", (message) => received.push(message));
+
+    captured?.({ payload: { session_id: "s1", messages: ["a", "b"] } });
+    captured?.({ payload: { session_id: "other", messages: ["x"] } });
+    captured?.({ payload: { session_id: "s1", message: "c" } });
+    expect(received).toEqual(["a", "b", "c"]);
+
+    unlisten();
   });
 });

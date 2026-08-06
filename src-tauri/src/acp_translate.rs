@@ -390,8 +390,8 @@ pub fn translate_session_update(session_id: &str, update: &Value) -> Vec<String>
             let entries = update
                 .get("entries")
                 .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
+                .map(|entries| entries.as_slice())
+                .unwrap_or(&[]);
             let content = entries
                 .iter()
                 .filter_map(|entry| {

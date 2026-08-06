@@ -1,11 +1,9 @@
 import { GitFork } from "lucide-react";
-import { useEffect, useMemo, useRef } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { LiveMessage } from "@/hooks/types";
 import type { ApprovalResponseDecision } from "@/hooks/wireTypes";
-import {
-  isAskUserToolCall,
-  parseAskUserToolOutput,
-} from "@/modules/statusbar/permission-mode";
+import { getToolPresentation } from "@/lib/tool-events/tool-registry";
+import { isAskUserToolCall, parseAskUserToolOutput } from "@/modules/statusbar/permission-mode";
 import { AiMessage } from "./ai-message";
 import { ApprovalCard } from "./approval-card";
 import { CodeBlock } from "./code-block";
@@ -16,7 +14,7 @@ import { ThinkingBlock } from "./thinking-block";
 import { ToolCard } from "./tool-card";
 import { UserMessage } from "./user-message";
 
-function MessageView({
+const MessageView = memo(function MessageView({
   message,
   onRespondApproval,
   onRespondQuestion,
@@ -77,10 +75,7 @@ function MessageView({
           />
         );
       }
-      if (
-        (tc.state === "question-requested" || tc.state === "question-responded") &&
-        tc.question
-      ) {
+      if ((tc.state === "question-requested" || tc.state === "question-responded") && tc.question) {
         return <QuestionCard question={tc.question} onRespond={onRespondQuestion} />;
       }
       // Ask User permission uses a different toolCallId (`…:question:N`) than
@@ -143,9 +138,37 @@ function MessageView({
         </AiMessage>
       );
   }
+});
+
+function isTodoToolMessage(message: LiveMessage): boolean {
+  return (
+    message.variant === "tool" &&
+    message.toolCall != null &&
+    getToolPresentation(message.toolCall.title).canonicalName === "SetTodoList"
+  );
 }
 
+function isPendingInteraction(message: LiveMessage): boolean {
+  const toolCall = message.toolCall;
+  if (!toolCall) return false;
+  if (toolCall.state === "approval-requested") {
+    return Boolean(
+      toolCall.approval && !toolCall.approval.submitted && !toolCall.approval.resolved,
+    );
+  }
+  if (toolCall.state === "question-requested") {
+    return Boolean(
+      toolCall.question && !toolCall.question.submitted && !toolCall.question.resolved,
+    );
+  }
+  return false;
+}
+
+const INITIAL_VISIBLE_MESSAGES = 120;
+const HISTORY_PAGE_SIZE = 100;
+
 export function MessageList({
+  sessionId,
   messages,
   isAwaitingFirstResponse = false,
   errorMessage,
@@ -153,6 +176,7 @@ export function MessageList({
   onRespondQuestion,
   onForkSession,
 }: {
+  sessionId?: string;
   messages: LiveMessage[];
   isAwaitingFirstResponse?: boolean;
   errorMessage?: string;
@@ -162,6 +186,30 @@ export function MessageList({
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
+  const prependScrollHeightRef = useRef<number | null>(null);
+  const lastRenderedContentKeyRef = useRef<string | null>(null);
+  const callbacksRef = useRef({ onRespondApproval, onRespondQuestion, onForkSession });
+  callbacksRef.current = { onRespondApproval, onRespondQuestion, onForkSession };
+  const stableRespondApproval = useCallback(
+    (requestId: string, decision: ApprovalResponseDecision) =>
+      callbacksRef.current.onRespondApproval(requestId, decision),
+    [],
+  );
+  const stableRespondQuestion = useCallback(
+    (requestId: string, answers: Record<string, string>) =>
+      callbacksRef.current.onRespondQuestion(requestId, answers),
+    [],
+  );
+  const stableForkSession = useCallback(
+    (turnIndex: number) => callbacksRef.current.onForkSession?.(turnIndex),
+    [],
+  );
+  const [historyWindow, setHistoryWindow] = useState({
+    sessionId,
+    limit: INITIAL_VISIBLE_MESSAGES,
+  });
+  const visibleLimit =
+    historyWindow.sessionId === sessionId ? historyWindow.limit : INITIAL_VISIBLE_MESSAGES;
   const pendingApprovals = useMemo(
     () =>
       messages.flatMap((message) => {
@@ -175,6 +223,48 @@ export function MessageList({
       }),
     [messages],
   );
+
+  // Every SetTodoList call carries the full list, so only the newest card enters
+  // the render window; older snapshots otherwise spam the timeline (issue #13).
+  const timelineMessages = useMemo(() => {
+    let lastTodoIndex = -1;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (isTodoToolMessage(message)) {
+        lastTodoIndex = index;
+        break;
+      }
+    }
+    return messages.filter(
+      (message, index) => !isTodoToolMessage(message) || index === lastTodoIndex,
+    );
+  }, [messages]);
+
+  const { hiddenMessageCount, visibleMessages } = useMemo(() => {
+    const tailStart = Math.max(0, timelineMessages.length - visibleLimit);
+    const pinnedInteractions = timelineMessages.slice(0, tailStart).filter(isPendingInteraction);
+    return {
+      hiddenMessageCount: tailStart - pinnedInteractions.length,
+      visibleMessages: [...pinnedInteractions, ...timelineMessages.slice(tailStart)],
+    };
+  }, [timelineMessages, visibleLimit]);
+  const streamingMessage = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index].isStreaming) return messages[index];
+    }
+    return undefined;
+  }, [messages]);
+  const streamingMessageId = streamingMessage?.id;
+  const streamingContentLength = streamingMessage?.content?.length ?? 0;
+  const visibleMessageCount = visibleMessages.length;
+
+  useEffect(() => {
+    if (historyWindow.sessionId === sessionId) return;
+    prependScrollHeightRef.current = null;
+    lastRenderedContentKeyRef.current = null;
+    followRef.current = true;
+    setHistoryWindow({ sessionId, limit: INITIAL_VISIBLE_MESSAGES });
+  }, [historyWindow.sessionId, sessionId]);
 
   useEffect(() => {
     if (pendingApprovals.length !== 1) return;
@@ -193,22 +283,33 @@ export function MessageList({
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        onRespondApproval(approval.id, "approve");
+        stableRespondApproval(approval.id, "approve");
       } else if (event.key === "Escape") {
         event.preventDefault();
-        onRespondApproval(approval.id, "reject");
+        stableRespondApproval(approval.id, "reject");
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onRespondApproval, pendingApprovals]);
+  }, [pendingApprovals, stableRespondApproval]);
+
+  useLayoutEffect(() => {
+    const previousHeight = prependScrollHeightRef.current;
+    const el = scrollRef.current;
+    if (previousHeight === null || !el) return;
+    el.scrollTop += el.scrollHeight - previousHeight;
+    prependScrollHeightRef.current = null;
+  });
 
   useEffect(() => {
+    const renderedContentKey = `${streamingMessageId ?? ""}:${streamingContentLength}:${visibleMessageCount}`;
+    if (lastRenderedContentKeyRef.current === renderedContentKey) return;
+    lastRenderedContentKeyRef.current = renderedContentKey;
     const el = scrollRef.current;
     if (el && followRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  });
+  }, [streamingMessageId, streamingContentLength, visibleMessageCount]);
 
   return (
     <div
@@ -220,15 +321,39 @@ export function MessageList({
       className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-4 pb-6 pt-2 sm:px-6"
     >
       <div className="mx-auto w-full min-w-0 max-w-[44rem]">
-        {messages.map((m) => (
-          <MessageView
-            key={m.id}
-            message={m}
-            onRespondApproval={onRespondApproval}
-            onRespondQuestion={onRespondQuestion}
-            onForkSession={onForkSession}
-            showApprovalShortcuts={pendingApprovals.length === 1}
-          />
+        {hiddenMessageCount > 0 && (
+          <div className="mb-3 flex justify-center">
+            <button
+              type="button"
+              onClick={() => {
+                const el = scrollRef.current;
+                if (el) {
+                  prependScrollHeightRef.current = el.scrollHeight;
+                  followRef.current = false;
+                }
+                setHistoryWindow((current) => ({
+                  sessionId,
+                  limit:
+                    (current.sessionId === sessionId ? current.limit : INITIAL_VISIBLE_MESSAGES) +
+                    HISTORY_PAGE_SIZE,
+                }));
+              }}
+              className="rounded-r1 border border-line bg-elevated px-3 py-1.5 text-[11px] text-muted transition-colors hover:bg-hover hover:text-foreground"
+            >
+              {`加载更早消息（剩余 ${hiddenMessageCount} 条）`}
+            </button>
+          </div>
+        )}
+        {visibleMessages.map((m) => (
+          <div key={m.id} className="[contain-intrinsic-size:auto_96px] [content-visibility:auto]">
+            <MessageView
+              message={m}
+              onRespondApproval={stableRespondApproval}
+              onRespondQuestion={stableRespondQuestion}
+              onForkSession={onForkSession ? stableForkSession : undefined}
+              showApprovalShortcuts={pendingApprovals.length === 1}
+            />
+          </div>
         ))}
         {errorMessage ? (
           <StatusMessage tone="error">{`错误报告：${errorMessage}`}</StatusMessage>
