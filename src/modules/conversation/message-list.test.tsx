@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { LiveMessage } from "@/hooks/types";
 import { MessageList } from "./message-list";
@@ -9,16 +9,29 @@ const renderMessages = (messages: LiveMessage[]) =>
   );
 
 describe("MessageList semantic rendering", () => {
-  it("shows sending feedback until the first response replaces it", () => {
+  it("distinguishes ACP connection from waiting for the model", () => {
     const { rerender } = render(
       <MessageList
         messages={[{ id: "user", role: "user", content: "Hello" }]}
         isAwaitingFirstResponse
+        connectionPhase="connecting"
         onRespondApproval={vi.fn()}
         onRespondQuestion={vi.fn()}
       />,
     );
-    expect(screen.getByText("等待模型响应…")).toBeTruthy();
+    expect(screen.getByText("正在连接 ACP…")).toBeTruthy();
+
+    rerender(
+      <MessageList
+        messages={[{ id: "user", role: "user", content: "Hello" }]}
+        isAwaitingFirstResponse
+        connectionPhase="connected"
+        onRespondApproval={vi.fn()}
+        onRespondQuestion={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText("正在连接 ACP…")).toBeNull();
+    expect(screen.getByText("ACP 已连接，等待模型响应…")).toBeTruthy();
 
     rerender(
       <MessageList
@@ -30,8 +43,78 @@ describe("MessageList semantic rendering", () => {
         onRespondQuestion={vi.fn()}
       />,
     );
-    expect(screen.queryByText("等待模型响应…")).toBeNull();
+    expect(screen.queryByText("ACP 已连接，等待模型响应…")).toBeNull();
     expect(screen.getByText("Hi")).toBeTruthy();
+  });
+
+  it("marks a first response wait as slow after 45 seconds", () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <MessageList
+          messages={[{ id: "user", role: "user", content: "Hello" }]}
+          isAwaitingFirstResponse
+          connectionPhase="connected"
+          onRespondApproval={vi.fn()}
+          onRespondQuestion={vi.fn()}
+        />,
+      );
+
+      expect(screen.queryByText("响应时间较长")).toBeNull();
+      act(() => vi.advanceTimersByTime(45_000));
+      expect(screen.getByText("响应时间较长")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts the slow-response clock only after the current session connects", () => {
+    vi.useFakeTimers();
+    try {
+      const props = {
+        messages: [{ id: "user", role: "user" as const, content: "Hello" }],
+        isAwaitingFirstResponse: true,
+        onRespondApproval: vi.fn(),
+        onRespondQuestion: vi.fn(),
+      };
+      const { rerender } = render(
+        <MessageList {...props} sessionId="session-1" connectionPhase="connecting" />,
+      );
+
+      act(() => vi.advanceTimersByTime(40_000));
+      rerender(<MessageList {...props} sessionId="session-1" connectionPhase="connected" />);
+      act(() => vi.advanceTimersByTime(44_999));
+      expect(screen.queryByText("响应时间较长")).toBeNull();
+
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByText("响应时间较长")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("restarts the slow-response clock when the active session changes", () => {
+    vi.useFakeTimers();
+    try {
+      const props = {
+        messages: [{ id: "user", role: "user" as const, content: "Hello" }],
+        isAwaitingFirstResponse: true,
+        connectionPhase: "connected" as const,
+        onRespondApproval: vi.fn(),
+        onRespondQuestion: vi.fn(),
+      };
+      const { rerender } = render(<MessageList {...props} sessionId="session-1" />);
+
+      act(() => vi.advanceTimersByTime(44_000));
+      rerender(<MessageList {...props} sessionId="session-2" />);
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(screen.queryByText("响应时间较长")).toBeNull();
+
+      act(() => vi.advanceTimersByTime(44_000));
+      expect(screen.getByText("响应时间较长")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("replaces sending feedback with a persistent error report", () => {
@@ -45,7 +128,7 @@ describe("MessageList semantic rendering", () => {
       />,
     );
 
-    expect(screen.queryByText("等待模型响应…")).toBeNull();
+    expect(screen.queryByText("ACP 已连接，等待模型响应…")).toBeNull();
     expect(screen.getByText("错误报告：provider returned 404")).toBeTruthy();
   });
 

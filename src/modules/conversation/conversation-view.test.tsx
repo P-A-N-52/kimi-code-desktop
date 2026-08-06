@@ -42,17 +42,32 @@ const tauriApi = vi.hoisted(() => {
   };
 });
 
+const globalConfigApi = vi.hoisted(() => ({
+  config: {
+    defaultModel: "kimi",
+    models: [] as Array<{
+      name: string;
+      provider: string;
+      model: string;
+      maxContextSize: number;
+      providerType: "kimi";
+    }>,
+    defaultThinking: false,
+    thinkingEffort: "",
+  },
+  update: vi.fn(async () => ({
+    config: null,
+    restartedSessionIds: ["test-session"],
+    skippedBusySessionIds: [],
+  })),
+}));
+
 vi.mock("@/lib/tauri-api", () => tauriApi);
 
 vi.mock("@/hooks/useGlobalConfig", () => ({
   useGlobalConfig: () => ({
-    config: {
-      defaultModel: "kimi",
-      models: [],
-      defaultThinking: false,
-      thinkingEffort: "",
-    },
-    update: vi.fn(),
+    config: globalConfigApi.config,
+    update: globalConfigApi.update,
     isUpdating: false,
   }),
 }));
@@ -67,11 +82,17 @@ vi.mock("@/modules/composer/composer", () => ({
     onDraftChange,
     onSend,
     sendDisabled,
+    selectedModel,
+    onModelPickerOpen,
+    onSelectModel,
   }: {
     draft: string;
     onDraftChange: (value: string) => void;
     onSend: () => void;
     sendDisabled?: boolean;
+    selectedModel: string;
+    onModelPickerOpen?: () => Promise<boolean>;
+    onSelectModel: (name: string) => void;
   }) => (
     <div>
       <input
@@ -83,6 +104,19 @@ vi.mock("@/modules/composer/composer", () => ({
         发送
       </button>
       <output data-testid="composer-disabled">{String(Boolean(sendDisabled))}</output>
+      <output data-testid="selected-model">{selectedModel}</output>
+      <button
+        type="button"
+        hidden
+        data-testid="switch-model"
+        onClick={() => {
+          void onModelPickerOpen?.().then((open) => {
+            if (open) onSelectModel("demo/next");
+          });
+        }}
+      >
+        切换模型
+      </button>
     </div>
   ),
 }));
@@ -181,6 +215,89 @@ describe("ConversationView ACP reconnect", () => {
 
     expect(screen.queryByRole("button", { name: "重新连接" })).toBeNull();
     expect(screen.getByTestId("composer-disabled").textContent).toBe("false");
+  });
+});
+
+describe("ConversationView model switching fallback", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    globalConfigApi.config.defaultModel = "kimi";
+    globalConfigApi.config.models = [
+      {
+        name: "kimi",
+        provider: "kimi",
+        model: "kimi",
+        maxContextSize: 0,
+        providerType: "kimi",
+      },
+      {
+        name: "demo/next",
+        provider: "demo",
+        model: "next",
+        maxContextSize: 0,
+        providerType: "kimi",
+      },
+    ];
+  });
+
+  it("switches through global config when ACP has no session config options", async () => {
+    const stream = makeStream(vi.fn());
+    renderConversation("test-session", stream);
+
+    expect(screen.getByTestId("selected-model").textContent).toBe("kimi");
+    fireEvent.click(screen.getByTestId("switch-model"));
+
+    await waitFor(() => {
+      expect(globalConfigApi.update).toHaveBeenCalledWith({ defaultModel: "demo/next" });
+    });
+    expect(stream.connect).not.toHaveBeenCalled();
+    expect(stream.sendSetConfigOption).not.toHaveBeenCalled();
+  });
+
+  it("keeps session-scoped switching when ACP declares model config options", async () => {
+    tauriApi.isTauri.mockReturnValue(true);
+    tauriApi.getAgentRuntimeCapabilities.mockResolvedValueOnce({
+      loadSession: true,
+      promptImage: true,
+      promptAudio: false,
+      promptEmbeddedContext: true,
+      mcpHttp: true,
+      mcpSse: true,
+      sessionList: true,
+      sessionResume: true,
+      sessionConfigOptions: true,
+      authMethods: [],
+    });
+    const sendSetConfigOption = vi.fn(async () => true);
+    const stream = makeStream(vi.fn(), {
+      sessionConfigState: {
+        sessionId: "test-session",
+        status: "known",
+        options: [
+          {
+            id: "model",
+            optionType: "select",
+            currentValue: "kimi",
+            options: [
+              { value: "kimi", label: "Kimi" },
+              { value: "demo/next", label: "Next" },
+            ],
+          },
+        ],
+      },
+      sendSetConfigOption,
+    });
+    renderConversation("test-session", stream);
+    await waitFor(() => {
+      expect(tauriApi.getAgentRuntimeCapabilities).toHaveBeenCalled();
+    });
+
+    fireEvent.click(screen.getByTestId("switch-model"));
+
+    await waitFor(() => {
+      expect(sendSetConfigOption).toHaveBeenCalledWith("model", "demo/next");
+    });
+    expect(globalConfigApi.update).not.toHaveBeenCalled();
   });
 });
 

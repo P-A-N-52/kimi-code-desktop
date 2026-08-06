@@ -132,7 +132,78 @@ describe("SwarmToolCard", () => {
     );
 
     expect(document.querySelector('[data-status="running"]')).not.toBeNull();
-    expect(screen.getByText("进行中")).toBeTruthy();
+    expect(screen.getByText("2 个排队中")).toBeTruthy();
     expect(screen.queryByText("已完成")).toBeNull();
+  });
+
+  it("shows the planned total and queued rows as soon as the swarm is created", () => {
+    render(
+      <SwarmToolCard
+        toolCall={{
+          title: "AgentSwarm",
+          type: "tool-AgentSwarm" as never,
+          state: "input-available",
+          toolCallId: "swarm-planned",
+          input: {
+            description: "Parallel review",
+            items: ["Auth", "Docs", "Tests", "Release", "UX"],
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText("0 / 5")).toHaveLength(2);
+    expect(screen.getByText("5 个排队中")).toBeTruthy();
+    expect(document.querySelectorAll('[data-slot="swarm-member-row"][data-phase="queued"]')).toHaveLength(
+      5,
+    );
+    expect(screen.getByText("Auth")).toBeTruthy();
+    expect(screen.getByText("UX")).toBeTruthy();
+  });
+
+  it("shows nested subagents while keeping progress totals top-level", () => {
+    for (const task of [
+      {
+        id: "root-a",
+        description: "A",
+        swarmIndex: 0,
+        swarmDepth: 0,
+      },
+      {
+        id: "nested-a1",
+        description: "A.1",
+        parentAgentId: "root-a",
+        swarmIndex: 0,
+        swarmDepth: 1,
+      },
+    ]) {
+      useAgentMonitorStore.getState().upsertTask({
+        ...task,
+        sessionId: "s1",
+        kind: "subagent",
+        agentType: "explore",
+        status: "running",
+        currentStep: "正在分析",
+        createdAt: 1,
+        parentToolCallId: "swarm-nested",
+      });
+    }
+
+    render(
+      <SwarmToolCard
+        toolCall={{
+          title: "AgentSwarm",
+          type: "tool-AgentSwarm" as never,
+          state: "input-available",
+          toolCallId: "swarm-nested",
+          input: { items: ["A", "B"] },
+        }}
+      />,
+    );
+
+    expect(screen.getAllByText("0 / 2")).toHaveLength(2);
+    expect(screen.getByText("+1 派生")).toBeTruthy();
+    expect(screen.getByText("A.1")).toBeTruthy();
+    expect(screen.getByText("↳")).toBeTruthy();
   });
 });

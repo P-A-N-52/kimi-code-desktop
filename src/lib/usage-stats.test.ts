@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatCount,
   formatSeriesLabel,
+  inputTokenTotal,
   parseUsageStatsPayload,
 } from "./usage-stats";
 
@@ -46,6 +47,19 @@ describe("usage-stats", () => {
       byModel: [],
     });
     expect(parsed.summary.totalTokens).toBe(18);
+  });
+
+  it("counts cache reads and writes as input tokens", () => {
+    expect(
+      inputTokenTotal({
+        requests: 1,
+        inputOther: 10,
+        output: 5,
+        inputCacheRead: 100,
+        inputCacheCreation: 20,
+        totalTokens: 135,
+      }),
+    ).toBe(130);
   });
 
   it("formats labels and counts", () => {

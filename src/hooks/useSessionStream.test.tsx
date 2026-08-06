@@ -1863,6 +1863,80 @@ describe("useSessionStream Tauri watchdog", () => {
 		expect(result.current.error?.message).toBe("provider returned 404");
 	});
 
+	it("clears a stale first-response wait from a terminal cancelled status", async () => {
+		const { result } = renderHook(() =>
+			useSessionStream({
+				sessionId: "session-1",
+				baseUrl: "http://localhost:5173",
+				autoConnect: true,
+			}),
+		);
+
+		await flushPromises();
+		completeReplay();
+		await act(async () => {
+			await result.current.sendMessage("Cancel while switching sessions");
+		});
+
+		expect(result.current.isAwaitingFirstResponse).toBe(true);
+
+		act(() => {
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					method: "session_status",
+					params: {
+						session_id: "session-1",
+						state: "idle",
+						seq: 2,
+						reason: "cancelled",
+						updated_at: "2026-01-01T00:00:01Z",
+					},
+				}),
+			);
+		});
+
+		expect(result.current.isAwaitingFirstResponse).toBe(false);
+		expect(result.current.status).toBe("ready");
+		expect(result.current.canCancel).toBe(false);
+	});
+
+	it("keeps waiting through a non-terminal ACP connection idle status", async () => {
+		const { result } = renderHook(() =>
+			useSessionStream({
+				sessionId: "session-1",
+				baseUrl: "http://localhost:5173",
+				autoConnect: true,
+			}),
+		);
+
+		await flushPromises();
+		completeReplay();
+		await act(async () => {
+			await result.current.sendMessage("Keep waiting after ACP connects");
+		});
+
+		act(() => {
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					method: "session_status",
+					params: {
+						session_id: "session-1",
+						state: "idle",
+						seq: 2,
+						reason: "acp_connected",
+						updated_at: "2026-01-01T00:00:01Z",
+					},
+				}),
+			);
+		});
+
+		expect(result.current.isAwaitingFirstResponse).toBe(true);
+		expect(result.current.status).toBe("submitted");
+		expect(result.current.canCancel).toBe(true);
+	});
+
 	it("reports a finished prompt that returned no visible content", async () => {
 		const { result } = renderHook(() =>
 			useSessionStream({

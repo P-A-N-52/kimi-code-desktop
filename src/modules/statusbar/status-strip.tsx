@@ -119,6 +119,7 @@ export function StatusStrip({
         <StatusPill
           tone={permissionMode === "auto" ? "amber" : permissionMode === "yolo" ? "red" : "neutral"}
           disabled={permissionDisabled}
+          className="disabled:opacity-100"
           onClick={() => setMenuOpen((v) => !v)}
         >
           <current.icon size={12} strokeWidth={1.5} />
@@ -174,6 +175,7 @@ export function StatusStrip({
       <StatusPill
         on={planMode}
         disabled={modeControlsDisabled}
+        className="disabled:opacity-100"
         onClick={() => onPlanModeChange(!planMode)}
       >
         <ClipboardList size={12} strokeWidth={1.5} />
@@ -182,6 +184,7 @@ export function StatusStrip({
       <StatusPill
         on={swarmMode}
         disabled={modeControlsDisabled}
+        className="disabled:opacity-100"
         onClick={() => onSwarmModeChange(!swarmMode)}
       >
         <Boxes size={12} strokeWidth={1.5} />
@@ -190,6 +193,7 @@ export function StatusStrip({
       <StatusPill
         on={goalMode}
         disabled={modeControlsDisabled || currentGoal != null}
+        className="disabled:opacity-100"
         onClick={() => onGoalModeChange(!goalMode)}
         title={goalMode ? "取消下一条 Goal" : "将下一条消息作为 Goal"}
       >

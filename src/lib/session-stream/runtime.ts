@@ -1397,6 +1397,48 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
           break;
         }
 
+        // A terminal worker status is the fallback completion signal when the
+        // prompt RPC result is lost during a session switch or reconnect. New
+        // runtimes associate it with the exact prompt request; older runtimes
+        // omit the id and retain the broad compatibility fallback below.
+        const terminalPrompt =
+          normalized.reason === "finished" || normalized.reason === "cancelled";
+        if (terminalPrompt) {
+          const terminalPromptRequestId = payload.prompt_request_id?.trim() || null;
+          if (terminalPromptRequestId) {
+            const matchedPrompt = promptRequestIdsRef.current.delete(terminalPromptRequestId);
+
+            // The normal contract is result -> terminal(id), so an identified
+            // status for an already-settled A must never finish a newer B.
+            if (!matchedPrompt) {
+              break;
+            }
+
+            optimisticUserMessagesRef.current.shift();
+            if (pendingMessageRef.current !== null || promptRequestIdsRef.current.size > 0) {
+              setStatus("submitted");
+              break;
+            }
+
+            cancelRequestIdsRef.current.clear();
+            setStatus(errorRef.current ? "error" : "ready");
+            setAwaitingFirstResponse(false);
+            awaitingIdleRef.current = false;
+            completeStreamingMessages();
+            interruptStaleToolCalls();
+            break;
+          }
+
+          promptRequestIdsRef.current.clear();
+          cancelRequestIdsRef.current.clear();
+          setStatus(errorRef.current ? "error" : "ready");
+          setAwaitingFirstResponse(false);
+          awaitingIdleRef.current = false;
+          completeStreamingMessages();
+          interruptStaleToolCalls();
+          break;
+        }
+
         // ACP reports `idle` as soon as the worker connection is ready. A
         // pending prompt can still be waiting to be sent (or for its RPC
         // response) at that point, so treating this as terminal would clear
@@ -2602,16 +2644,8 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
         sealOpenStreamBlocks();
         const toolCall = event.payload;
         currentToolCallIdRef.current = toolCall.id;
-
-        // Initialize tool call state
         const initialArgs = toolCall.function.arguments || "";
-        currentToolCallsRef.current.set(toolCall.id, {
-          id: toolCall.id,
-          name: toolCall.function.name,
-          arguments: initialArgs,
-          argumentsComplete: false,
-          messageId: undefined,
-        });
+        const existingToolCall = currentToolCallsRef.current.get(toolCall.id);
 
         // Parse initial arguments if available
         let parsedInput: unknown;
@@ -2622,6 +2656,38 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
             // Not valid JSON yet, leave as undefined
           }
         }
+
+        // ACP may announce a Swarm before its durable native tool record has
+        // flushed, then repeat the same call with complete arguments. Hydrate
+        // the existing card in place instead of creating a duplicate row.
+        if (existingToolCall?.messageId) {
+          existingToolCall.name = toolCall.function.name;
+          existingToolCall.arguments = initialArgs;
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === existingToolCall.messageId && message.toolCall
+                ? {
+                    ...message,
+                    toolCall: {
+                      ...message.toolCall,
+                      title: toolCall.function.name,
+                      ...(parsedInput !== undefined ? { input: parsedInput } : {}),
+                    },
+                  }
+                : message,
+            ),
+          );
+          break;
+        }
+
+        // Initialize tool call state
+        currentToolCallsRef.current.set(toolCall.id, {
+          id: toolCall.id,
+          name: toolCall.function.name,
+          arguments: initialArgs,
+          argumentsComplete: false,
+          messageId: undefined,
+        });
 
         // Create tool message
         const toolMessageId = getNextMessageId("assistant");
@@ -3825,10 +3891,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
     }
   };
 
-  const flushPendingModeUpdates = async (
-    connection: StreamConnection,
-    onlyPermission = false,
-  ) => {
+  const flushPendingModeUpdates = async (connection: StreamConnection, onlyPermission = false) => {
     const runFlush = async () => {
       // Drain until empty so updates queued while we were sending are not dropped.
       for (;;) {

@@ -4,6 +4,87 @@ use crate::acp_capabilities::{config_option_update_to_wire_payload, SessionConfi
 use serde_json::{json, Value};
 use std::path::{Component, Path, PathBuf};
 
+const SWARM_COMPAT_INSTRUCTION: &str = concat!(
+    "Swarm mode is enabled for this turn. When the request can be split into two ",
+    "or more independent items, use AgentSwarm. AgentSwarm must be the only tool ",
+    "call in that model response. If parallel delegation would not help, continue ",
+    "normally."
+);
+const GOAL_CREATE_COMPAT_INSTRUCTION: &str = concat!(
+    "The user explicitly requested a new Goal. Before doing other work, call ",
+    "CreateGoal with the user's objective and replace=false. Do not merely describe ",
+    "the goal. After it is created, work toward it normally."
+);
+const GOAL_REPLACE_COMPAT_INSTRUCTION: &str = concat!(
+    "The user explicitly requested replacing the current Goal. Before doing other ",
+    "work, call CreateGoal with the user's objective and replace=true. Do not merely ",
+    "describe the replacement."
+);
+const GOAL_RESUME_COMPAT_INSTRUCTION: &str = concat!(
+    "The user explicitly requested resuming the current Goal. Call GetGoal, then call ",
+    "UpdateGoal with status=active before continuing the work. Do not create a new ",
+    "Goal or stop after merely summarizing the remaining work."
+);
+const GOAL_MODE_COMPAT_INSTRUCTION: &str = concat!(
+    "Goal mode is enabled for this turn. Call GetGoal before expanding scope. If there ",
+    "is no current goal, call CreateGoal with the user's request as the objective. If a ",
+    "goal exists, use UpdateGoal and GetGoal to stay aligned with it. Do not merely ",
+    "describe goal tracking without using the Goal tools."
+);
+
+fn desktop_compat_prompt_text(kind: &str, instruction: &str) -> String {
+    format!(
+        "<system-reminder source=\"kimi-code-desktop\" kind=\"{kind}\">\n{instruction}\n</system-reminder>"
+    )
+}
+
+fn desktop_compat_prompt_block(kind: &str, instruction: &str) -> Value {
+    json!({
+        "type": "text",
+        "text": desktop_compat_prompt_text(kind, instruction),
+    })
+}
+
+fn legacy_desktop_compat_prompt_text(instruction: &str) -> String {
+    format!("<system-reminder>\n{instruction}\n</system-reminder>")
+}
+
+fn is_desktop_compat_prompt_text(text: &str) -> bool {
+    [
+        ("swarm", SWARM_COMPAT_INSTRUCTION),
+        ("goal-create", GOAL_CREATE_COMPAT_INSTRUCTION),
+        ("goal-replace", GOAL_REPLACE_COMPAT_INSTRUCTION),
+        ("goal-resume", GOAL_RESUME_COMPAT_INSTRUCTION),
+        ("goal", GOAL_MODE_COMPAT_INSTRUCTION),
+    ]
+    .into_iter()
+    .any(|(kind, instruction)| {
+        text == desktop_compat_prompt_text(kind, instruction)
+            || text == legacy_desktop_compat_prompt_text(instruction)
+    })
+}
+
+/// Restore the user-authored content from an ACP prompt that may contain
+/// Desktop-only compatibility instructions. The Desktop always appends those
+/// instructions as separate trailing text blocks. Requiring both that shape
+/// and our stable marker (or an exact legacy value) preserves user-authored
+/// system-like tags and arbitrary assistant/tool content.
+pub fn user_content_from_acp_prompt(content: &[Value]) -> Vec<Value> {
+    let mut visible = content.to_vec();
+    while visible.len() > 1
+        && visible.last().is_some_and(|part| {
+            part.get("type").and_then(Value::as_str) == Some("text")
+                && part
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_some_and(is_desktop_compat_prompt_text)
+        })
+    {
+        visible.pop();
+    }
+    visible
+}
+
 pub fn wire_event_message(event_type: &str, payload: Value) -> String {
     json!({
         "jsonrpc": "2.0",
@@ -126,52 +207,20 @@ pub fn legacy_user_input_to_acp_prompt_with_swarm(
 
     if let Some(blocks) = prompt.as_array_mut() {
         if swarm_mode {
-            blocks.push(json!({
-                "type": "text",
-                "text": concat!(
-                    "<system-reminder>\n",
-                    "Swarm mode is enabled for this turn. When the request can be split into two ",
-                    "or more independent items, use AgentSwarm. AgentSwarm must be the only tool ",
-                    "call in that model response. If parallel delegation would not help, continue ",
-                    "normally.\n",
-                    "</system-reminder>"
-                ),
-            }));
+            blocks.push(desktop_compat_prompt_block(
+                "swarm",
+                SWARM_COMPAT_INSTRUCTION,
+            ));
         }
         let goal_instruction = match goal_action {
-            Some("create") => Some(concat!(
-                "<system-reminder>\n",
-                "The user explicitly requested a new Goal. Before doing other work, call ",
-                "CreateGoal with the user's objective and replace=false. Do not merely describe ",
-                "the goal. After it is created, work toward it normally.\n",
-                "</system-reminder>"
-            )),
-            Some("replace") => Some(concat!(
-                "<system-reminder>\n",
-                "The user explicitly requested replacing the current Goal. Before doing other ",
-                "work, call CreateGoal with the user's objective and replace=true. Do not merely ",
-                "describe the replacement.\n",
-                "</system-reminder>"
-            )),
-            Some("resume") => Some(concat!(
-                "<system-reminder>\n",
-                "The user explicitly requested resuming the current Goal. Call GetGoal, then call ",
-                "UpdateGoal with status=active before continuing the work. Do not create a new ",
-                "Goal or stop after merely summarizing the remaining work.\n",
-                "</system-reminder>"
-            )),
-            _ if goal_mode => Some(concat!(
-                "<system-reminder>\n",
-                "Goal mode is enabled for this turn. Call GetGoal before expanding scope. If there ",
-                "is no current goal, call CreateGoal with the user's request as the objective. If a ",
-                "goal exists, use UpdateGoal and GetGoal to stay aligned with it. Do not merely ",
-                "describe goal tracking without using the Goal tools.\n",
-                "</system-reminder>"
-            )),
+            Some("create") => Some(("goal-create", GOAL_CREATE_COMPAT_INSTRUCTION)),
+            Some("replace") => Some(("goal-replace", GOAL_REPLACE_COMPAT_INSTRUCTION)),
+            Some("resume") => Some(("goal-resume", GOAL_RESUME_COMPAT_INSTRUCTION)),
+            _ if goal_mode => Some(("goal", GOAL_MODE_COMPAT_INSTRUCTION)),
             _ => None,
         };
-        if let Some(instruction) = goal_instruction {
-            blocks.push(json!({ "type": "text", "text": instruction }));
+        if let Some((kind, instruction)) = goal_instruction {
+            blocks.push(desktop_compat_prompt_block(kind, instruction));
         }
     }
     prompt
@@ -595,7 +644,7 @@ fn canonical_agent_tool_name<'a>(title: &'a str, raw_input: &Value) -> Option<&'
         .filter(|character| !matches!(character, ' ' | '_' | '-'))
         .collect::<String>()
         .to_ascii_lowercase();
-    if normalized_title == "agentswarm" {
+    if matches!(normalized_title.as_str(), "agentswarm" | "swarm") {
         return Some("AgentSwarm");
     }
     if normalized_title == "agent" {
@@ -696,7 +745,9 @@ fn normalize_task(session_id: &str, outer: &Value, raw: &Value) -> Option<Value>
         "output_bytes": cloned_for_keys(raw, &["output_bytes", "outputBytes"]),
         "subagent_phase": cloned_for_keys(raw, &["subagent_phase", "subagentPhase", "phase"]),
         "subagent_type": cloned_for_keys(raw, &["subagent_type", "subagentType", "subagent_name", "subagentName"]),
-        "parent_tool_call_id": cloned_for_keys(raw, &["parent_tool_call_id", "parentToolCallId", "task_tool_call_id"]),
+        "parent_tool_call_id": cloned_for_keys(raw, &["parent_tool_call_id", "parentToolCallId", "task_tool_call_id", "toolCallId", "tool_call_id"]),
+        "parent_agent_id": cloned_for_keys(raw, &["parent_agent_id", "parentAgentId"]),
+        "swarm_depth": cloned_for_keys(raw, &["swarm_depth", "swarmDepth"]),
         "suspended_reason": cloned_for_keys(raw, &["suspended_reason", "suspendedReason", "reason"]),
         "swarm_index": cloned_for_keys(raw, &["swarm_index", "swarmIndex"]),
         "run_in_background": cloned_for_keys(raw, &["run_in_background", "runInBackground"]),
@@ -785,6 +836,8 @@ fn translate_subagent_lifecycle(session_id: &str, phase: &str, update: &Value) -
             "parent_tool_call_id",
             "parentToolCallId",
             "task_tool_call_id",
+            "toolCallId",
+            "tool_call_id",
         ],
     );
     let subagent_type = cloned_for_keys(
@@ -798,6 +851,8 @@ fn translate_subagent_lifecycle(session_id: &str, phase: &str, update: &Value) -
     );
     let description = cloned_for_keys(payload, &["description", "item", "task"]);
     let swarm_index = cloned_for_keys(payload, &["swarm_index", "swarmIndex"]);
+    let parent_agent_id = cloned_for_keys(payload, &["parent_agent_id", "parentAgentId"]);
+    let swarm_depth = cloned_for_keys(payload, &["swarm_depth", "swarmDepth"]);
     let error = if phase == "suspended" {
         value_for_keys(
             payload,
@@ -819,6 +874,8 @@ fn translate_subagent_lifecycle(session_id: &str, phase: &str, update: &Value) -
             "phase": phase,
             "description": description,
             "swarm_index": swarm_index,
+            "parent_agent_id": parent_agent_id,
+            "swarm_depth": swarm_depth,
             "error": error,
             "bound_model": cloned_for_keys(payload, &["bound_model", "boundModel", "model_alias", "modelAlias", "model"]),
             "model_preference": cloned_for_keys(payload, &["model_preference", "modelPreference"]),
@@ -844,6 +901,8 @@ fn translate_subagent_lifecycle(session_id: &str, phase: &str, update: &Value) -
                 "parent_tool_call_id": parent_tool_call_id,
                 "suspended_reason": null,
                 "swarm_index": swarm_index,
+                "parent_agent_id": parent_agent_id,
+                "swarm_depth": swarm_depth,
                 "run_in_background": cloned_for_keys(payload, &["run_in_background", "runInBackground"]),
                 "bound_model": cloned_for_keys(payload, &["bound_model", "boundModel", "model_alias", "modelAlias", "model"]),
                 "model_preference": cloned_for_keys(payload, &["model_preference", "modelPreference"]),
@@ -1555,6 +1614,14 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Swarm mode is enabled"));
+        assert!(prompt[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("source=\"kimi-code-desktop\" kind=\"swarm\""));
+        assert_eq!(
+            user_content_from_acp_prompt(prompt.as_array().unwrap()),
+            vec![json!({ "type": "text", "text": "split this" })]
+        );
     }
 
     #[test]
@@ -1570,6 +1637,59 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Goal mode is enabled"));
+    }
+
+    #[test]
+    fn visible_prompt_content_removes_all_trailing_desktop_instructions() {
+        let prompt = legacy_user_input_to_acp_prompt_with_swarm(
+            &json!({
+                "user_input": [
+                    { "type": "text", "text": "review this" },
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,AA==" } }
+                ],
+                "goal_action": "create"
+            }),
+            true,
+            true,
+        );
+        let visible = user_content_from_acp_prompt(prompt.as_array().unwrap());
+        assert_eq!(visible.len(), 2);
+        assert_eq!(visible[0]["text"], "review this");
+        assert_eq!(visible[1]["type"], "image");
+    }
+
+    #[test]
+    fn visible_prompt_content_supports_legacy_blocks_without_hiding_user_tags() {
+        let legacy_swarm = legacy_desktop_compat_prompt_text(SWARM_COMPAT_INSTRUCTION);
+        let literal = "<system-reminder>literal user text</system-reminder>";
+        let content = vec![
+            json!({ "type": "text", "text": literal }),
+            json!({ "type": "text", "text": legacy_swarm }),
+        ];
+        assert_eq!(
+            user_content_from_acp_prompt(&content),
+            vec![json!({ "type": "text", "text": literal })]
+        );
+
+        let exact_internal_text_as_the_only_user_block = vec![
+            json!({ "type": "text", "text": legacy_desktop_compat_prompt_text(SWARM_COMPAT_INSTRUCTION) }),
+        ];
+        assert_eq!(
+            user_content_from_acp_prompt(&exact_internal_text_as_the_only_user_block),
+            exact_internal_text_as_the_only_user_block
+        );
+
+        let spoofed_marker = vec![
+            json!({ "type": "text", "text": "keep both" }),
+            json!({
+                "type": "text",
+                "text": "<system-reminder source=\"kimi-code-desktop\" kind=\"swarm\">\nuser-authored text\n</system-reminder>"
+            }),
+        ];
+        assert_eq!(
+            user_content_from_acp_prompt(&spoofed_marker),
+            spoofed_marker
+        );
     }
 
     #[test]
@@ -1739,6 +1859,32 @@ mod tests {
     }
 
     #[test]
+    fn preserves_nested_swarm_parent_and_depth_in_lifecycle_contract() {
+        let messages = translate_acp_lifecycle_notification(
+            "sess-1",
+            "subagent.started",
+            &json!({
+                "agent_id": "agent-child",
+                "parent_tool_call_id": "swarm-1",
+                "parent_agent_id": "agent-parent",
+                "swarm_index": 0,
+                "swarm_depth": 1,
+                "description": "Nested review"
+            }),
+        );
+        let lifecycle = messages
+            .iter()
+            .map(|message| parse_wire_message(message))
+            .find(|message| message["params"]["type"] == "SubagentLifecycle")
+            .unwrap();
+        assert_eq!(
+            lifecycle["params"]["payload"]["parent_agent_id"],
+            "agent-parent"
+        );
+        assert_eq!(lifecycle["params"]["payload"]["swarm_depth"], 1);
+    }
+
+    #[test]
     fn generic_tool_updates_keep_the_existing_contract() {
         let messages = translate_session_update(
             "sess-1",
@@ -1774,6 +1920,25 @@ mod tests {
         assert_eq!(messages.len(), 1);
         let message = parse_wire_message(&messages[0]);
         assert_eq!(message["params"]["type"], "ToolCall");
+        assert_eq!(
+            message["params"]["payload"]["function"]["name"],
+            "AgentSwarm"
+        );
+    }
+
+    #[test]
+    fn canonicalizes_short_swarm_title_before_input_is_available() {
+        let messages = translate_session_update(
+            "sess-1",
+            &json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": "swarm-call",
+                "title": "Swarm",
+                "rawInput": null
+            }),
+        );
+        assert_eq!(messages.len(), 1);
+        let message = parse_wire_message(&messages[0]);
         assert_eq!(
             message["params"]["payload"]["function"]["name"],
             "AgentSwarm"

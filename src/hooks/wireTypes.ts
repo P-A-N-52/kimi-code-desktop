@@ -29,6 +29,8 @@ export type SessionStatusPayload = {
   state: SessionState;
   seq: number;
   worker_id?: string | null;
+  /** Prompt request completed by a terminal finished/cancelled status. */
+  prompt_request_id?: string | null;
   reason?: string | null;
   detail?: string | null;
   updated_at: string;
@@ -286,8 +288,10 @@ export type AgentTaskWire = {
   subagent_phase?: string | null;
   subagent_type?: string | null;
   parent_tool_call_id?: string | null;
+  parent_agent_id?: string | null;
   suspended_reason?: string | null;
   swarm_index?: number | null;
+  swarm_depth?: number | null;
   run_in_background?: boolean | null;
   bound_model?: string | null;
   model_preference?: string | null;
@@ -332,10 +336,12 @@ export type SubagentLifecycleEvent = {
     agent_id?: string | null;
     task_id?: string | null;
     parent_tool_call_id?: string | null;
+    parent_agent_id?: string | null;
     subagent_type?: string | null;
     phase: string;
     description?: string | null;
     swarm_index?: number | null;
+    swarm_depth?: number | null;
     error?: string | null;
     bound_model?: string | null;
     model_preference?: string | null;

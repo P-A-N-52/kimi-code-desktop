@@ -2,6 +2,7 @@ import { GitFork } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { LiveMessage } from "@/hooks/types";
 import type { ApprovalResponseDecision } from "@/hooks/wireTypes";
+import type { ConnectionPhase } from "@/lib/session-stream/types";
 import { getToolPresentation } from "@/lib/tool-events/tool-registry";
 import { isAskUserToolCall, parseAskUserToolOutput } from "@/modules/statusbar/permission-mode";
 import { AiMessage } from "./ai-message";
@@ -166,11 +167,13 @@ function isPendingInteraction(message: LiveMessage): boolean {
 
 const INITIAL_VISIBLE_MESSAGES = 120;
 const HISTORY_PAGE_SIZE = 100;
+const SLOW_RESPONSE_THRESHOLD_MS = 45_000;
 
 export function MessageList({
   sessionId,
   messages,
   isAwaitingFirstResponse = false,
+  connectionPhase = "connected",
   errorMessage,
   onRespondApproval,
   onRespondQuestion,
@@ -179,6 +182,7 @@ export function MessageList({
   sessionId?: string;
   messages: LiveMessage[];
   isAwaitingFirstResponse?: boolean;
+  connectionPhase?: ConnectionPhase;
   errorMessage?: string;
   onRespondApproval: (requestId: string, decision: ApprovalResponseDecision) => void;
   onRespondQuestion: (requestId: string, answers: Record<string, string>) => void;
@@ -208,6 +212,21 @@ export function MessageList({
     sessionId,
     limit: INITIAL_VISIBLE_MESSAGES,
   });
+  const responseWaitKey = sessionId ?? "";
+  const [slowResponseFor, setSlowResponseFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isAwaitingFirstResponse || connectionPhase !== "connected") {
+      setSlowResponseFor(null);
+      return;
+    }
+
+    setSlowResponseFor(null);
+    const timeout = window.setTimeout(() => {
+      setSlowResponseFor(responseWaitKey);
+    }, SLOW_RESPONSE_THRESHOLD_MS);
+    return () => window.clearTimeout(timeout);
+  }, [connectionPhase, isAwaitingFirstResponse, responseWaitKey]);
+  const responseIsSlow = slowResponseFor === responseWaitKey;
   const visibleLimit =
     historyWindow.sessionId === sessionId ? historyWindow.limit : INITIAL_VISIBLE_MESSAGES;
   const pendingApprovals = useMemo(
@@ -358,7 +377,14 @@ export function MessageList({
         {errorMessage ? (
           <StatusMessage tone="error">{`错误报告：${errorMessage}`}</StatusMessage>
         ) : isAwaitingFirstResponse ? (
-          <StatusMessage streaming>等待模型响应…</StatusMessage>
+          <>
+            <StatusMessage streaming>
+              {connectionPhase === "connected" ? "ACP 已连接，等待模型响应…" : "正在连接 ACP…"}
+            </StatusMessage>
+            {responseIsSlow && connectionPhase === "connected" ? (
+              <StatusMessage>响应时间较长</StatusMessage>
+            ) : null}
+          </>
         ) : null}
       </div>
     </div>

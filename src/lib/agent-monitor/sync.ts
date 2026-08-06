@@ -177,9 +177,13 @@ function createTaskFromRecord(payload: UnknownRecord): AgentTask | null {
       "parent_tool_call_id",
       "parentToolCallId",
       "task_tool_call_id",
+      "toolCallId",
+      "tool_call_id",
     ),
+    parentAgentId: readString(raw, "parent_agent_id", "parentAgentId"),
     suspendedReason,
     swarmIndex: readNumber(raw, "swarm_index", "swarmIndex"),
+    swarmDepth: readNumber(raw, "swarm_depth", "swarmDepth"),
     runInBackground: readBoolean(raw, "run_in_background", "runInBackground"),
     boundModel: readString(
       raw,
@@ -357,8 +361,12 @@ export function syncAgentMonitorFromSubagentLifecycle(
       "parent_tool_call_id",
       "parentToolCallId",
       "task_tool_call_id",
+      "toolCallId",
+      "tool_call_id",
     ),
+    parentAgentId: readString(payload, "parent_agent_id", "parentAgentId"),
     swarmIndex: readNumber(payload, "swarm_index", "swarmIndex"),
+    swarmDepth: readNumber(payload, "swarm_depth", "swarmDepth"),
   });
 
   useAgentMonitorStore.getState().updateTask(
@@ -370,9 +378,12 @@ export function syncAgentMonitorFromSubagentLifecycle(
         existing.agentType,
       description: readString(payload, "description", "item", "task") ?? existing.description,
       parentToolCallId:
-        readString(payload, "parent_tool_call_id", "parentToolCallId", "task_tool_call_id") ??
+        readString(payload, "parent_tool_call_id", "parentToolCallId", "task_tool_call_id", "toolCallId", "tool_call_id") ??
         existing.parentToolCallId,
+      parentAgentId:
+        readString(payload, "parent_agent_id", "parentAgentId") ?? existing.parentAgentId,
       swarmIndex: readNumber(payload, "swarm_index", "swarmIndex") ?? existing.swarmIndex,
+      swarmDepth: readNumber(payload, "swarm_depth", "swarmDepth") ?? existing.swarmDepth,
       startedAt:
         status === "running"
           ? (readTimestamp(payload, "started_at", "startedAt") ?? existing.startedAt ?? Date.now())
@@ -511,6 +522,8 @@ export function parseSubagentEventPayload(event: SubagentEventWire): {
   const payload = event.payload;
   const parentToolCallId =
     payload.parent_tool_call_id ??
+    ((payload as Record<string, unknown>).toolCallId as string | undefined) ??
+    ((payload as Record<string, unknown>).tool_call_id as string | undefined) ??
     ((payload as Record<string, unknown>).task_tool_call_id as string | undefined);
   return {
     parentToolCallId,

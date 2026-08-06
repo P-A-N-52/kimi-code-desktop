@@ -63,9 +63,16 @@ export function ContextRing({
 				<TooltipTrigger asChild>
 					<button
 						type="button"
+						aria-label="当前上下文使用情况"
 						className="flex items-center gap-1.5 rounded-full px-2.5 py-1 font-mono text-[11px] text-muted transition-colors hover:bg-hover hover:text-foreground"
 					>
-						<svg width="13" height="13" viewBox="0 0 18 18" className="-rotate-90">
+						<svg
+							aria-hidden="true"
+							width="13"
+							height="13"
+							viewBox="0 0 18 18"
+							className="-rotate-90"
+						>
 							<circle
 								cx="9" cy="9" r={r} fill="none"
 								className="stroke-line-strong" strokeWidth="2"
@@ -85,18 +92,21 @@ export function ContextRing({
 				<TooltipContent side="top" className="p-2.5">
 					{tokenUsage || windowLabel ? (
 						<div className="flex flex-col gap-1">
+							<div className="mb-1 text-[11px] font-medium text-foreground">
+								当前上下文 · 最近一次模型请求
+							</div>
 							{windowLabel && (
 								<div className="flex items-center justify-between gap-6 text-[11px]">
-									<span className="text-muted">Context</span>
+									<span className="text-muted">上下文输入</span>
 									<span className="font-mono tabular-nums">{windowLabel}</span>
 								</div>
 							)}
 							{tokenUsage && (
 								<>
-									<UsageRow label="Input" value={tokenUsage.input_other} formatter={compact} />
-									<UsageRow label="Cache read" value={tokenUsage.input_cache_read} formatter={compact} />
-									<UsageRow label="Cache write" value={tokenUsage.input_cache_creation} formatter={compact} />
-									<UsageRow label="Output" value={tokenUsage.output} formatter={compact} />
+									<UsageRow label="非缓存输入" value={tokenUsage.input_other} formatter={compact} />
+									<UsageRow label="缓存读取" value={tokenUsage.input_cache_read} formatter={compact} />
+									<UsageRow label="缓存写入" value={tokenUsage.input_cache_creation} formatter={compact} />
+									<UsageRow label="本轮输出（不计入圆环）" value={tokenUsage.output} formatter={compact} />
 								</>
 							)}
 						</div>

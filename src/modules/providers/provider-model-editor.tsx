@@ -6,7 +6,6 @@ import { Button } from "@/ui/button";
 import { useConfirm } from "@/ui/confirm-dialog";
 import {
 	addModel,
-	addProvider,
 	getProviderModelTomlCompatibilityError,
 	isBuiltInKimiProvider,
 	MODEL_CAPABILITY_OPTIONS,
@@ -27,6 +26,7 @@ import {
 	type TomlMutationResult,
 	validateProviderModelToml,
 } from "./provider-model-toml";
+import { ProviderAddDialog } from "./provider-add-dialog";
 
 type ProviderModelEditorProps = {
 	enabled: boolean;
@@ -79,6 +79,7 @@ export function ProviderModelEditor({ enabled, onDirtyChange }: ProviderModelEdi
 	const [loadAttempt, setLoadAttempt] = useState(0);
 		const loadAttemptRef = useRef(0);
 	const [saving, setSaving] = useState(false);
+	const [addProviderOpen, setAddProviderOpen] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const confirm = useConfirm();
 	const onDirtyChangeRef = useRef(onDirtyChange);
@@ -259,9 +260,15 @@ export function ProviderModelEditor({ enabled, onDirtyChange }: ProviderModelEdi
 	};
 
 	const handleAddProvider = () => {
-		if (canEdit) {
-			applyMutation(addProvider(content));
+		if (!canEdit) {
+			return;
 		}
+		if (content !== savedContent) {
+			setError("请先保存或放弃当前更改，再从 Kimi Code 目录导入 Provider。");
+			return;
+		}
+		setError(null);
+		setAddProviderOpen(true);
 	};
 
 	const handleAddModel = () => {
@@ -336,6 +343,11 @@ export function ProviderModelEditor({ enabled, onDirtyChange }: ProviderModelEdi
 
 	return (
 		<div className="flex h-full min-h-0 flex-1 flex-col">
+			<ProviderAddDialog
+				open={addProviderOpen}
+				onOpenChange={setAddProviderOpen}
+				onImported={retryLoad}
+			/>
 			<div className="mb-3 shrink-0">
 				<div className="flex flex-wrap items-center justify-between gap-2">
 					<div>

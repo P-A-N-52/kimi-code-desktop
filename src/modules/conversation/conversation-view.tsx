@@ -353,7 +353,7 @@ export function ConversationView({
     if (sessionConfig.status === "unknown" && !selectedModel) {
       return "未知";
     }
-    return selectedModel ? `${selectedModel} (全局默认)` : "全局默认";
+    return selectedModel || "全局默认";
   }, [canUseSessionModel, displaySelectedModel, selectedModel, sessionConfig.status]);
   const selectedConfigModel = useMemo(
     () => findConfigModel(displayModels.length > 0 ? displayModels : models, displaySelectedModel),
@@ -381,6 +381,14 @@ export function ConversationView({
     async (name: string) => {
       if (!name || name === displaySelectedModel) return;
       if (!canUseSessionModel) {
+        try {
+          const resp = await update({ defaultModel: name });
+          notifyGlobalConfigApplied(resp, `已切换到 ${name}`);
+        } catch (error) {
+          toast.error("切换模型失败", {
+            description: error instanceof Error ? error.message : String(error),
+          });
+        }
         return;
       }
       if (canSetSessionModel) {
@@ -396,7 +404,7 @@ export function ConversationView({
         description: "请升级 Kimi Code 或检查 ACP 连接。",
       });
     },
-    [canSetSessionModel, canUseSessionModel, displaySelectedModel, stream],
+    [canSetSessionModel, canUseSessionModel, displaySelectedModel, stream, update],
   );
 
   // Opening the model picker while the session config is still unknown
@@ -405,6 +413,12 @@ export function ConversationView({
   // before opening the dropdown.
   const handleModelPickerOpen = useCallback(async (): Promise<boolean> => {
     if (sessionHasConfigOption(sessionConfigRef.current, "model")) {
+      return true;
+    }
+    // Stable Kimi ACP releases (including 0.32) do not currently advertise
+    // session config options. Keep model switching usable through the existing
+    // global-config + idle-worker restart path instead of blocking the picker.
+    if (!agentRuntime.sessionConfigOptions) {
       return true;
     }
     if (stream.status === "submitted" || stream.status === "streaming") {
@@ -417,12 +431,27 @@ export function ConversationView({
         return true;
       }
     }
-    return false;
-  }, [stream]);
+    // A runtime may advertise the capability but omit configOptions on resume.
+    // Fall back to configured models rather than leaving the menu unusable.
+    return true;
+  }, [agentRuntime.sessionConfigOptions, stream]);
 
   const handleToggleThinking = useCallback(
     async (enabled: boolean) => {
       if (!canUseSessionThinking) {
+        if (modelForcesThinking(selectedConfigModel)) return;
+        if (!modelHasThinkingCapability(selectedConfigModel)) return;
+        try {
+          const resp = await update({ defaultThinking: enabled });
+          notifyGlobalConfigApplied(
+            resp,
+            enabled ? "思考模式已开启" : "思考模式已关闭",
+          );
+        } catch (error) {
+          toast.error("更新思考模式失败", {
+            description: error instanceof Error ? error.message : String(error),
+          });
+        }
         return;
       }
       if (modelForcesThinking(selectedConfigModel)) return;
@@ -440,7 +469,7 @@ export function ConversationView({
         description: "请升级 Kimi Code 或检查 ACP 连接。",
       });
     },
-    [canSetSessionThinking, canUseSessionThinking, selectedConfigModel, stream],
+    [canSetSessionThinking, canUseSessionThinking, selectedConfigModel, stream, update],
   );
 
   const handleSelectThinkingEffort = useCallback(
@@ -853,6 +882,7 @@ export function ConversationView({
         sessionId={sessionId}
         messages={messages}
         isAwaitingFirstResponse={stream.isAwaitingFirstResponse && !streamDead}
+        connectionPhase={stream.connectionPhase}
         onRespondApproval={(id, decision) => {
           void stream.respondToApproval(id, decision);
         }}
@@ -959,7 +989,7 @@ export function ConversationView({
             thinkingEffort={config?.thinkingEffort ?? ""}
             modelControlsDisabled={modelControlsDisabled}
             modelUpdating={modelUpdating}
-            thinkingControlsVisible={canUseSessionThinking}
+            thinkingControlsVisible={canUseSessionThinking ? true : undefined}
             onModelPickerOpen={handleModelPickerOpen}
             onSelectModel={(name) => void handleSelectModel(name)}
             onToggleThinking={(enabled) => void handleToggleThinking(enabled)}

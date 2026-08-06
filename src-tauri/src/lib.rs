@@ -12,6 +12,7 @@ pub mod mcp_config;
 pub mod native_menu;
 pub mod notify;
 pub mod oauth_login;
+pub mod provider_cli;
 pub mod provider_config;
 pub mod runtime_backend;
 pub mod runtime_check;
@@ -20,6 +21,7 @@ pub mod session_files;
 pub mod session_influence;
 pub mod session_store;
 pub mod skills;
+pub mod swarm_progress;
 #[cfg(test)]
 pub mod test_env;
 pub mod tray;
@@ -95,6 +97,10 @@ pub fn run() {
             commands::get_global_config,
             commands::get_config_toml,
             commands::get_providers_overview,
+            commands::list_provider_catalog,
+            commands::get_provider_catalog_entry,
+            commands::import_provider_from_catalog,
+            commands::import_provider_registry,
             commands::update_config_toml,
             commands::get_mcp_config,
             commands::update_mcp_config,

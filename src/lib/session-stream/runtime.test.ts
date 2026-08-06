@@ -66,6 +66,48 @@ function contentPartWire(text: string): string {
   });
 }
 
+function terminalPromptStatusWire(
+  seq: number,
+  reason: "finished" | "cancelled",
+  promptRequestId: string,
+): string {
+  return JSON.stringify({
+    jsonrpc: "2.0",
+    method: "session_status",
+    params: {
+      session_id: "session-1",
+      state: "idle",
+      seq,
+      reason,
+      prompt_request_id: promptRequestId,
+      updated_at: "2026-01-01T00:00:01Z",
+    },
+  });
+}
+
+async function startConnectedRuntime() {
+  const runtime = createSessionRuntime({ sessionId: "session-1", autoConnect: true });
+  runtime.start();
+  await flushPromises();
+  await flushPromises();
+
+  const replay = mocks.wireSend.mock.calls
+    .map(([, rawMessage]) => JSON.parse(rawMessage))
+    .find((message) => message.method === "replay");
+  if (!replay) {
+    throw new Error("Expected replay request during runtime startup");
+  }
+  wireMessageHandler?.(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id: replay.id,
+      result: { status: "finished" },
+    }),
+  );
+  await flushPromises();
+  return runtime;
+}
+
 describe("createSessionRuntime", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -356,6 +398,72 @@ describe("createSessionRuntime", () => {
     expect(runtime.getSnapshot()).toBe(before);
   });
 
+  it("keeps a newer prompt pending when an identified terminal belongs to the prior prompt", async () => {
+    const runtime = await startConnectedRuntime();
+
+    await runtime.sendMessage("first prompt");
+    const firstPrompt = mocks.wireSend.mock.calls
+      .map(([, rawMessage]) => JSON.parse(rawMessage))
+      .find((message) => message.method === "prompt");
+    expect(firstPrompt).toBeDefined();
+
+    runtime.handleWireMessage(contentPartWire("first response"));
+    runtime.handleWireMessage(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: firstPrompt.id,
+        result: { status: "finished" },
+      }),
+    );
+    expect(runtime.getSnapshot().status).toBe("ready");
+
+    await runtime.sendMessage("second prompt");
+    expect(runtime.getSnapshot()).toMatchObject({
+      status: "submitted",
+      isAwaitingFirstResponse: true,
+      canCancel: true,
+    });
+
+    runtime.handleWireMessage(terminalPromptStatusWire(2, "finished", firstPrompt.id));
+
+    expect(runtime.getSnapshot()).toMatchObject({
+      status: "submitted",
+      isAwaitingFirstResponse: true,
+      canCancel: true,
+    });
+    runtime.stop();
+  });
+
+  it("settles the matching prompt when its RPC result is missing", async () => {
+    const runtime = await startConnectedRuntime();
+
+    await runtime.sendMessage("first prompt");
+    const prompts = mocks.wireSend.mock.calls
+      .map(([, rawMessage]) => JSON.parse(rawMessage))
+      .filter((message) => message.method === "prompt");
+    const firstPrompt = prompts[0];
+    expect(firstPrompt).toBeDefined();
+
+    runtime.handleWireMessage(terminalPromptStatusWire(2, "cancelled", firstPrompt.id));
+    expect(runtime.getSnapshot()).toMatchObject({
+      status: "ready",
+      isAwaitingFirstResponse: false,
+      canCancel: false,
+    });
+
+    await runtime.sendMessage("second prompt");
+    const sentPrompts = mocks.wireSend.mock.calls
+      .map(([, rawMessage]) => JSON.parse(rawMessage))
+      .filter((message) => message.method === "prompt");
+    expect(sentPrompts).toHaveLength(2);
+    expect(runtime.getSnapshot()).toMatchObject({
+      status: "submitted",
+      isAwaitingFirstResponse: true,
+      canCancel: true,
+    });
+    runtime.stop();
+  });
+
   it("retries the initial wire connect once before surfacing the error", async () => {
     vi.useFakeTimers();
     try {
@@ -462,9 +570,9 @@ describe("createSessionRuntime", () => {
     expect(toolMsg).toBeDefined();
     const steps = toolMsg?.toolCall?.subagentSteps ?? [];
     expect(steps.some((step) => step.kind === "text" && step.text === "outer text")).toBe(true);
-    const nested = steps.find(
-      (step) => step.kind === "subagent",
-    ) as Extract<SubagentStep, { kind: "subagent" }> | undefined;
+    const nested = steps.find((step) => step.kind === "subagent") as
+      | Extract<SubagentStep, { kind: "subagent" }>
+      | undefined;
     expect(nested).toBeDefined();
     expect(nested?.agentId).toBe("agent-a2");
     expect(nested?.steps.some((step) => step.kind === "text" && step.text === "nested text")).toBe(
@@ -474,6 +582,36 @@ describe("createSessionRuntime", () => {
     // The nested subagent is also tracked in the agent-monitor store.
     const tracked = useAgentMonitorStore.getState().tasks;
     expect(tracked.some((task) => task.id === "agent-a2")).toBe(true);
+  });
+
+  it("hydrates a repeated tool call in place without duplicating its card", () => {
+    const runtime = createSessionRuntime({ sessionId: "session-1" });
+    const toolCall = (argumentsValue: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: {
+          type: "ToolCall",
+          payload: {
+            id: "swarm-1",
+            function: { name: "AgentSwarm", arguments: argumentsValue },
+          },
+        },
+      });
+
+    runtime.handleWireMessage(toolCall(""));
+    runtime.handleWireMessage(
+      toolCall(JSON.stringify({ description: "Review", items: ["UI", "runtime"] })),
+    );
+
+    const toolMessages = runtime
+      .getSnapshot()
+      .messages.filter((message) => message.toolCall?.toolCallId === "swarm-1");
+    expect(toolMessages).toHaveLength(1);
+    expect(toolMessages[0].toolCall?.input).toEqual({
+      description: "Review",
+      items: ["UI", "runtime"],
+    });
   });
 
   it("surfaces the connect error when the retry also fails", async () => {

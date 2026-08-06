@@ -11,12 +11,13 @@ use crate::wire_events::{
     emit_wire_message as emit_raw_wire_message,
     emit_wire_messages_batch as emit_raw_wire_messages_batch, RestartWorkersSummary, RuntimeStatus,
 };
-use crate::{global_config, goal_queue, goal_store, session_files, session_store};
+use crate::{global_config, goal_queue, goal_store, session_files, session_store, swarm_progress};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::io::{BufRead, BufReader, Write};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1296,18 +1297,22 @@ fn queue_worker_text_wire_message(app: &AppHandle, worker: &Arc<AcpWorker>, mess
         let app = app.clone();
         let worker = Arc::clone(worker);
         tauri::async_runtime::spawn(run_after_delay(
-            tokio::time::sleep(ACP_TEXT_FLUSH_WINDOW),
+            || tokio::time::sleep(ACP_TEXT_FLUSH_WINDOW),
             move || flush_worker_text_wire_messages(&app, &worker),
         ));
     }
 }
 
-async fn run_after_delay<D, F>(delay: D, action: F)
+async fn run_after_delay<D, DF, F>(delay: D, action: F)
 where
-    D: Future<Output = ()> + Send + 'static,
+    D: FnOnce() -> DF + Send + 'static,
+    DF: Future<Output = ()> + Send + 'static,
     F: FnOnce() + Send + 'static,
 {
-    delay.await;
+    // The delay factory is invoked only after this future is polled by the
+    // async runtime. Constructing tokio::time::sleep on the ACP stdout reader's
+    // ordinary OS thread panics because that thread has no Tokio reactor.
+    delay().await;
     action();
 }
 
@@ -1319,6 +1324,21 @@ fn flush_worker_text_wire_messages(app: &AppHandle, worker: &AcpWorker) {
         |message| emit_raw_wire_message(app, &worker.session_id, message),
         |messages| emit_raw_wire_messages_batch(app, &worker.session_id, messages),
     );
+}
+
+const ACP_USAGE_REFRESH_DELAY: Duration = Duration::from_millis(100);
+
+fn schedule_usage_status_refresh(app: &AppHandle, worker: &Arc<AcpWorker>) {
+    let app = app.clone();
+    let worker = Arc::clone(worker);
+    tauri::async_runtime::spawn(run_after_delay(
+        || tokio::time::sleep(ACP_USAGE_REFRESH_DELAY),
+        move || {
+            if worker.status.lock().unwrap().state != "stopped" {
+                emit_usage_status_wire(&app, &worker, None);
+            }
+        },
+    ));
 }
 
 fn emit_text_wire_messages<Single, Batch>(
@@ -1402,9 +1422,26 @@ fn set_worker_idle_if_active(
     worker: &AcpWorker,
     reason: &str,
 ) -> Result<(), String> {
+    set_worker_idle_if_active_for_prompt(app, worker, reason, None)
+}
+
+fn set_worker_idle_if_active_for_prompt(
+    app: &AppHandle,
+    worker: &AcpWorker,
+    reason: &str,
+    prompt_request_id: Option<&str>,
+) -> Result<(), String> {
     active_worker_rpc(worker)?;
     let seq = record_worker_idle_if_active(worker, reason)?;
-    emit_session_status_wire(app, worker, "idle", seq, Some(reason), None);
+    emit_session_status_wire_with_prompt(
+        app,
+        worker,
+        "idle",
+        seq,
+        Some(reason),
+        None,
+        prompt_request_id,
+    );
     Ok(())
 }
 
@@ -1433,24 +1470,52 @@ fn emit_session_status_wire(
     reason: Option<&str>,
     detail: Option<&str>,
 ) {
+    emit_session_status_wire_with_prompt(app, worker, state, seq, reason, detail, None);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_session_status_wire_with_prompt(
+    app: &AppHandle,
+    worker: &AcpWorker,
+    state: &str,
+    seq: u64,
+    reason: Option<&str>,
+    detail: Option<&str>,
+    prompt_request_id: Option<&str>,
+) {
     emit_worker_wire_message(
         app,
         worker,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "session_status",
-            "params": {
-                "session_id": worker.session_id,
-                "state": state,
-                "seq": seq,
-                "worker_id": format!("acp-{}", worker.session_id),
-                "reason": reason,
-                "detail": detail,
-                "updated_at": now_ms().to_string(),
-            }
-        })
-        .to_string(),
+        session_status_wire_message(worker, state, seq, reason, detail, prompt_request_id),
     );
+}
+
+fn session_status_wire_message(
+    worker: &AcpWorker,
+    state: &str,
+    seq: u64,
+    reason: Option<&str>,
+    detail: Option<&str>,
+    prompt_request_id: Option<&str>,
+) -> String {
+    let mut params = json!({
+        "session_id": worker.session_id,
+        "state": state,
+        "seq": seq,
+        "worker_id": format!("acp-{}", worker.session_id),
+        "reason": reason,
+        "detail": detail,
+        "updated_at": now_ms().to_string(),
+    });
+    if let Some(prompt_request_id) = prompt_request_id {
+        params["prompt_request_id"] = json!(prompt_request_id);
+    }
+    json!({
+        "jsonrpc": "2.0",
+        "method": "session_status",
+        "params": params,
+    })
+    .to_string()
 }
 
 fn mode_enabled_from_params(params: &Value) -> Result<bool, String> {
@@ -2523,6 +2588,35 @@ async fn bridge_native_goal_continuation(
         }
     }
 }
+
+fn finalize_prompt_success<TerminalMessage, RecordTerminal, ResultMessage, EmitTerminal>(
+    worker: &AcpWorker,
+    prompt_id: &str,
+    record_terminal: RecordTerminal,
+    emit_result: ResultMessage,
+    emit_terminal: EmitTerminal,
+) where
+    RecordTerminal: FnOnce() -> Result<TerminalMessage, String>,
+    ResultMessage: FnOnce(),
+    EmitTerminal: FnOnce(TerminalMessage),
+{
+    // Commit A's backend idle state and capture its correlated terminal wire
+    // while A still owns the prompt guard. Releasing that guard before the RPC
+    // result lets the frontend start B from the result handler; the later A
+    // terminal is then only an event carrying A's older seq/id and cannot
+    // overwrite B's backend state.
+    let terminal_message = {
+        let mut in_flight = worker.in_flight_prompt_ids.lock().unwrap();
+        let terminal_message = record_terminal();
+        in_flight.remove(prompt_id);
+        terminal_message
+    };
+    emit_result();
+    if let Ok(terminal_message) = terminal_message {
+        emit_terminal(terminal_message);
+    }
+}
+
 async fn handle_prompt(
     app: &AppHandle,
     worker: &Arc<AcpWorker>,
@@ -2687,36 +2781,46 @@ async fn handle_prompt(
         GoalBridgeOutcome::default()
     };
 
-    worker
-        .in_flight_prompt_ids
-        .lock()
-        .unwrap()
-        .remove(&prompt_id);
-
     let stop_reason = response
         .result
         .as_ref()
         .and_then(|result| result.get("stopReason"))
         .and_then(Value::as_str);
     let status = legacy_prompt_status_from_stop_reason(stop_reason);
-    emit_worker_wire_message(
-        app,
+    let result_message = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "result": {
+            "status": status,
+            "goal_history_resync": goal_bridge_outcome.history_resync,
+            "goal_completed": goal_bridge_outcome.completed,
+        }
+    })
+    .to_string();
+    // No progress/hydration callback from this turn may overtake its terminal
+    // status. Registry cancellation serializes with an input callback already
+    // in progress, so either that callback emits first or it never emits.
+    swarm_progress::stop_session(&worker.session_id);
+    finalize_prompt_success(
         worker,
-        json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {
-                "status": status,
-                "goal_history_resync": goal_bridge_outcome.history_resync,
-                "goal_completed": goal_bridge_outcome.completed,
-            }
-        })
-        .to_string(),
+        &prompt_id,
+        || {
+            // A concurrent cancel/control path may already have stopped this
+            // worker. Never overwrite that terminal state with a late idle.
+            active_worker_rpc(worker)?;
+            let seq = record_worker_idle_if_active(worker, status)?;
+            Ok(session_status_wire_message(
+                worker,
+                "idle",
+                seq,
+                Some(status),
+                None,
+                Some(&prompt_id),
+            ))
+        },
+        || emit_worker_wire_message(app, worker, result_message),
+        |terminal_message| emit_worker_wire_message(app, worker, terminal_message),
     );
-    // A concurrent cancel/control path may have stopped this exact worker
-    // after the in-flight id was removed. Never overwrite that terminal state
-    // with a late idle transition from prompt completion.
-    let _ = set_worker_idle_if_active(app, worker, status);
     emit_usage_status_wire(app, worker, response.result.as_ref());
     Ok(())
 }
@@ -2728,15 +2832,16 @@ fn fail_prompt_in_flight(
     reason: &str,
     detail: &str,
 ) {
+    swarm_progress::stop_session(&worker.session_id);
+    let worker_stopped = worker.status.lock().unwrap().state == "stopped";
+    if !worker_stopped {
+        set_worker_status(app, worker, "error", Some(reason), Some(detail));
+    }
     worker
         .in_flight_prompt_ids
         .lock()
         .unwrap()
         .remove(prompt_id);
-    let worker_stopped = worker.status.lock().unwrap().state == "stopped";
-    if !worker_stopped {
-        set_worker_status(app, worker, "error", Some(reason), Some(detail));
-    }
 }
 
 async fn handle_cancel(
@@ -2849,6 +2954,7 @@ fn stop_worker_best_effort(worker: &AcpWorker, reason: &str) {
 }
 
 fn mark_worker_stopped(worker: &AcpWorker, reason: &str) {
+    swarm_progress::stop_session(&worker.session_id);
     let app = worker.app_handle.clone();
     let session_id = worker.session_id.clone();
     mark_worker_stopped_with_emitter(worker, reason, move |messages| {
@@ -2902,6 +3008,7 @@ fn record_worker_rpc_dead(worker: &AcpWorker) -> Option<u64> {
 }
 
 fn mark_worker_rpc_dead(app: &AppHandle, worker: &AcpWorker) {
+    swarm_progress::stop_session(&worker.session_id);
     let Some(seq) = record_worker_rpc_dead(worker) else {
         return;
     };
@@ -2964,20 +3071,25 @@ fn spawn_acp_rpc_session(
     let app_for_reader = app.clone();
     let worker_for_reader = Arc::clone(&worker);
     thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            let Ok(line) = line else {
-                break;
-            };
-            if let Err(err) = handle_acp_stdout_line(
-                &line,
-                &app_for_reader,
-                &worker_for_reader,
-                &pending_reader,
-                &stdin_writer,
-            ) {
-                eprintln!("[acp] {err}");
+        let reader_result = catch_unwind(AssertUnwindSafe(|| {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                let Ok(line) = line else {
+                    break;
+                };
+                if let Err(err) = handle_acp_stdout_line(
+                    &line,
+                    &app_for_reader,
+                    &worker_for_reader,
+                    &pending_reader,
+                    &stdin_writer,
+                ) {
+                    eprintln!("[acp] {err}");
+                }
             }
+        }));
+        if reader_result.is_err() {
+            eprintln!("[acp] stdout reader panicked; marking the ACP worker unavailable");
         }
         *reader_flag.lock().unwrap() = false;
         mark_worker_rpc_dead(&app_for_reader, &worker_for_reader);
@@ -3066,7 +3178,20 @@ fn handle_acp_notification(
     match method {
         "session/update" => {
             *worker.last_session_update_at.lock().unwrap() = Some(Instant::now());
-            let update = params.get("update").cloned().unwrap_or(Value::Null);
+            let mut update = params.get("update").cloned().unwrap_or(Value::Null);
+            // usage.record is written immediately before the tool call. ACP
+            // omits usage_update, so refresh once after that record can flush.
+            if update.get("sessionUpdate").and_then(Value::as_str) == Some("tool_call") {
+                schedule_usage_status_refresh(app, worker);
+            }
+            if hydrate_swarm_tool_input(worker, &mut update) {
+                // Manual approval can separate ACP's empty tool_call update
+                // from the native tool.call record by an arbitrary amount of
+                // time. Keep the initial card visible while waiting for that
+                // durable record, then hydrate it and start the progress stream.
+                defer_swarm_tool_call(app, worker, &update);
+            }
+            sync_swarm_progress_observer(app, worker, &update, None);
             if apply_current_mode_update(worker, &update) {
                 // Agent-initiated mode change (e.g. ExitPlanMode): worker state
                 // is updated, push the new mode status to the UI.
@@ -3117,6 +3242,305 @@ fn handle_acp_notification(
     Ok(())
 }
 
+fn hydrate_swarm_tool_input(worker: &AcpWorker, update: &mut Value) -> bool {
+    if update.get("sessionUpdate").and_then(Value::as_str) != Some("tool_call") {
+        return false;
+    }
+    if let Some(parsed) = update
+        .get("rawInput")
+        .and_then(Value::as_str)
+        .and_then(|input| serde_json::from_str::<Value>(input).ok())
+    {
+        if let Some(object) = update.as_object_mut() {
+            object.insert("rawInput".to_string(), parsed);
+        }
+    }
+    let title_is_swarm = update
+        .get("title")
+        .and_then(Value::as_str)
+        .is_some_and(is_swarm_tool_title);
+    let raw_input = update.get("rawInput").unwrap_or(&Value::Null);
+    let input_is_swarm = raw_input.get("prompt_template").is_some()
+        || raw_input.get("promptTemplate").is_some()
+        || raw_input.get("resume_agent_ids").is_some()
+        || raw_input.get("resumeAgentIds").is_some();
+    if !title_is_swarm && !input_is_swarm {
+        return false;
+    }
+    let has_planned_items = raw_input
+        .get("items")
+        .and_then(Value::as_array)
+        .is_some_and(|items| !items.is_empty());
+    if has_planned_items {
+        return false;
+    }
+    let Some(tool_call_id) = update.get("toolCallId").and_then(Value::as_str) else {
+        return false;
+    };
+    !swarm_progress::is_active(&worker.session_id, tool_call_id)
+        && !swarm_progress::is_hydrating(&worker.session_id, tool_call_id)
+}
+
+fn is_swarm_tool_title(title: &str) -> bool {
+    matches!(
+        title
+            .chars()
+            .filter(|character| !matches!(character, ' ' | '_' | '-'))
+            .collect::<String>()
+            .to_ascii_lowercase()
+            .as_str(),
+        "agentswarm" | "swarm"
+    )
+}
+
+fn defer_swarm_tool_call(app: &AppHandle, worker: &Arc<AcpWorker>, update: &Value) {
+    let Some(tool_call_id) = update
+        .get("toolCallId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return;
+    };
+    let Ok(session_dir) = session_store::find_session_dir_by_id_or_err(&worker.session_id) else {
+        return;
+    };
+    let app = app.clone();
+    let worker = Arc::clone(worker);
+    let session_id = worker.session_id.clone();
+    swarm_progress::start_input_hydration(
+        session_id,
+        tool_call_id.clone(),
+        session_dir,
+        move |input, baseline| {
+            emit_hydrated_swarm_tool_call(&app, &worker, &tool_call_id, input, Some(baseline));
+        },
+    );
+}
+
+fn emit_hydrated_swarm_tool_call(
+    app: &AppHandle,
+    worker: &Arc<AcpWorker>,
+    tool_call_id: &str,
+    input: Value,
+    baseline: Option<HashSet<String>>,
+) {
+    let prompt_is_active = !worker.in_flight_prompt_ids.lock().unwrap().is_empty();
+    let worker_is_busy = worker.status.lock().unwrap().state == "busy";
+    if !prompt_is_active || !worker_is_busy {
+        return;
+    }
+    let hydrated = json!({
+        "sessionUpdate": "tool_call",
+        "toolCallId": tool_call_id,
+        "title": "AgentSwarm",
+        "rawInput": input,
+    });
+    sync_swarm_progress_observer(app, worker, &hydrated, baseline);
+    for wire_message in translate_session_update(&worker.session_id, &hydrated) {
+        emit_worker_wire_message(app, worker, wire_message);
+    }
+}
+
+fn sync_swarm_progress_observer(
+    app: &AppHandle,
+    worker: &Arc<AcpWorker>,
+    update: &Value,
+    baseline: Option<HashSet<String>>,
+) {
+    let update_kind = update.get("sessionUpdate").and_then(Value::as_str);
+    let tool_call_id = update
+        .get("toolCallId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+
+    if update_kind == Some("tool_call") {
+        let Some(tool_call_id) = tool_call_id else {
+            return;
+        };
+        let raw_input = update.get("rawInput").unwrap_or(&Value::Null);
+        let is_swarm = raw_input.get("prompt_template").is_some()
+            || raw_input.get("promptTemplate").is_some()
+            || raw_input.get("resume_agent_ids").is_some()
+            || raw_input.get("resumeAgentIds").is_some()
+            || update
+                .get("title")
+                .and_then(Value::as_str)
+                .is_some_and(is_swarm_tool_title);
+        if !is_swarm {
+            return;
+        }
+        let baseline =
+            baseline.or_else(|| swarm_progress::cancel_hydration(&worker.session_id, tool_call_id));
+        start_swarm_progress_observer(app, worker, tool_call_id, raw_input, baseline);
+        return;
+    }
+
+    if update_kind == Some("tool_call_update") {
+        let Some(tool_call_id) = tool_call_id else {
+            return;
+        };
+        let status = update.get("status").and_then(Value::as_str);
+        if matches!(
+            status,
+            Some("completed" | "failed" | "cancelled" | "canceled")
+        ) {
+            swarm_progress::stop(&worker.session_id, tool_call_id);
+            return;
+        }
+        // Some CLI versions ship the swarm args only on an in_progress
+        // tool_call_update (`rawInput` with `items`), not on the initial
+        // tool_call notification. Start the observer here as a fallback so
+        // intermediate subagent progress is still captured.
+        let raw_input = update.get("rawInput").unwrap_or(&Value::Null);
+        let has_planned_items = raw_input
+            .get("items")
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty());
+        if has_planned_items {
+            let baseline = swarm_progress::cancel_hydration(&worker.session_id, tool_call_id);
+            start_swarm_progress_observer(app, worker, tool_call_id, raw_input, baseline);
+        }
+    }
+}
+
+fn start_swarm_progress_observer(
+    app: &AppHandle,
+    worker: &Arc<AcpWorker>,
+    tool_call_id: &str,
+    raw_input: &Value,
+    baseline: Option<HashSet<String>>,
+) {
+    if swarm_progress::is_active(&worker.session_id, tool_call_id) {
+        return;
+    }
+    let planned_items = raw_input
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| swarm_item_label(item, index))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if planned_items.is_empty() {
+        return;
+    }
+    let Ok(session_dir) = session_store::find_session_dir_by_id_or_err(&worker.session_id) else {
+        return;
+    };
+
+    let session_id = worker.session_id.clone();
+    let parent_tool_call_id = tool_call_id.to_string();
+    let subagent_type = raw_input
+        .get("subagent_type")
+        .or_else(|| raw_input.get("subagentType"))
+        .and_then(Value::as_str)
+        .unwrap_or("agent")
+        .to_string();
+    let app = app.clone();
+    let worker = Arc::clone(worker);
+    let event_session_id = session_id.clone();
+    let event_parent_tool_call_id = parent_tool_call_id.clone();
+    let emit = move |event| {
+        let (method, params) = match event {
+            swarm_progress::SwarmProgressEvent::Started {
+                agent_id,
+                item,
+                index,
+                parent_agent_id,
+                depth,
+            } => (
+                "subagent.started",
+                json!({
+                    "session_id": event_session_id,
+                    "agent_id": agent_id,
+                    "parent_tool_call_id": event_parent_tool_call_id,
+                    "subagent_type": subagent_type,
+                    "description": item,
+                    "swarm_index": index,
+                    "parent_agent_id": parent_agent_id,
+                    "swarm_depth": depth,
+                }),
+            ),
+            swarm_progress::SwarmProgressEvent::Activity { agent_id, activity } => (
+                "task.progress",
+                json!({
+                    "session_id": event_session_id,
+                    "task_id": agent_id,
+                    "output_chunk": activity,
+                    "phase": "working",
+                }),
+            ),
+            swarm_progress::SwarmProgressEvent::Completed {
+                agent_id,
+                item,
+                index,
+                failed,
+                reason,
+            } => (
+                if failed {
+                    "subagent.failed"
+                } else {
+                    "subagent.completed"
+                },
+                json!({
+                    "session_id": event_session_id,
+                    "agent_id": agent_id,
+                    "parent_tool_call_id": event_parent_tool_call_id,
+                    "subagent_type": subagent_type,
+                    "description": item,
+                    "swarm_index": index,
+                    "error": if failed { Value::String(reason) } else { Value::Null },
+                }),
+            ),
+        };
+        for message in translate_acp_lifecycle_notification(&event_session_id, method, &params) {
+            emit_worker_wire_message(&app, &worker, message);
+        }
+    };
+    if let Some(baseline) = baseline {
+        swarm_progress::start_with_baseline(
+            session_id,
+            parent_tool_call_id,
+            session_dir,
+            planned_items,
+            baseline,
+            emit,
+        );
+    } else {
+        swarm_progress::start(
+            session_id,
+            parent_tool_call_id,
+            session_dir,
+            planned_items,
+            emit,
+        );
+    }
+}
+
+fn swarm_item_label(item: &Value, index: usize) -> String {
+    if let Some(label) = item
+        .as_str()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+    {
+        return label.to_string();
+    }
+    for key in ["item", "description", "title", "task", "name"] {
+        if let Some(label) = item
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+        {
+            return label.to_string();
+        }
+    }
+    format!("Subtask {}", index + 1)
+}
+
 fn handle_acp_reverse_request(
     app: &AppHandle,
     worker: &Arc<AcpWorker>,
@@ -3127,6 +3551,15 @@ fn handle_acp_reverse_request(
 ) -> Result<(), String> {
     match method {
         "session/request_permission" => {
+            if let Some((tool_call_id, input)) = swarm_progress::read_permission_swarm_input(params)
+            {
+                let baseline = swarm_progress::cancel_hydration(&worker.session_id, &tool_call_id);
+                if baseline.is_some()
+                    || !swarm_progress::is_active(&worker.session_id, &tool_call_id)
+                {
+                    emit_hydrated_swarm_tool_call(app, worker, &tool_call_id, input, baseline);
+                }
+            }
             if let Some((wire_message, wire_id, options)) =
                 acp_permission_to_legacy_request(request_id, params)
             {
@@ -3390,6 +3823,85 @@ mod tests {
     use crate::test_env::lock::set_kimi_code_home;
     use serde_json::json;
 
+    #[test]
+    fn prompt_terminal_status_carries_matching_request_id() {
+        let worker = new_probe_worker();
+        let terminal: Value = serde_json::from_str(&session_status_wire_message(
+            &worker,
+            "idle",
+            7,
+            Some("end_turn"),
+            None,
+            Some("prompt-7"),
+        ))
+        .unwrap();
+        assert_eq!(terminal["params"]["prompt_request_id"], "prompt-7");
+
+        let legacy: Value = serde_json::from_str(&session_status_wire_message(
+            &worker,
+            "idle",
+            8,
+            Some("initialized"),
+            None,
+            None,
+        ))
+        .unwrap();
+        assert!(legacy["params"].get("prompt_request_id").is_none());
+    }
+
+    #[test]
+    fn prompt_result_precedes_correlated_terminal_without_late_state_write() {
+        let worker = new_probe_worker();
+        worker.status.lock().unwrap().state = "busy".to_string();
+        worker
+            .in_flight_prompt_ids
+            .lock()
+            .unwrap()
+            .insert("prompt-old".to_string());
+        let events = Mutex::new(Vec::new());
+
+        finalize_prompt_success(
+            &worker,
+            "prompt-old",
+            || {
+                assert!(worker.in_flight_prompt_ids.try_lock().is_err());
+                events.lock().unwrap().push("record");
+                let seq = record_worker_idle_if_active(&worker, "end_turn")?;
+                Ok((seq, "prompt-old".to_string()))
+            },
+            || {
+                let mut in_flight = worker.in_flight_prompt_ids.lock().unwrap();
+                assert!(!in_flight.contains("prompt-old"));
+                in_flight.insert("prompt-new".to_string());
+                drop(in_flight);
+
+                let seq = worker.status_seq.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut status = worker.status.lock().unwrap();
+                status.state = "busy".to_string();
+                status.seq = seq;
+                drop(status);
+                events.lock().unwrap().push("result");
+            },
+            |(terminal_seq, terminal_prompt_id)| {
+                assert_eq!(terminal_prompt_id, "prompt-old");
+                let status = worker.status.lock().unwrap();
+                assert_eq!(status.state, "busy");
+                assert!(status.seq > terminal_seq);
+                drop(status);
+                events.lock().unwrap().push("terminal");
+            },
+        );
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["record", "result", "terminal"]
+        );
+        assert_eq!(
+            *worker.in_flight_prompt_ids.lock().unwrap(),
+            HashSet::from(["prompt-new".to_string()])
+        );
+    }
+
     #[cfg(target_os = "windows")]
     fn spawn_stdin_sink_rpc() -> AcpRpcSession {
         let mut child = Command::new("cmd")
@@ -3494,7 +4006,7 @@ mod tests {
         let emitted_for_flush = Arc::clone(&emitted);
 
         let task = tokio::spawn(run_after_delay(
-            async move {
+            move || async move {
                 let _ = release_rx.await;
             },
             move || {
@@ -3513,6 +4025,19 @@ mod tests {
         let emitted = emitted.lock().unwrap().clone();
         assert_eq!(emitted, vec![vec!["delayed".to_string()]]);
         assert!(buffer.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delayed_action_can_be_created_from_a_non_tokio_thread() {
+        let delayed = std::thread::spawn(|| {
+            run_after_delay(|| tokio::time::sleep(Duration::from_millis(1)), || ())
+        })
+        .join()
+        .expect("construct delayed action outside Tokio");
+
+        tokio::spawn(delayed)
+            .await
+            .expect("run delayed action inside Tokio");
     }
 
     #[test]
@@ -3794,6 +4319,14 @@ mod tests {
     #[test]
     fn parser_rejects_invalid_json() {
         assert!(parse_jsonrpc_line("not-json").is_err());
+    }
+
+    #[test]
+    fn swarm_title_aliases_match_frontend_contract() {
+        assert!(is_swarm_tool_title("AgentSwarm"));
+        assert!(is_swarm_tool_title("agent_swarm"));
+        assert!(is_swarm_tool_title("Swarm"));
+        assert!(!is_swarm_tool_title("Agent"));
     }
 
     #[test]

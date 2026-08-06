@@ -8,6 +8,7 @@ use crate::git_diff;
 use crate::global_config;
 use crate::goal_queue;
 use crate::goal_store;
+use crate::provider_cli;
 use crate::runtime_check;
 use crate::security::{
     validate_http_external_url, validate_local_absolute_path, validate_local_write_path,
@@ -718,6 +719,76 @@ pub fn get_config_toml() -> Result<Value, String> {
 #[tauri::command]
 pub fn get_providers_overview() -> Result<Value, String> {
     crate::provider_config::get_providers_overview()
+}
+
+#[tauri::command]
+pub async fn list_provider_catalog() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(provider_cli::list_catalog_providers)
+        .await
+        .map_err(|error| format!("Failed to join provider catalog task: {error}"))?
+}
+
+#[tauri::command]
+pub async fn get_provider_catalog_entry(provider_id: String) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || provider_cli::get_catalog_provider(&provider_id))
+        .await
+        .map_err(|error| format!("Failed to join provider catalog task: {error}"))?
+}
+
+async fn finish_provider_import(
+    app: &tauri::AppHandle,
+    acp_wire: &AcpProcessManager,
+    acp_desktop: &AcpDesktopClient,
+) -> Value {
+    acp_desktop.invalidate().await;
+    let summary = acp_wire
+        .restart_running_workers(app, "config_update", false)
+        .await;
+    json!({
+        "success": true,
+        "restarted_session_ids": if summary.restarted_session_ids.is_empty() { Value::Null } else { json!(summary.restarted_session_ids) },
+        "skipped_busy_session_ids": if summary.skipped_busy_session_ids.is_empty() { Value::Null } else { json!(summary.skipped_busy_session_ids) },
+    })
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn import_provider_from_catalog(
+    app: tauri::AppHandle,
+    acp_wire: tauri::State<'_, AcpProcessManager>,
+    acp_desktop: tauri::State<'_, AcpDesktopClient>,
+    provider_id: String,
+    api_key: String,
+    default_model: Option<String>,
+    base_url: Option<String>,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        provider_cli::import_catalog_provider(
+            &provider_id,
+            &api_key,
+            default_model.as_deref(),
+            base_url.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| format!("Failed to join provider import task: {error}"))??;
+    Ok(finish_provider_import(&app, &acp_wire, &acp_desktop).await)
+}
+
+#[tauri::command]
+pub async fn import_provider_registry(
+    app: tauri::AppHandle,
+    acp_wire: tauri::State<'_, AcpProcessManager>,
+    acp_desktop: tauri::State<'_, AcpDesktopClient>,
+    registry_url: String,
+    api_key: String,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        provider_cli::import_custom_registry(&registry_url, &api_key)
+    })
+    .await
+    .map_err(|error| format!("Failed to join provider import task: {error}"))??;
+    Ok(finish_provider_import(&app, &acp_wire, &acp_desktop).await)
 }
 
 #[tauri::command]

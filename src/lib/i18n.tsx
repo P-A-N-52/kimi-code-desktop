@@ -528,9 +528,9 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "· Balance": "· 余额",
   "Local token usage": "本地 Token 用量",
   "Scanning session records…": "扫描会话记录中…",
-  "Total Tokens": "总 Tokens",
-  "Cache reads": "Cache 读",
-  "Cache writes": "Cache 写",
+  "Total Tokens": "累计 Tokens",
+  "Cache reads": "缓存读取",
+  "Cache writes": "缓存写入",
   Scanned: "已扫描",
   "wire files · matched": "个 wire · 命中",
   "turn records": "条 turn 记录",
@@ -696,6 +696,24 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Structured changes are written to a local draft; config.toml updates only after saving.":
     "结构化修改只会写入本地草稿；点保存后才更新 config.toml。",
   "Add Provider": "添加 Provider",
+  "Known platform": "已知平台",
+  "Select OpenAI, Anthropic, Google, and other platforms from models.dev, then import model and capability metadata automatically.":
+    "从 models.dev 选择 OpenAI、Anthropic、Google 等平台，自动导入模型与能力信息。",
+  "Custom Registry": "自定义 Registry",
+  "Import the Providers and models in an api.json registry at once and retain its source for future synchronization.":
+    "通过 api.json 一次导入 Registry 中的 Provider 和模型，并保留后续同步来源。",
+  "Search platforms": "搜索平台",
+  "Reading catalog…": "正在读取目录…",
+  "No matching platforms": "没有匹配的平台",
+  "Platform API Key": "平台 API Key",
+  "Catalog default model": "目录默认模型",
+  "Do not set yet": "暂不设置",
+  "Base URL (optional)": "Base URL（可选）",
+  "Catalog Base URL": "目录 Base URL",
+  "Enter when the catalog has no endpoint": "目录没有 endpoint 时填写",
+  "Kimi Code saves the Registry source metadata and synchronizes Providers and models from the same source on later startups.":
+    "Kimi Code 会保存 Registry 来源元数据，并在后续启动时同步同一来源的 Provider 与模型。",
+  "Back to add methods": "返回添加方式",
   "Loading config.toml…": "加载 config.toml 中…",
   "Structured configuration cannot be safely edited right now; switch to the advanced config.toml editor or retry reading.":
     "当前无法安全编辑结构化配置；请转用高级 config.toml 编辑器或重试读取。",
@@ -739,6 +757,20 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
     "尚未配置 Provider。可在下方结构化编辑器或高级编辑器中添加。",
   "Update available": "可更新",
   "Read failed; the current content will not be saved.": "读取失败，当前内容不会被保存。",
+  "Context input": "上下文输入",
+  "Cumulative usage for the selected period": "时间段累计调用用量",
+  "Current context usage": "当前上下文使用情况",
+  "Current context · latest model request": "当前上下文 · 最近一次模型请求",
+  "Kimi Plan platform quota": "Kimi Plan 平台额度",
+  "Model requests": "模型请求",
+  "Non-cached input": "非缓存输入",
+  "Output this turn (not counted in the ring)": "本轮输出（不计入圆环）",
+  "Response is taking longer than usual": "响应时间较长",
+  "Shows the quota returned by the platform directly; it does not map to locally accumulated tokens or the current context.":
+    "此处直接展示平台返回的配额，与本地累计 Token、当前上下文不直接换算。",
+  "Summarizes model calls across all sessions and agents in the selected period; cached tokens are counted again on every call and do not represent the current context size.":
+    "汇总所选时间范围内全部会话与代理的模型调用；缓存 Token 会重复计入每次调用， 不代表当前上下文大小。",
+  "Total input": "输入合计",
 };
 
 const EN_US_RESTORE_TRANSLATIONS = Object.entries(ZH_CN_TRANSLATIONS).reduce<

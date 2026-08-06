@@ -127,7 +127,7 @@ const DENIED_COMMAND_HINTS: Record<string, string> = {
   config: "Open Settings from the app menu.",
   login: "Manage account credentials with the `kimi` CLI when needed.",
   logout: "Manage account credentials with the `kimi` CLI when needed.",
-  provider: "Manage providers with the `kimi` CLI or config.toml.",
+  provider: "Provider management is available from the model configuration UI.",
   yolo: "Use the permission mode control (YOLO) in the status bar.",
   yes: "Use the permission mode control (YOLO) in the status bar.",
   auto: "Use the permission mode control (Auto) in the status bar.",

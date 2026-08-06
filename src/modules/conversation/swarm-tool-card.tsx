@@ -9,6 +9,7 @@ import {
 import { parseSwarmResult } from "@/lib/swarm/parseSwarmResult";
 import {
   buildSwarmCardRows,
+  type PlannedSwarmItem,
   resolveSwarmMembers,
   type SwarmCardRow,
   type SwarmMember,
@@ -37,13 +38,31 @@ const PHASE_LABEL: Record<SwarmPhase, string> = {
   queued: "排队中",
 };
 
-function parseSwarmInput(input: unknown): { description?: string; itemCount?: number } {
-  if (typeof input !== "object" || input === null) return {};
+function plannedItemName(item: unknown, index: number): string {
+  if (typeof item === "string" && item.trim()) return item.trim();
+  if (typeof item === "object" && item !== null) {
+    const record = item as Record<string, unknown>;
+    for (const key of ["item", "description", "title", "task", "name"]) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+  }
+  return `子任务 ${index + 1}`;
+}
+
+function parseSwarmInput(input: unknown): {
+  description?: string;
+  plannedItems: PlannedSwarmItem[];
+} {
+  if (typeof input !== "object" || input === null) return { plannedItems: [] };
   const r = input as Record<string, unknown>;
   const items = Array.isArray(r.items) ? r.items : undefined;
   return {
     description: typeof r.description === "string" ? r.description : undefined,
-    itemCount: items?.length,
+    plannedItems: (items ?? []).map((item, index) => ({
+      name: plannedItemName(item, index),
+      index,
+    })),
   };
 }
 
@@ -85,8 +104,10 @@ function MemberRow({ row, member }: { row: SwarmCardRow; member?: SwarmMember })
         type="button"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full min-h-8 items-center gap-2 px-2.5 text-left text-[12px] hover:bg-hover"
+        className="flex w-full min-h-8 items-center gap-2 pr-2.5 text-left text-[12px] hover:bg-hover"
+        style={{ paddingLeft: `${10 + row.depth * 18}px` }}
       >
+        {row.depth > 0 ? <span className="shrink-0 text-faint">↳</span> : null}
         <StatusDot status={statusToDotKind(row.phase)} className="shrink-0" />
         <span className="max-w-[46%] truncate font-medium text-foreground">{row.name}</span>
         {modelDisplay ? (
@@ -113,7 +134,10 @@ function MemberRow({ row, member }: { row: SwarmCardRow; member?: SwarmMember })
         />
       </button>
       <Expandable open={open}>
-        <div className="whitespace-pre-wrap break-words px-2.5 pb-2.5 pl-[31px] font-mono text-[10.5px] leading-relaxed text-muted">
+        <div
+          className="whitespace-pre-wrap break-words pr-2.5 pb-2.5 font-mono text-[10.5px] leading-relaxed text-muted"
+          style={{ paddingLeft: `${31 + row.depth * 18}px` }}
+        >
           {row.body || row.activity || "（无输出）"}
         </div>
       </Expandable>
@@ -129,14 +153,18 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
     () => resolveSwarmMembers(tasks, toolCall.toolCallId),
     [tasks, toolCall.toolCallId],
   );
-  const rows = useMemo(() => buildSwarmCardRows(members, result), [members, result]);
+  const denied = toolCall.state === "output-denied";
+  const failedToRun = denied || Boolean(toolCall.isError);
+  const rows = useMemo(
+    () => buildSwarmCardRows(members, result, failedToRun ? [] : input.plannedItems),
+    [failedToRun, input.plannedItems, members, result],
+  );
   const memberById = useMemo(
     () => new Map(members.map((member) => [member.id, member])),
     [members],
   );
 
   const running = isToolRunning(toolCall.state);
-  const denied = toolCall.state === "output-denied";
   const counts = useMemo(() => {
     const c: Record<SwarmPhase, number> = {
       completed: 0,
@@ -145,19 +173,27 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
       queued: 0,
       failed: 0,
     };
-    for (const row of rows) c[row.phase] += 1;
+    for (const row of rows) {
+      if (row.topLevel) c[row.phase] += 1;
+    }
     return c;
   }, [rows]);
 
-  const total = rows.length || input.itemCount || 0;
+  const topLevelCount = rows.filter((row) => row.topLevel).length;
+  const total = Math.max(topLevelCount, input.plannedItems.length, result?.total ?? 0);
   const done = counts.completed + counts.failed;
   const inProgress = counts.working + counts.suspended + counts.queued;
+  const nestedCount = rows.filter((row) => !row.topLevel).length;
+  const nestedInProgress = rows.filter(
+    (row) => !row.topLevel && ["working", "suspended", "queued"].includes(row.phase),
+  ).length;
   // ToolResult can arrive before TaskCreated members are linked. Do not treat an
   // empty swarm as "all done" — that flashes a checkmark at spawn time.
   const settled =
     !running &&
     inProgress === 0 &&
-    (result != null || (rows.length > 0 && done === rows.length));
+    nestedInProgress === 0 &&
+    (result != null || (topLevelCount > 0 && done === topLevelCount));
   const aggregateError =
     !running &&
     (denied ||
@@ -166,7 +202,9 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
   const aggregateOk = settled && !aggregateError && !denied;
   const waitingForMembers = !running && !settled && !denied && !toolCall.isError;
 
-  const [open, setOpen] = useState(running || inProgress > 0 || denied || waitingForMembers);
+  const [open, setOpen] = useState(
+    running || inProgress > 0 || nestedInProgress > 0 || denied || waitingForMembers,
+  );
 
   const segments = PHASE_ORDER.map(({ phase, barClass, legendClass }) => ({
     phase,
@@ -219,8 +257,11 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
         <span className="shrink-0 font-mono text-[11px] text-muted">
           {done} / {total}
         </span>
+        {nestedCount > 0 ? (
+          <span className="shrink-0 font-mono text-[10px] text-faint">+{nestedCount} 派生</span>
+        ) : null}
         <span className="inline-flex shrink-0 items-center">
-          {running || inProgress > 0 || waitingForMembers ? (
+          {running || inProgress > 0 || nestedInProgress > 0 || waitingForMembers ? (
             <StatusDot status="running" />
           ) : aggregateError ? (
             <X size={12} strokeWidth={1.75} className="text-danger" />
@@ -250,10 +291,14 @@ export function SwarmToolCard({ toolCall }: { toolCall: ToolCall }) {
               <span className="font-mono text-[10.5px] text-muted">
                 {denied
                   ? "已拒绝 / 未执行"
-                  : running || inProgress > 0 || waitingForMembers
+                  : running || inProgress > 0 || nestedInProgress > 0 || waitingForMembers
                     ? inProgress > 0
-                      ? `${inProgress} 个进行中`
-                      : "进行中"
+                      ? counts.working > 0 || counts.suspended > 0
+                        ? `${inProgress} 个进行中`
+                        : `${counts.queued} 个排队中`
+                      : nestedInProgress > 0
+                        ? `${nestedInProgress} 个派生进行中`
+                        : "进行中"
                     : result
                       ? `完成 ${result.completed}，失败 ${result.failed + result.aborted}`
                       : rows.length === 0

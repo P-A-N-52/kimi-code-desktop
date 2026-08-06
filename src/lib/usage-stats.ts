@@ -32,6 +32,11 @@ export type UsageStatsPayload = {
   endMs: number;
 };
 
+/** Total prompt/input tokens billed for a request, including cache traffic. */
+export function inputTokenTotal(bucket: UsageStatsBucket): number {
+  return bucket.inputOther + bucket.inputCacheRead + bucket.inputCacheCreation;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

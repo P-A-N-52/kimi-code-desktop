@@ -5,12 +5,20 @@ import { ProviderModelEditor } from "./provider-model-editor";
 
 const mocks = vi.hoisted(() => ({
 	getConfigTomlFile: vi.fn(),
+	getProviderCatalogEntry: vi.fn(),
+	importProviderFromCatalog: vi.fn(),
+	importProviderRegistry: vi.fn(),
+	listProviderCatalog: vi.fn(),
 	updateConfigTomlFile: vi.fn(),
 	notifyTextConfigSaved: vi.fn(),
 }));
 
 vi.mock("@/lib/settings-api", () => ({
 	getConfigTomlFile: mocks.getConfigTomlFile,
+	getProviderCatalogEntry: mocks.getProviderCatalogEntry,
+	importProviderFromCatalog: mocks.importProviderFromCatalog,
+	importProviderRegistry: mocks.importProviderRegistry,
+	listProviderCatalog: mocks.listProviderCatalog,
 	updateConfigTomlFile: mocks.updateConfigTomlFile,
 }));
 
@@ -61,6 +69,18 @@ describe("ProviderModelEditor", () => {
 			restartedSessionIds: ["idle-session"],
 			skippedBusySessionIds: ["busy-session"],
 		});
+		mocks.listProviderCatalog.mockResolvedValue([
+			{ id: "anthropic", name: "Anthropic", modelCount: 2 },
+		]);
+		mocks.getProviderCatalogEntry.mockResolvedValue({
+			providerId: "anthropic",
+			name: "Anthropic",
+			models: [
+				{ id: "claude-sonnet", name: "Claude Sonnet", maxContextTokens: 200000 },
+			],
+		});
+		mocks.importProviderFromCatalog.mockResolvedValue({ success: true });
+		mocks.importProviderRegistry.mockResolvedValue({ success: true });
 	});
 
 	it("loads config.toml into the structured provider and model editor", async () => {
@@ -224,7 +244,7 @@ describe("ProviderModelEditor", () => {
 		});
 	});
 
-	it("allows adding a provider after a valid empty config loads", async () => {
+	it("opens the two Kimi CLI provider import choices from an empty config", async () => {
 		mocks.getConfigTomlFile.mockResolvedValueOnce({
 			content: "",
 			path: "/tmp/config.toml",
@@ -235,7 +255,54 @@ describe("ProviderModelEditor", () => {
 		expect((addProviderButton as HTMLButtonElement).disabled).toBe(false);
 		fireEvent.click(addProviderButton);
 		await waitFor(() => {
-			expect(screen.getByLabelText("Provider 名称")).toBeTruthy();
+			expect(screen.getByRole("button", { name: /已知平台/ })).toBeTruthy();
+			expect(screen.getByRole("button", { name: /自定义 Registry/ })).toBeTruthy();
+		});
+	});
+
+	it("imports a catalog provider and reloads config.toml", async () => {
+		renderEditor();
+		await screen.findByRole("button", { name: "添加 Provider" });
+		fireEvent.click(screen.getByRole("button", { name: "添加 Provider" }));
+		fireEvent.click(await screen.findByRole("button", { name: /已知平台/ }));
+		fireEvent.click(await screen.findByRole("button", { name: /Anthropic/ }));
+
+		await screen.findByLabelText("平台 API Key");
+		fireEvent.change(screen.getByLabelText("平台 API Key"), {
+			target: { value: "catalog-secret" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "导入平台" }));
+
+		await waitFor(() => {
+			expect(mocks.importProviderFromCatalog).toHaveBeenCalledWith({
+				providerId: "anthropic",
+				apiKey: "catalog-secret",
+				defaultModel: "claude-sonnet",
+				baseUrl: undefined,
+			});
+			expect(mocks.getConfigTomlFile).toHaveBeenCalledTimes(2);
+		});
+	});
+
+	it("imports a custom registry through the GUI and reloads config.toml", async () => {
+		renderEditor();
+		await screen.findByRole("button", { name: "添加 Provider" });
+		fireEvent.click(screen.getByRole("button", { name: "添加 Provider" }));
+		fireEvent.click(await screen.findByRole("button", { name: /自定义 Registry/ }));
+		fireEvent.change(screen.getByLabelText("Registry URL"), {
+			target: { value: "https://registry.example.com/api.json" },
+		});
+		fireEvent.change(screen.getByLabelText("Registry Token"), {
+			target: { value: "registry-secret" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "导入 Registry" }));
+
+		await waitFor(() => {
+			expect(mocks.importProviderRegistry).toHaveBeenCalledWith({
+				registryUrl: "https://registry.example.com/api.json",
+				apiKey: "registry-secret",
+			});
+			expect(mocks.getConfigTomlFile).toHaveBeenCalledTimes(2);
 		});
 	});
 

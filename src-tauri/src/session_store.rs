@@ -1054,7 +1054,9 @@ pub fn fallback_title_from_wire(session_id: &str) -> Result<String, String> {
                 if !is_visible_user_message(message) {
                     continue;
                 }
-                if let Some(title) = title_from_content_parts(&message_content(message)) {
+                if let Some(title) =
+                    title_from_content_parts(&visible_user_message_content(message))
+                {
                     return Ok(title);
                 }
             }
@@ -1101,7 +1103,7 @@ fn replay_context_message(
             if !is_visible_user_message(message) {
                 return Ok(());
             }
-            let content = message_content(message);
+            let content = visible_user_message_content(message);
             if content.is_empty() {
                 return Ok(());
             }
@@ -1176,12 +1178,13 @@ fn replay_context_message(
 }
 
 fn turn_prompt_content(record: &Value) -> Vec<Value> {
-    record
+    let content = record
         .get("input")
         .or_else(|| record.get("content"))
         .and_then(Value::as_array)
         .cloned()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    crate::acp_translate::user_content_from_acp_prompt(&content)
 }
 
 fn replay_turn_prompt(
@@ -1300,6 +1303,10 @@ fn message_content(message: &Value) -> Vec<Value> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default()
+}
+
+fn visible_user_message_content(message: &Value) -> Vec<Value> {
+    crate::acp_translate::user_content_from_acp_prompt(&message_content(message))
 }
 
 fn is_visible_user_source(value: &Value) -> bool {
@@ -2149,6 +2156,84 @@ mod tests {
     }
 
     #[test]
+    fn replay_restores_user_content_from_desktop_compat_prompts() {
+        let (_guard, home) = temp_home("desktop-compat-prompt");
+        let session_id = "sess-desktop-compat-prompt";
+        let session_dir = write_session_layout(&home, "hash-desktop-compat-prompt", session_id);
+        let wire_path = session_dir.join("agents").join("main");
+        fs::create_dir_all(&wire_path).expect("wire dir");
+
+        let prompt = crate::acp_translate::legacy_user_input_to_acp_prompt_with_swarm(
+            &json!({ "user_input": "review in parallel", "goal_action": "create" }),
+            true,
+            true,
+        );
+        let record = json!({
+            "type": "turn.prompt",
+            "input": prompt,
+            "origin": { "kind": "user" }
+        });
+        fs::write(wire_path.join("wire.jsonl"), format!("{record}\n")).expect("write wire");
+
+        let _lock = set_kimi_code_home(&home);
+        let messages = replay_session_history(session_id).expect("replay");
+        let parsed: Vec<Value> = messages
+            .iter()
+            .map(|message| serde_json::from_str(message).expect("json"))
+            .collect();
+
+        assert_eq!(parsed[0]["params"]["type"], "TurnBegin");
+        assert_eq!(
+            parsed[0]["params"]["payload"]["user_input"],
+            "review in parallel"
+        );
+        assert!(!messages
+            .iter()
+            .any(|message| message.contains("kimi-code-desktop")));
+    }
+
+    #[test]
+    fn replay_context_fallback_removes_legacy_desktop_instruction() {
+        let (_guard, home) = temp_home("legacy-desktop-compat-context");
+        let session_id = "sess-legacy-desktop-compat-context";
+        let session_dir =
+            write_session_layout(&home, "hash-legacy-desktop-compat-context", session_id);
+        let wire_path = session_dir.join("agents").join("main");
+        fs::create_dir_all(&wire_path).expect("wire dir");
+        let legacy_swarm = concat!(
+            "<system-reminder>\n",
+            "Swarm mode is enabled for this turn. When the request can be split into two ",
+            "or more independent items, use AgentSwarm. AgentSwarm must be the only tool ",
+            "call in that model response. If parallel delegation would not help, continue ",
+            "normally.\n",
+            "</system-reminder>"
+        );
+        let record = json!({
+            "type": "context.append_message",
+            "message": {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "legacy request" },
+                    { "type": "text", "text": legacy_swarm }
+                ],
+                "origin": { "kind": "user" }
+            }
+        });
+        fs::write(wire_path.join("wire.jsonl"), format!("{record}\n")).expect("write wire");
+
+        let _lock = set_kimi_code_home(&home);
+        let messages = replay_session_history(session_id).expect("replay");
+        let parsed: Vec<Value> = messages
+            .iter()
+            .map(|message| serde_json::from_str(message).expect("json"))
+            .collect();
+        assert_eq!(
+            parsed[0]["params"]["payload"]["user_input"],
+            "legacy request"
+        );
+    }
+
+    #[test]
     fn replay_session_history_reads_turn_prompt_input_field() {
         let (_guard, home) = temp_home("user-input");
         let session_id = "sess-input";
@@ -2229,16 +2314,25 @@ mod tests {
         let session_dir = write_session_layout(&home, "hash-title", session_id);
         let wire_path = session_dir.join("agents").join("main");
         fs::create_dir_all(&wire_path).expect("wire dir");
-        fs::write(
-            wire_path.join("wire.jsonl"),
-            concat!(
-                r#"{"type":"metadata","message":{}}"#,
-                "\n",
-                r#"{"type":"turn.prompt","input":[{"type":"text","text":"Investigate the ACP bridge"}],"origin":{"kind":"user"}}"#,
-                "\n",
-            ),
-        )
-        .expect("write wire");
+        let prompt = crate::acp_translate::legacy_user_input_to_acp_prompt_with_swarm(
+            &json!({ "user_input": "Investigate the ACP bridge" }),
+            true,
+            false,
+        );
+        let records = [
+            json!({ "type": "metadata", "message": {} }),
+            json!({
+                "type": "turn.prompt",
+                "input": prompt,
+                "origin": { "kind": "user" }
+            }),
+        ];
+        let content = records
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(wire_path.join("wire.jsonl"), format!("{content}\n")).expect("write wire");
 
         let _lock = set_kimi_code_home(&home);
         let title = fallback_title_from_wire(session_id).expect("title");

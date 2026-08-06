@@ -81,6 +81,44 @@ describe("Composer integrations", () => {
     expect(props.onSend).not.toHaveBeenCalled();
   });
 
+  it("opens the command menu when a controlled slash draft is restored", () => {
+    const view = renderComposer();
+    view.rerender(
+      <UiLanguageProvider>
+        <Composer {...view.props} draft="/" />
+      </UiLanguageProvider>,
+    );
+    expect(screen.getByText("/compact")).toBeTruthy();
+  });
+
+  it("wakes the command menu on slash keydown before the controlled draft updates", () => {
+    renderComposer();
+    const textarea = screen.getByPlaceholderText(/给 Kimi 布置任务/);
+    fireEvent.keyDown(textarea, { key: "/" });
+    expect(screen.getByText("/compact")).toBeTruthy();
+  });
+
+  it("does not send when Enter confirms an IME composition", () => {
+    const { props } = renderComposer({ draft: "hello" });
+    const textarea = screen.getByPlaceholderText(/给 Kimi 布置任务/);
+
+    fireEvent.keyDown(textarea, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(textarea, { key: "Enter", keyCode: 229 });
+
+    expect(props.onSend).not.toHaveBeenCalled();
+  });
+
+  it("does not select a slash command when Enter confirms an IME composition", () => {
+    const { props } = renderComposer({ draft: "/" });
+    const textarea = screen.getByPlaceholderText(/给 Kimi 布置任务/);
+    expect(screen.getByText("/compact")).toBeTruthy();
+
+    fireEvent.keyDown(textarea, { key: "Enter", isComposing: true });
+
+    expect(props.onDraftChange).not.toHaveBeenCalled();
+    expect(props.onSend).not.toHaveBeenCalled();
+  });
+
   it("keeps stop and queue actions separate while a prompt is running", () => {
     const queue: QueuedPrompt[] = [{ id: "q1", text: "queued follow-up" }];
     const { props } = renderComposer({

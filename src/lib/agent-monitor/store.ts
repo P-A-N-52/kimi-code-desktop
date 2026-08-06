@@ -28,8 +28,10 @@ export interface AgentTask {
   text?: string;
   subagentPhase?: string;
   parentToolCallId?: string;
+  parentAgentId?: string;
   suspendedReason?: string;
   swarmIndex?: number;
+  swarmDepth?: number;
   runInBackground?: boolean;
   /** Bound model alias when runtime events provide it. */
   boundModel?: string;

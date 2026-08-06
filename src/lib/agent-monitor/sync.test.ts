@@ -111,6 +111,8 @@ describe("agent monitor event synchronization", () => {
         session_id: "session-1",
         agent_id: "agent-2",
         parent_tool_call_id: "swarm-2",
+        parent_agent_id: "agent-1",
+        swarm_depth: 1,
         subagent_type: "coder",
         description: "Implement tests",
         phase: "spawned",
@@ -126,6 +128,8 @@ describe("agent monitor event synchronization", () => {
     });
     expect(useAgentMonitorStore.getState().tasks[0]).toMatchObject({
       status: "running",
+      parentAgentId: "agent-1",
+      swarmDepth: 1,
     });
     syncAgentMonitorFromSubagentLifecycle({
       type: "SubagentLifecycle",

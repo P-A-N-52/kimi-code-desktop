@@ -38,6 +38,24 @@ export type UpdateTextConfigResponse = {
   skippedBusySessionIds?: string[];
 };
 
+export type ProviderCatalogSummary = {
+  id: string;
+  name: string;
+  modelCount: number;
+};
+
+export type ProviderCatalogModel = {
+  id: string;
+  name: string;
+  maxContextTokens: number;
+};
+
+export type ProviderCatalogEntry = {
+  providerId: string;
+  name: string;
+  models: ProviderCatalogModel[];
+};
+
 export type WireEventPayload = {
   session_id: string;
   message?: string;
@@ -60,7 +78,10 @@ export function parseWireEventPayload(
   if (typeof message === "string") {
     return { sessionId: session_id, messages: [message] };
   }
-  if (Array.isArray(messages) && messages.every((item): item is string => typeof item === "string")) {
+  if (
+    Array.isArray(messages) &&
+    messages.every((item): item is string => typeof item === "string")
+  ) {
     return { sessionId: session_id, messages };
   }
   return null;
@@ -307,8 +328,8 @@ export async function openInEditor(path: string, editor?: string): Promise<void>
 }
 
 export async function setNativeUiLanguage(language: "en-US" | "zh-CN"): Promise<void> {
-	if (!isTauri()) return;
-	return invoke<void>("set_native_ui_language", { language });
+  if (!isTauri()) return;
+  return invoke<void>("set_native_ui_language", { language });
 }
 
 export async function wireConnect(sessionId: string, connectionId: string): Promise<void> {
@@ -802,6 +823,57 @@ export async function getProvidersOverview(): Promise<ProvidersOverview> {
   }
   const raw = await invoke<Record<string, unknown>>("get_providers_overview");
   return normalizeProvidersOverview(raw);
+}
+
+export async function listProviderCatalog(): Promise<ProviderCatalogSummary[]> {
+  if (!isTauri())
+    return Promise.reject(new Error("Provider catalog is only available in the desktop app."));
+  const raw = await invoke<Array<Record<string, unknown>>>("list_provider_catalog");
+  return raw.map((provider) => ({
+    id: String(provider.id ?? ""),
+    name: String(provider.name ?? provider.id ?? ""),
+    modelCount: Number(provider.modelCount ?? provider.model_count ?? 0),
+  }));
+}
+
+export async function getProviderCatalogEntry(providerId: string): Promise<ProviderCatalogEntry> {
+  if (!isTauri())
+    return Promise.reject(new Error("Provider catalog is only available in the desktop app."));
+  const raw = await invoke<Record<string, unknown>>("get_provider_catalog_entry", { providerId });
+  return {
+    providerId: String(raw.providerId ?? raw.provider_id ?? providerId),
+    name: String(raw.name ?? providerId),
+    models: ((raw.models as Array<Record<string, unknown>> | undefined) ?? []).map((model) => {
+      const capability = (model.capability as Record<string, unknown> | undefined) ?? {};
+      return {
+        id: String(model.id ?? ""),
+        name: String(model.name ?? model.id ?? ""),
+        maxContextTokens: Number(capability.max_context_tokens ?? capability.maxContextTokens ?? 0),
+      };
+    }),
+  };
+}
+
+export async function importProviderFromCatalog(args: {
+  providerId: string;
+  apiKey: string;
+  defaultModel?: string;
+  baseUrl?: string;
+}): Promise<UpdateTextConfigResponse> {
+  if (!isTauri())
+    return Promise.reject(new Error("Provider import is only available in the desktop app."));
+  const raw = await invoke<Record<string, unknown>>("import_provider_from_catalog", args);
+  return normalizeUpdateTextConfigResponse(raw);
+}
+
+export async function importProviderRegistry(args: {
+  registryUrl: string;
+  apiKey: string;
+}): Promise<UpdateTextConfigResponse> {
+  if (!isTauri())
+    return Promise.reject(new Error("Provider import is only available in the desktop app."));
+  const raw = await invoke<Record<string, unknown>>("import_provider_registry", args);
+  return normalizeUpdateTextConfigResponse(raw);
 }
 
 export async function updateConfigToml(content: string): Promise<UpdateTextConfigResponse> {

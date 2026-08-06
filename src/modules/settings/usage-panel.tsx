@@ -12,6 +12,7 @@ import {
 import {
   formatCount,
   formatSeriesLabel,
+  inputTokenTotal,
   parseUsageStatsPayload,
   type UsageStatsPayload,
   type UsageStatsRange,
@@ -235,24 +236,28 @@ export function UsagePanel({ enabled }: { enabled: boolean }) {
 
       <section>
         <div className="mb-2 font-mono text-[10px] font-medium uppercase tracking-[0.09em] text-faint">
-          本地 Token 用量
+          时间段累计调用用量
         </div>
         {loading && !stats ? (
           <p className="font-mono text-[11px] text-faint">扫描会话记录中…</p>
         ) : summary && summary.requests > 0 ? (
           <>
             <div className="mb-3 grid grid-cols-3 gap-3 sm:grid-cols-6">
-              <Metric label="请求" value={formatCount(summary.requests)} />
-              <Metric label="总 Tokens" value={formatCount(summary.totalTokens)} />
-              <Metric label="Input" value={formatCount(summary.inputOther)} />
-              <Metric label="Output" value={formatCount(summary.output)} />
-              <Metric label="Cache 读" value={formatCount(summary.inputCacheRead)} />
-              <Metric label="Cache 写" value={formatCount(summary.inputCacheCreation)} />
+              <Metric label="模型请求" value={formatCount(summary.requests)} />
+              <Metric label="累计 Tokens" value={formatCount(summary.totalTokens)} />
+              <Metric label="非缓存输入" value={formatCount(summary.inputOther)} />
+              <Metric label="输出" value={formatCount(summary.output)} />
+              <Metric label="缓存读取" value={formatCount(summary.inputCacheRead)} />
+              <Metric label="缓存写入" value={formatCount(summary.inputCacheCreation)} />
             </div>
             {stats && <TrendChart range={range} series={stats.series} />}
             <p className="mt-1.5 font-mono text-[10px] text-faint">
               已扫描 {stats?.scannedFiles ?? 0} 个 wire · 命中 {stats?.recordCount ?? 0}{" "}
               条 turn 记录
+            </p>
+            <p className="mt-1 font-mono text-[10px] text-faint">
+              汇总所选时间范围内全部会话与代理的模型调用；缓存 Token 会重复计入每次调用，
+              不代表当前上下文大小。
             </p>
           </>
         ) : (
@@ -273,7 +278,7 @@ export function UsagePanel({ enabled }: { enabled: boolean }) {
                 <tr className="border-b border-line text-faint">
                   <th className="px-2.5 py-1.5 font-medium">模型</th>
                   <th className="px-2.5 py-1.5 font-medium">请求</th>
-                  <th className="px-2.5 py-1.5 font-medium">Input</th>
+                  <th className="px-2.5 py-1.5 font-medium">输入合计</th>
                   <th className="px-2.5 py-1.5 font-medium">Output</th>
                   <th className="px-2.5 py-1.5 font-medium">合计</th>
                 </tr>
@@ -288,7 +293,11 @@ export function UsagePanel({ enabled }: { enabled: boolean }) {
                       {formatCount(row.requests)}
                     </td>
                     <td className="px-2.5 py-1.5 font-mono text-muted">
-                      {formatCount(row.inputOther)}
+                      <span
+                        title={`非缓存 ${formatCount(row.inputOther)} · 缓存读取 ${formatCount(row.inputCacheRead)} · 缓存写入 ${formatCount(row.inputCacheCreation)}`}
+                      >
+                        {formatCount(inputTokenTotal(row))}
+                      </span>
                     </td>
                     <td className="px-2.5 py-1.5 font-mono text-muted">
                       {formatCount(row.output)}
@@ -306,9 +315,12 @@ export function UsagePanel({ enabled }: { enabled: boolean }) {
 
       <section>
         <div className="mb-2 font-mono text-[10px] font-medium uppercase tracking-[0.09em] text-faint">
-          当前 Plan 额度
+          Kimi Plan 平台额度
         </div>
         <PlanQuotaBlock managed={managed} />
+        <p className="mt-1 font-mono text-[10px] text-faint">
+          此处直接展示平台返回的配额，与本地累计 Token、当前上下文不直接换算。
+        </p>
       </section>
     </div>
   );
