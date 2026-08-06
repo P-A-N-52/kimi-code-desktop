@@ -256,10 +256,13 @@ Rust 不再在 Runtime 活跃时直接改写 Kimi core 文件。Settings、Provi
 Runtime 开发构建：
 
 ```sh
-cd runtime/kimi-code
-corepack pnpm install --frozen-lockfile
-corepack pnpm --filter @moonshot-ai/desktop-runtime... run build
+npm install
+npm run runtime:install
+npm run runtime:build
+npm run smoke:runtime
 ```
+
+外层 `pnpm@10.33.0` 开发依赖负责调用 nested workspace，避免依赖全局 pnpm 或已从新版本 Node 中移除的 Corepack。
 
 发布构建参考 Kimi Code 现有 Node SEA 流程，为每个平台/架构生成并校验单文件 Runtime sidecar。Tauri 配置只打包本次源码产生的 artifact。
 

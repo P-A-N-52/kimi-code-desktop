@@ -80,7 +80,7 @@ kimi migrate
 
 ## 本地开发
 
-外层 Desktop 需要 Node.js、npm 和 Rust stable toolchain。M4 之前运行 ACP 基线仍需已安装的 Kimi Code CLI；开发 Source Runtime 还需要 Node 24.15.0、Corepack 和 pnpm 10.33.0。
+外层 Desktop 需要 Node.js 24.15.0 以上、npm 和 Rust stable toolchain。M4 之前运行 ACP 基线仍需已安装的 Kimi Code CLI；`npm install` 会安装项目固定的 pnpm 10.33.0，用于 nested Source Runtime workspace，不依赖全局 pnpm 或 Corepack。
 
 ```powershell
 git clone https://github.com/P-A-N-52/kimi-code-desktop.git
@@ -99,6 +99,9 @@ npm run rust:test         # Rust 测试
 npm run rust:check        # Rust 编译检查
 npm run check:quick       # 日常快速门禁
 npm run smoke:acp         # 验证本机 kimi acp
+npm run runtime:install   # 安装固定 Kimi source workspace 依赖
+npm run runtime:build     # 构建 Source Runtime skeleton
+npm run smoke:runtime     # 构建并验证 runtime-v1 协议
 ```
 
 ## 构建与发布

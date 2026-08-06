@@ -72,6 +72,12 @@ importers:
         specifier: 4.1.4
         version: 4.1.4(@types/node@22.19.17)(@vitest/coverage-v8@4.1.4)(jsdom@25.0.1)(msw@2.15.0(@types/node@22.19.17)(typescript@6.0.2))(vite@8.0.8(@types/node@22.19.17)(esbuild@0.27.7)(jiti@2.6.1)(tsx@4.21.0)(yaml@2.8.3))
 
+  apps/desktop-runtime:
+    dependencies:
+      '@moonshot-ai/kimi-code-sdk':
+        specifier: workspace:^
+        version: link:../../packages/node-sdk
+
   apps/kimi-code:
     devDependencies:
       '@moonshot-ai/acp-adapter':
