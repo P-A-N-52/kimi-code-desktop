@@ -468,6 +468,121 @@ pub async fn update_session(
     get_session(app, acp_desktop, acp_wire, session_id).await
 }
 
+/// Update the archive flag for a group of sessions as one user action.
+///
+/// All sessions are resolved and checked for busy state before state files are
+/// written. This prevents a busy session from starting the action; individual
+/// filesystem write failures can still leave a partially updated group.
+#[tauri::command]
+pub fn update_sessions_archive(
+    acp_wire: tauri::State<'_, AcpProcessManager>,
+    session_ids: Vec<String>,
+    archived: bool,
+) -> Result<Vec<String>, String> {
+    let mut unique_ids = Vec::with_capacity(session_ids.len());
+    let mut seen = HashSet::new();
+    for session_id in session_ids {
+        if seen.insert(session_id.clone()) {
+            unique_ids.push(session_id);
+        }
+    }
+
+    for session_id in &unique_ids {
+        session_store::find_session_dir_by_id_or_err(session_id)?;
+        acp_wire.ensure_editable(session_id)?;
+    }
+
+    for session_id in &unique_ids {
+        session_store::update_session_state(session_id, None, Some(archived))?;
+    }
+
+    Ok(unique_ids)
+}
+
+/// Update every locally persisted session for one project directory.
+///
+/// The sidebar may only have one archive state loaded at a time, so using the
+/// visible session IDs is not sufficient to represent a whole project. Resolve
+/// the directory on disk first, then perform the same preflight busy check and
+/// state update as `update_sessions_archive`.
+#[tauri::command]
+pub fn update_work_dir_archive(
+    acp_wire: tauri::State<'_, AcpProcessManager>,
+    work_dir: String,
+    session_ids: Option<Vec<String>>,
+    archived: bool,
+) -> Result<Vec<String>, String> {
+    let mut fallback_ids = Vec::new();
+    let mut seen = HashSet::new();
+    for session_id in session_ids.unwrap_or_default() {
+        if seen.insert(session_id.clone()) {
+            fallback_ids.push(session_id);
+        }
+    }
+
+    let mut resolved_ids = if work_dir.trim().is_empty() {
+        Vec::new()
+    } else {
+        session_store::list_session_ids_for_work_dir(&work_dir)?
+    };
+
+    // Older session metadata may expose a display path that does not compare
+    // exactly with the path persisted in state.json. Use a visible session as
+    // an anchor to recover the canonical project path before falling back to
+    // the visible IDs themselves.
+    if resolved_ids.is_empty() {
+        if let Some(session_id) = fallback_ids.first() {
+            if let Some(inferred_work_dir) = session_store::work_dir_for_session_id(session_id)? {
+                resolved_ids = session_store::list_session_ids_for_work_dir(
+                    &inferred_work_dir.to_string_lossy(),
+                )?;
+            }
+        }
+    }
+
+    // Keep the visible IDs as anchors even when the local scan only finds a
+    // subset. This covers older metadata layouts and path aliases without
+    // reducing a project action to the currently loaded archive state.
+    let merged_ids = merge_project_session_ids(resolved_ids, fallback_ids);
+
+    if merged_ids.is_empty() {
+        return Err(format!(
+            "No sessions found for project directory: {}",
+            work_dir.trim()
+        ));
+    }
+
+    let mut unique_ids = Vec::with_capacity(merged_ids.len());
+    let mut seen = HashSet::new();
+    for session_id in merged_ids {
+        if seen.insert(session_id.clone()) {
+            unique_ids.push(session_id);
+        }
+    }
+
+    for session_id in &unique_ids {
+        session_store::find_session_dir_by_id_or_err(session_id)?;
+        acp_wire.ensure_editable(session_id)?;
+    }
+
+    for session_id in &unique_ids {
+        session_store::update_session_state(session_id, None, Some(archived))?;
+    }
+
+    Ok(unique_ids)
+}
+
+fn merge_project_session_ids(resolved_ids: Vec<String>, fallback_ids: Vec<String>) -> Vec<String> {
+    let mut merged = Vec::with_capacity(resolved_ids.len() + fallback_ids.len());
+    let mut seen = HashSet::new();
+    for session_id in resolved_ids.into_iter().chain(fallback_ids) {
+        if seen.insert(session_id.clone()) {
+            merged.push(session_id);
+        }
+    }
+    merged
+}
+
 #[tauri::command]
 pub async fn fork_session(_session_id: String, _turn_index: u64) -> Result<Value, String> {
     Err("fork_session requires Kimi Code CLI support; not available via ACP yet".to_string())
@@ -1241,5 +1356,20 @@ mod tests {
         let err = super::resolve_create_session_work_dir(Some("/nonexistent/path/xyz"), false)
             .unwrap_err();
         assert!(err.contains("does not exist"));
+    }
+
+    #[test]
+    fn project_archive_merges_scanned_and_visible_session_ids() {
+        assert_eq!(
+            super::merge_project_session_ids(
+                vec!["archived".to_string(), "shared".to_string()],
+                vec!["visible".to_string(), "shared".to_string()],
+            ),
+            vec![
+                "archived".to_string(),
+                "shared".to_string(),
+                "visible".to_string()
+            ]
+        );
     }
 }

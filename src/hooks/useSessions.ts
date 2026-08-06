@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import type {
-	Session,
-	SessionStatus,
-	UploadSessionFileResponse,
-} from "../lib/api/models";
+import type { Session, SessionStatus, UploadSessionFileResponse } from "../lib/api/models";
 import { SessionFromJSON } from "../lib/api/models/Session";
 import { apiClient } from "../lib/apiClient";
 import { getAuthHeader, getAuthToken } from "../lib/auth";
@@ -14,6 +10,7 @@ import {
 	isTauri,
 	createSession as tauriCreateSession,
 	deleteSession as tauriDeleteSession,
+	deleteUploadedFile as tauriDeleteUploadedFile,
 	forkSession as tauriForkSession,
 	getSession as tauriGetSession,
 	getSessionFile as tauriGetSessionFile,
@@ -22,13 +19,11 @@ import {
 	listSessions as tauriListSessions,
 	listWorkDirs as tauriListWorkDirs,
 	updateSession as tauriUpdateSession,
+	updateSessionsArchive as tauriUpdateSessionsArchive,
+	updateWorkDirArchive as tauriUpdateWorkDirArchive,
 	uploadSessionFile as tauriUploadSessionFile,
-	deleteUploadedFile as tauriDeleteUploadedFile,
 } from "../lib/tauri-api";
-import {
-	selectSessionsOlderThan,
-	STALE_ARCHIVE_DAYS,
-} from "../modules/sessions/stale-sessions";
+import { selectSessionsOlderThan, STALE_ARCHIVE_DAYS } from "../modules/sessions/stale-sessions";
 import { formatRelativeTime, getApiBaseUrl } from "./utils";
 
 // Regex patterns for path normalization
@@ -110,6 +105,12 @@ type UseSessionsReturn = {
 	archiveSession: (sessionId: string) => Promise<boolean>;
 	/** Unarchive a session */
 	unarchiveSession: (sessionId: string) => Promise<boolean>;
+	/** Archive or restore every session in a project group */
+	archiveProjectSessions: (
+		sessionIds: string[],
+		archived: boolean,
+		workDir?: string,
+	) => Promise<number>;
 	/** Bulk archive sessions */
 	bulkArchiveSessions: (sessionIds: string[]) => Promise<number>;
 	/** Bulk unarchive sessions */
@@ -206,6 +207,40 @@ async function fetchAllArchivedSessionsHttp(): Promise<Session[]> {
 	return all;
 }
 
+function normalizeProjectWorkDir(value: string): string {
+	const normalized = value.trim().replace(/\\/g, "/");
+	if (normalized === "/" || /^[a-zA-Z]:\/$/.test(normalized)) return normalized;
+	return normalized.replace(/\/+$/, "");
+}
+
+async function resolveProjectSessions(
+	workDir: string,
+	fallbackSessions: Session[],
+	knownSessions: Session[],
+): Promise<Session[]> {
+	const candidates = new Map<string, Session>();
+	for (const session of knownSessions) candidates.set(session.sessionId, session);
+
+	const pages = await Promise.allSettled([
+		fetchAllSessionsPage({ archived: false }),
+		fetchAllSessionsPage({ archived: true }),
+	]);
+	for (const page of pages) {
+		if (page.status !== "fulfilled") continue;
+		for (const session of page.value) candidates.set(session.sessionId, session);
+	}
+
+	const target = normalizeProjectWorkDir(workDir);
+	const resolvedSessions = [...candidates.values()]
+		.filter(
+			(session) =>
+				typeof session.workDir === "string" &&
+				normalizeProjectWorkDir(session.workDir) === target,
+		)
+
+	return resolvedSessions.length > 0 ? resolvedSessions : fallbackSessions;
+}
+
 /**
  * Custom error class for directory not found
  */
@@ -250,7 +285,9 @@ export function useSessions(
 	const [searchQuery, setSearchQuery] = useState("");
 	const lastRefreshRef = useRef(0);
 	const refreshRequestIdRef = useRef(0);
-	const archivedRefreshInFlightRef = useRef(false);
+	const archivedRefreshInFlightRef = useRef<Promise<void> | null>(null);
+	const archivedRefreshVersionRef = useRef(0);
+	const archivedRefreshQueuedRef = useRef(false);
 	const archivedPreloadRequestedRef = useRef(false);
 
 	/**
@@ -309,27 +346,60 @@ export function useSessions(
 		if (!enabled) {
 			return;
 		}
+
+		archivedRefreshVersionRef.current += 1;
+		archivedRefreshQueuedRef.current = true;
 		if (archivedRefreshInFlightRef.current) {
+			await archivedRefreshInFlightRef.current;
 			return;
 		}
-		archivedRefreshInFlightRef.current = true;
-		setIsLoadingArchived(true);
+
+		const refresh = (async () => {
+			while (archivedRefreshQueuedRef.current) {
+				archivedRefreshQueuedRef.current = false;
+				const requestedVersion = archivedRefreshVersionRef.current;
+				setIsLoadingArchived(true);
+				try {
+					const archivedList = isTauri()
+						? await fetchAllSessionsPage({ archived: true })
+						: await fetchAllArchivedSessionsHttp();
+
+					// Archive/unarchive can finish while an older list request is in
+					// flight. Never let that older response replace the latest state.
+					if (requestedVersion !== archivedRefreshVersionRef.current) {
+						continue;
+					}
+					setArchivedSessions(archivedList);
+					setHasMoreArchivedSessions(false);
+					setHasLoadedArchivedSessions(true);
+				} catch (err) {
+					if (requestedVersion !== archivedRefreshVersionRef.current) {
+						continue;
+					}
+					const message =
+						err instanceof Error ? err.message : "Failed to load archived sessions";
+					setError(message);
+					setHasLoadedArchivedSessions(false);
+					toast.error(message);
+					console.error("Failed to refresh archived sessions:", err);
+				} finally {
+					if (
+						requestedVersion === archivedRefreshVersionRef.current &&
+						!archivedRefreshQueuedRef.current
+					) {
+						setIsLoadingArchived(false);
+					}
+				}
+			}
+		})();
+
+		archivedRefreshInFlightRef.current = refresh;
 		try {
-			const archivedList = isTauri()
-				? await fetchAllSessionsPage({ archived: true })
-				: await fetchAllArchivedSessionsHttp();
-			setArchivedSessions(archivedList);
-			setHasMoreArchivedSessions(false);
-			setHasLoadedArchivedSessions(true);
-		} catch (err) {
-			const message =
-				err instanceof Error ? err.message : "Failed to load archived sessions";
-			setError(message);
-			toast.error(message);
-			console.error("Failed to refresh archived sessions:", err);
+			await refresh;
 		} finally {
-			archivedRefreshInFlightRef.current = false;
-			setIsLoadingArchived(false);
+			if (archivedRefreshInFlightRef.current === refresh) {
+				archivedRefreshInFlightRef.current = null;
+			}
 		}
 	}, [enabled]);
 
@@ -884,7 +954,7 @@ export function useSessions(
 					return next;
 				});
 
-				await refreshArchivedSessions();
+				await Promise.all([refreshSessions(), refreshArchivedSessions()]);
 				return true;
 			} catch (err) {
 				const message =
@@ -894,7 +964,7 @@ export function useSessions(
 				return false;
 			}
 		},
-		[refreshArchivedSessions, selectedSessionId],
+		[refreshArchivedSessions, refreshSessions, selectedSessionId],
 	);
 
 	/**
@@ -928,7 +998,7 @@ export function useSessions(
 				setArchivedSessions((current) =>
 					current.filter((s) => s.sessionId !== sessionId),
 				);
-				await refreshSessions();
+				await Promise.all([refreshSessions(), refreshArchivedSessions()]);
 				return true;
 			} catch (err) {
 				const message =
@@ -938,7 +1008,186 @@ export function useSessions(
 				return false;
 			}
 		},
-		[refreshSessions],
+		[refreshArchivedSessions, refreshSessions],
+	);
+
+	/**
+	 * Archive or restore a complete project group.
+	 * Tauri resolves the project from the persisted work directory, checks all
+	 * busy sessions before writing, and then updates sessions one by one. A
+	 * filesystem failure can therefore leave a partially updated project. The
+	 * HTTP path keeps a complete-list fallback for environments without the
+	 * native project command.
+	 */
+	const archiveProjectSessions = useCallback(
+		async (
+			sessionIds: string[],
+			archived: boolean,
+			workDir?: string,
+		): Promise<number> => {
+			const ids = [...new Set(sessionIds)];
+			if (ids.length === 0) return 0;
+
+			try {
+				const knownSessions = [...sessions, ...archivedSessions];
+				const native = isTauri();
+				const requestedWorkDirs = ids
+					.map((id) =>
+						knownSessions
+							.find((item) => item.sessionId === id)
+							?.workDir?.trim(),
+					)
+					.filter((value): value is string => Boolean(value));
+				const explicitWorkDir = workDir?.trim() || null;
+				const projectWorkDir = explicitWorkDir ?? requestedWorkDirs[0] ?? null;
+				const sameProject = Boolean(
+					projectWorkDir &&
+						(explicitWorkDir ||
+							(requestedWorkDirs.length === ids.length &&
+								requestedWorkDirs.every(
+									(value) =>
+										normalizeProjectWorkDir(value) ===
+										normalizeProjectWorkDir(projectWorkDir),
+								))),
+				);
+				const fallbackProjectSessions =
+					sameProject && projectWorkDir
+						? [
+								...new Set(
+									knownSessions
+										.filter(
+											(item) =>
+												item.workDir?.trim() &&
+												normalizeProjectWorkDir(item.workDir) ===
+													normalizeProjectWorkDir(projectWorkDir),
+										)
+										.map((item) => item),
+								),
+							]
+						: [];
+				const resolvedProjectSessions = native
+					? []
+					: sameProject && projectWorkDir
+						? await resolveProjectSessions(
+								projectWorkDir,
+								fallbackProjectSessions.length > 0
+									? fallbackProjectSessions
+									: ids.flatMap((id) => {
+											const session = knownSessions.find((item) => item.sessionId === id);
+											return session ? [session] : [];
+									  }),
+								knownSessions,
+							)
+						: ids.flatMap((id) => {
+								const session = knownSessions.find((item) => item.sessionId === id);
+								return session ? [session] : [];
+						  });
+				const projectIds = resolvedProjectSessions
+					.filter((session) => Boolean(session.archived) !== archived)
+					.map((session) => session.sessionId);
+
+				let successfulIds: string[];
+				let failedIds: string[] = [];
+				if (native) {
+					successfulIds =
+						sameProject && projectWorkDir
+							? await tauriUpdateWorkDirArchive(projectWorkDir, archived, ids)
+							: await tauriUpdateSessionsArchive(ids, archived);
+				} else {
+					const busySession = resolvedProjectSessions.find(
+						(item) => item.status?.state === "busy",
+					);
+					if (busySession) {
+						throw new Error(
+							resolvedLanguage === "zh-CN"
+								? "项目中有会话正在运行，请等待任务完成后再操作。"
+								: "A session in this project is busy. Wait for it to finish before changing the project archive state.",
+						);
+					}
+
+					const basePath = getApiBaseUrl();
+					const results = await Promise.allSettled(
+						projectIds.map(async (sessionId) => {
+							const response = await fetch(
+								`${basePath}/api/sessions/${encodeURIComponent(sessionId)}`,
+								{
+									method: "PATCH",
+									headers: {
+										"Content-Type": "application/json",
+										...getAuthHeader(),
+									},
+									body: JSON.stringify({ archived }),
+								},
+							);
+							if (!response.ok) {
+								const data = await response.json().catch(() => ({}));
+								throw new Error(
+									data.detail || "Failed to update project sessions",
+								);
+							}
+							return sessionId;
+						}),
+					);
+					successfulIds = results
+						.filter(
+							(result): result is PromiseFulfilledResult<string> =>
+								result.status === "fulfilled",
+						)
+						.map((result) => result.value);
+					failedIds = results
+						.map((result, index) =>
+							result.status === "rejected" ? projectIds[index] : null,
+						)
+						.filter((sessionId): sessionId is string => sessionId !== null);
+				}
+
+				if (failedIds.length > 0 && successfulIds.length > 0) {
+					toast.info(
+						resolvedLanguage === "zh-CN"
+							? `已处理 ${successfulIds.length} 个会话，${failedIds.length} 个忙碌或不可编辑会话未处理。`
+							: `${successfulIds.length} sessions updated; ${failedIds.length} busy or unavailable sessions were skipped.`,
+					);
+				}
+
+				if (successfulIds.length > 0) {
+					if (archived) {
+						setSessions((current) => {
+							const next = current.filter(
+								(session) => !successfulIds.includes(session.sessionId),
+							);
+							if (successfulIds.includes(selectedSessionId)) {
+								setSelectedSessionId(next[0]?.sessionId ?? "");
+							}
+							return next;
+						});
+					} else {
+						setArchivedSessions((current) =>
+							current.filter(
+								(session) => !successfulIds.includes(session.sessionId),
+							),
+						);
+					}
+					await Promise.all([refreshSessions(), refreshArchivedSessions()]);
+				}
+				return successfulIds.length;
+			} catch (err) {
+				const message =
+					err instanceof Error
+						? err.message
+						: "Failed to update project sessions";
+				console.error("Failed to update project archive state:", err);
+				toast.error(message);
+				return 0;
+			}
+		},
+		[
+			archivedSessions,
+			refreshArchivedSessions,
+			refreshSessions,
+			resolvedLanguage,
+			sessions,
+			selectedSessionId,
+		],
 	);
 
 	/**
@@ -974,7 +1223,7 @@ export function useSessions(
 						}
 						return next;
 					});
-					await refreshArchivedSessions();
+					await Promise.all([refreshSessions(), refreshArchivedSessions()]);
 				}
 				return successCount;
 			}
@@ -1018,12 +1267,12 @@ export function useSessions(
 					}
 					return next;
 				});
-				await refreshArchivedSessions();
+				await Promise.all([refreshSessions(), refreshArchivedSessions()]);
 			}
 
 			return successCount;
 		},
-		[refreshArchivedSessions, selectedSessionId],
+		[refreshArchivedSessions, refreshSessions, selectedSessionId],
 	);
 
 	const listAllActiveSessions = useCallback(async (): Promise<Session[]> => {
@@ -1097,7 +1346,7 @@ export function useSessions(
 					setArchivedSessions((current) =>
 						current.filter((s) => !successfulIds.includes(s.sessionId)),
 					);
-					await refreshSessions();
+					await Promise.all([refreshSessions(), refreshArchivedSessions()]);
 				}
 				return successCount;
 			}
@@ -1135,12 +1384,12 @@ export function useSessions(
 				setArchivedSessions((current) =>
 					current.filter((s) => !successfulIds.includes(s.sessionId)),
 				);
-				await refreshSessions();
+				await Promise.all([refreshSessions(), refreshArchivedSessions()]);
 			}
 
 			return successCount;
 		},
-		[refreshSessions],
+		[refreshArchivedSessions, refreshSessions],
 	);
 
 	/**
@@ -1305,6 +1554,7 @@ export function useSessions(
 		renameSession,
 		archiveSession,
 		unarchiveSession,
+		archiveProjectSessions,
 		bulkArchiveSessions,
 		bulkUnarchiveSessions,
 		bulkDeleteSessions,

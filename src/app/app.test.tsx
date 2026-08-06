@@ -146,6 +146,7 @@ function installSessionMocks() {
 		renameSession: vi.fn(),
 		archiveSession: vi.fn(),
 		unarchiveSession: vi.fn(),
+		archiveProjectSessions: vi.fn(),
 		bulkArchiveSessions: vi.fn(),
 		bulkUnarchiveSessions: vi.fn(),
 		bulkDeleteSessions: vi.fn(),

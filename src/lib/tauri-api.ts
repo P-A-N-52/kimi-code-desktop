@@ -284,8 +284,8 @@ export async function openInEditor(path: string, editor?: string): Promise<void>
 }
 
 export async function setNativeUiLanguage(language: "en-US" | "zh-CN"): Promise<void> {
-	if (!isTauri()) return;
-	return invoke<void>("set_native_ui_language", { language });
+  if (!isTauri()) return;
+  return invoke<void>("set_native_ui_language", { language });
 }
 
 export async function wireConnect(sessionId: string, connectionId: string): Promise<void> {
@@ -598,6 +598,35 @@ export async function updateSession(args: {
   if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
   const raw = await invoke<Record<string, unknown>>("update_session", args);
   return normalizeSession(raw);
+}
+
+export async function updateSessionsArchive(
+  sessionIds: string[],
+  archived: boolean,
+): Promise<string[]> {
+  if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+  const raw = await invoke<unknown>("update_sessions_archive", {
+    sessionIds,
+    archived,
+  });
+  return Array.isArray(raw) ? raw.map(String) : [...sessionIds];
+}
+
+export async function updateWorkDirArchive(
+  workDir: string,
+  archived: boolean,
+  sessionIds: string[] = [],
+): Promise<string[]> {
+  if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+  const args = {
+    workDir,
+    archived,
+    ...(sessionIds.length > 0 ? { sessionIds } : {}),
+  };
+  const raw = await invoke<unknown>("update_work_dir_archive", {
+    ...args,
+  });
+  return Array.isArray(raw) ? raw.map(String) : [];
 }
 
 export async function forkSession(sessionId: string, turnIndex: number): Promise<Session> {

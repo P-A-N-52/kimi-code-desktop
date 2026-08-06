@@ -222,6 +222,91 @@ describe("createSessionRuntime", () => {
     expect(snapshot.status).toBe("streaming");
   });
 
+  it("replays persisted Kimi wire events into the visible timeline", async () => {
+    mocks.replaySessionHistory.mockResolvedValue([
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: { type: "TurnBegin", payload: { user_input: "hello" } },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: { type: "StepBegin", payload: { n: 1 } },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: {
+          type: "ContentPart",
+          payload: { type: "think", think: "checking" },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: {
+          type: "ContentPart",
+          payload: { type: "text", text: "reply" },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: {
+          type: "ToolCall",
+          payload: {
+            type: "function",
+            id: "tool-1",
+            function: { name: "ReadFile", arguments: '{"path":"README.md"}' },
+          },
+        },
+      }),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: {
+          type: "ToolResult",
+          payload: {
+            tool_call_id: "tool-1",
+            return_value: {
+              is_error: false,
+              output: "file body",
+              message: "file body",
+              display: [],
+            },
+          },
+        },
+      }),
+    ]);
+
+    const runtime = createSessionRuntime({ sessionId: "session-1" });
+    runtime.start();
+    await flushPromises();
+
+    const snapshot = runtime.getSnapshot();
+    expect(mocks.replaySessionHistory).toHaveBeenCalledWith("session-1");
+    expect(snapshot.isReplayingHistory).toBe(false);
+    expect(snapshot.status).toBe("ready");
+    expect(snapshot.messages.filter((message) => message.role === "user")).toEqual(
+      expect.arrayContaining([expect.objectContaining({ content: "hello" })]),
+    );
+    expect(snapshot.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ variant: "thinking", thinking: "checking" }),
+        expect.objectContaining({ variant: "text", content: "reply" }),
+        expect.objectContaining({
+          variant: "tool",
+          toolCall: expect.objectContaining({
+            toolCallId: "tool-1",
+            state: "output-available",
+            output: "file body",
+          }),
+        }),
+      ]),
+    );
+  });
+
   it("start() connects the wire and stop() disconnects and ignores late messages", async () => {
     const runtime = createSessionRuntime({ sessionId: "session-1", autoConnect: true });
 

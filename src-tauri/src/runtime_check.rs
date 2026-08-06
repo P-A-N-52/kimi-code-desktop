@@ -23,6 +23,7 @@ pub fn configure_macos_cli_path() {
 fn prepend_macos_cli_paths(home: Option<&Path>, mut paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut preferred = Vec::new();
     if let Some(home) = home {
+        preferred.push(home.join(".kimi-code").join("bin"));
         preferred.push(home.join(".local").join("bin"));
     }
     preferred.push(PathBuf::from("/opt/homebrew/bin"));
@@ -795,18 +796,26 @@ mod tests {
     }
 
     #[test]
-    fn macos_cli_paths_prefer_uv_and_homebrew_locations_without_duplicates() {
+    fn macos_cli_paths_prefer_kimi_code_and_uv_locations_without_duplicates() {
         let existing = vec![
             PathBuf::from("/usr/bin"),
             PathBuf::from("/opt/homebrew/bin"),
         ];
         let paths = prepend_macos_cli_paths(Some(Path::new("/Users/alice")), existing);
 
-        assert_eq!(paths[0], PathBuf::from("/Users/alice/.local/bin"));
+        assert_eq!(paths[0], PathBuf::from("/Users/alice/.kimi-code/bin"));
+        assert_eq!(paths[1], PathBuf::from("/Users/alice/.local/bin"));
         assert_eq!(
             paths
                 .iter()
                 .filter(|path| path.as_path() == Path::new("/opt/homebrew/bin"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            paths
+                .iter()
+                .filter(|path| path.as_path() == Path::new("/Users/alice/.kimi-code/bin"))
                 .count(),
             1
         );

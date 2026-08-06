@@ -11,6 +11,8 @@ import {
   getSessionInfluenceSnapshot,
   listSessions,
   updateGlobalConfig,
+  updateSessionsArchive,
+  updateWorkDirArchive,
   wireListWorkers,
 } from "./tauri-api";
 
@@ -123,10 +125,47 @@ describe("listSessions", () => {
   });
 
   it("falls back to a valid date for unparseable timestamps", async () => {
-    invokeMock.mockResolvedValue([
-      { session_id: "bad", title: "D", last_updated: "not-a-date" },
-    ]);
+    invokeMock.mockResolvedValue([{ session_id: "bad", title: "D", last_updated: "not-a-date" }]);
     const sessions = await listSessions({});
     expect(Number.isNaN(sessions[0].lastUpdated.getTime())).toBe(false);
+  });
+});
+
+describe("updateSessionsArchive", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(["one", "two"]);
+  });
+
+  it("forwards the full project archive request to Tauri", async () => {
+    await expect(updateSessionsArchive(["one", "two"], true)).resolves.toEqual(["one", "two"]);
+    expect(invokeMock).toHaveBeenCalledWith("update_sessions_archive", {
+      sessionIds: ["one", "two"],
+      archived: true,
+    });
+  });
+});
+
+describe("updateWorkDirArchive", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(["one", "two"]);
+  });
+
+  it("forwards the project directory archive request to Tauri", async () => {
+    await expect(updateWorkDirArchive("/workspace/demo", true)).resolves.toEqual(["one", "two"]);
+    expect(invokeMock).toHaveBeenCalledWith("update_work_dir_archive", {
+      workDir: "/workspace/demo",
+      archived: true,
+    });
+  });
+
+  it("forwards visible session IDs as a fallback anchor", async () => {
+    await updateWorkDirArchive("/workspace/demo", true, ["one", "two"]);
+    expect(invokeMock).toHaveBeenCalledWith("update_work_dir_archive", {
+      workDir: "/workspace/demo",
+      archived: true,
+      sessionIds: ["one", "two"],
+    });
   });
 });

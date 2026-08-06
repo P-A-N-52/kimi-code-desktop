@@ -15,15 +15,11 @@
  * visible snapshot and forwards actions through this object.
  */
 
-import { listenEvent } from "@/lib/tauri-api";
-import { emptySessionConfigState } from "@/lib/session-config-state";
 import type { LiveMessage } from "@/hooks/types";
 import type { UploadSessionFileResponse } from "@/lib/api/models";
-import {
-  createSessionRuntime,
-  type SessionRuntime,
-  type SessionRuntimeOptions,
-} from "./runtime";
+import { emptySessionConfigState } from "@/lib/session-config-state";
+import { listenEvent } from "@/lib/tauri-api";
+import { createSessionRuntime, type SessionRuntime, type SessionRuntimeOptions } from "./runtime";
 import type { SessionViewState } from "./types";
 
 /** Interim live-worker cap (G5 §4.4 option A). Full LRU lands in Phase 2. */
@@ -88,6 +84,8 @@ export type SessionRuntimeActions = {
 type OrchestratorEntry = {
   runtime: SessionRuntime;
   lastVisibleAt: number;
+  /** `actionsFor()` may create an entry during render before `attach()` runs. */
+  started: boolean;
 };
 
 export type SessionStreamOrchestrator = {
@@ -154,7 +152,7 @@ export function createSessionStreamOrchestrator(): SessionStreamOrchestrator {
       ...options,
       registerPerSessionListener: false,
     });
-    runtimes.set(sessionId, { runtime, lastVisibleAt: Date.now() });
+    runtimes.set(sessionId, { runtime, lastVisibleAt: Date.now(), started: false });
     runtime.subscribe(() => {
       // Forward engine updates only while this session is on screen.
       if (visibleSessionId === sessionId) {
@@ -263,7 +261,11 @@ export function createSessionStreamOrchestrator(): SessionStreamOrchestrator {
       entry.lastVisibleAt = Date.now();
       visibleSessionId = sessionId;
       const wantsLive = Boolean(options.autoConnect);
-      if (created) {
+      // `actionsFor()` is called during render and can create the runtime
+      // before this layout effect attaches the visible session. Start based on
+      // the explicit lifecycle flag instead of relying on `created` here.
+      if (created || !entry.started) {
+        entry.started = true;
         // start() owns the full per-session bootstrap (replay / autoConnect);
         // it must run exactly once so it can never wipe a background state.
         runtime.start();
@@ -281,10 +283,7 @@ export function createSessionStreamOrchestrator(): SessionStreamOrchestrator {
       emit();
     },
 
-    actionsFor(
-      sessionId: string | null,
-      options: SessionRuntimeOptions,
-    ): SessionRuntimeActions {
+    actionsFor(sessionId: string | null, options: SessionRuntimeOptions): SessionRuntimeActions {
       if (sessionId === null) {
         return {
           sendMessage: async () => undefined,
@@ -343,7 +342,12 @@ export function createSessionStreamOrchestrator(): SessionStreamOrchestrator {
         if (visibleSessionId !== null) {
           const entry = runtimes.get(visibleSessionId);
           if (entry) {
-            entry.runtime.connect();
+            if (!entry.started) {
+              entry.started = true;
+              entry.runtime.start();
+            } else {
+              entry.runtime.connect();
+            }
           }
         }
       }

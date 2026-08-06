@@ -1018,7 +1018,22 @@ fn is_already_in_target_mode_error(response: &JsonRpcResponse, mode_id: &str) ->
 }
 
 async fn resolve_session_cwd(app: &AppHandle, session_id: &str) -> Result<PathBuf, String> {
-    fetch_session_cwd_via_acp(app, session_id).await
+    let local_cwd = resolve_local_session_cwd(session_id)?;
+    if let Some(path) = local_cwd.as_ref().filter(|path| path.is_dir()) {
+        return Ok(path.clone());
+    }
+
+    match fetch_session_cwd_via_acp(app, session_id).await {
+        Ok(cwd) => Ok(cwd),
+        Err(acp_error) => local_cwd.ok_or(acp_error),
+    }
+}
+
+fn resolve_local_session_cwd(session_id: &str) -> Result<Option<PathBuf>, String> {
+    let Some(session_dir) = crate::session_store::find_session_dir_by_id(session_id)? else {
+        return Ok(None);
+    };
+    crate::session_store::work_dir_from_session_dir(&session_dir)
 }
 
 /// Extract cwd from a single `session/list` item.
@@ -3771,7 +3786,9 @@ mod tests {
 
 #[cfg(test)]
 mod session_cwd_tests {
-    use super::acp_session_cwd_from_list_item;
+    use super::{acp_session_cwd_from_list_item, resolve_local_session_cwd};
+    use crate::test_env::lock::set_kimi_code_home;
+    use std::fs;
     use std::path::PathBuf;
 
     #[test]
@@ -3780,6 +3797,33 @@ mod session_cwd_tests {
         assert_eq!(
             acp_session_cwd_from_list_item(&item).unwrap(),
             PathBuf::from(r"C:\work")
+        );
+    }
+
+    #[test]
+    fn local_session_cwd_uses_state_before_acp_metadata() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        let work_dir = temp.path().join("project");
+        let session_dir = home
+            .join("sessions")
+            .join("work-key")
+            .join("session-local-cwd");
+        fs::create_dir_all(&work_dir).expect("work dir");
+        fs::create_dir_all(&session_dir).expect("session dir");
+        fs::write(
+            session_dir.join("state.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "cwd": work_dir.to_string_lossy(),
+            }))
+            .expect("state json"),
+        )
+        .expect("state");
+
+        let _home_guard = set_kimi_code_home(&home);
+        assert_eq!(
+            resolve_local_session_cwd("session-local-cwd").expect("resolve local cwd"),
+            Some(work_dir)
         );
     }
 }

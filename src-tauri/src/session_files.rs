@@ -6,7 +6,7 @@ use crate::runtime_check;
 use crate::session_store;
 use base64::Engine;
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
@@ -23,58 +23,33 @@ pub async fn resolve_session_work_dir(
     acp_desktop: &AcpDesktopClient,
     session_id: &str,
 ) -> Result<PathBuf, String> {
-    let raw_sessions = fetch_all_acp_sessions(acp_desktop, app).await?;
-    if let Some(session) = find_session_in_list(&raw_sessions, session_id) {
-        if let Some(cwd) = session.get("cwd").and_then(Value::as_str) {
-            if !cwd.is_empty() {
-                return Ok(PathBuf::from(cwd));
+    match fetch_all_acp_sessions(acp_desktop, app).await {
+        Ok(raw_sessions) => {
+            if let Some(session) = find_session_in_list(&raw_sessions, session_id) {
+                if let Some(cwd) = session
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|cwd| !cwd.is_empty())
+                {
+                    return Ok(PathBuf::from(cwd));
+                }
             }
+        }
+        Err(err) => {
+            eprintln!(
+                "[resolve_session_work_dir] ACP session/list failed, using local session metadata: {err}"
+            );
         }
     }
 
     if let Some(session_dir) = session_store::find_session_dir_by_id(session_id)? {
-        if let Some(work_dir) = resolve_work_dir_from_session_dir(&session_dir)? {
+        if let Some(work_dir) = session_store::work_dir_from_session_dir(&session_dir)? {
             return Ok(work_dir);
         }
     }
 
     Err("Session not found".to_string())
-}
-
-fn resolve_work_dir_from_session_dir(session_dir: &Path) -> Result<Option<PathBuf>, String> {
-    let hash_key = session_dir
-        .parent()
-        .and_then(|parent| parent.file_name())
-        .and_then(|name| name.to_str());
-    let Some(hash_key) = hash_key else {
-        return Ok(None);
-    };
-
-    let work_dirs = work_dir_by_hash()?;
-    Ok(work_dirs.get(hash_key).map(PathBuf::from))
-}
-
-fn work_dir_by_hash() -> Result<HashMap<String, String>, String> {
-    let metadata_path = runtime_check::kimi_code_home_dir()?.join("kimi.json");
-    if !metadata_path.is_file() {
-        return Ok(HashMap::new());
-    }
-
-    let content = fs::read_to_string(&metadata_path)
-        .map_err(|err| format!("Failed to read {}: {err}", metadata_path.display()))?;
-    let metadata: Value = serde_json::from_str(&content)
-        .map_err(|err| format!("Failed to parse {}: {err}", metadata_path.display()))?;
-
-    let mut result = HashMap::new();
-    if let Some(entries) = metadata.get("work_dirs").and_then(Value::as_array) {
-        for entry in entries {
-            if let Some(path) = entry.get("path").and_then(Value::as_str) {
-                let hash = format!("{:x}", md5::compute(path.as_bytes()));
-                result.insert(hash, path.to_string());
-            }
-        }
-    }
-    Ok(result)
 }
 
 pub fn list_directory_entries(dir_path: &Path) -> Result<Vec<Value>, String> {
@@ -280,28 +255,97 @@ fn guess_content_type(file_path: &Path) -> String {
     }
 }
 
-/// Work directories recorded in `~/.kimi-code/kimi.json` (most recent first).
-pub fn work_dirs_from_metadata() -> Result<Vec<String>, String> {
-    let metadata_path = runtime_check::kimi_code_home_dir()?.join("kimi.json");
-    if !metadata_path.is_file() {
-        return Ok(Vec::new());
+fn push_work_dir(work_dirs: &mut Vec<String>, seen: &mut HashSet<String>, path: Option<&str>) {
+    let Some(path) = path.map(str::trim).filter(|path| !path.is_empty()) else {
+        return;
+    };
+    let path = path.to_string();
+    if seen.insert(path.clone()) {
+        work_dirs.push(path);
     }
+}
 
-    let content = fs::read_to_string(&metadata_path)
-        .map_err(|err| format!("Failed to read {}: {err}", metadata_path.display()))?;
-    let metadata: Value = serde_json::from_str(&content)
-        .map_err(|err| format!("Failed to parse {}: {err}", metadata_path.display()))?;
-
+/// Work directories recorded by Kimi CLI and local desktop session state.
+///
+/// Kimi CLI versions do not all use the same source: older versions write
+/// `kimi.json`, while newer versions persist roots in `workspaces.json`,
+/// `session_index.jsonl`, and each session's `state.json`.
+pub fn work_dirs_from_metadata() -> Result<Vec<String>, String> {
     let mut work_dirs = Vec::new();
-    if let Some(entries) = metadata.get("work_dirs").and_then(Value::as_array) {
-        for entry in entries {
-            if let Some(path) = entry.get("path").and_then(Value::as_str) {
-                if !path.is_empty() {
-                    work_dirs.push(path.to_string());
-                }
+    let mut seen = HashSet::new();
+    let home = runtime_check::kimi_code_home_dir()?;
+
+    let metadata_path = home.join("kimi.json");
+    if metadata_path.is_file() {
+        let content = fs::read_to_string(&metadata_path)
+            .map_err(|err| format!("Failed to read {}: {err}", metadata_path.display()))?;
+        let metadata: Value = serde_json::from_str(&content)
+            .map_err(|err| format!("Failed to parse {}: {err}", metadata_path.display()))?;
+        if let Some(entries) = metadata.get("work_dirs").and_then(Value::as_array) {
+            for entry in entries {
+                push_work_dir(
+                    &mut work_dirs,
+                    &mut seen,
+                    entry.get("path").and_then(Value::as_str),
+                );
             }
         }
     }
+
+    let index_path = home.join("session_index.jsonl");
+    if index_path.is_file() {
+        let content = fs::read_to_string(&index_path)
+            .map_err(|err| format!("Failed to read {}: {err}", index_path.display()))?;
+        for line in content
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+        {
+            let Ok(entry) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            push_work_dir(
+                &mut work_dirs,
+                &mut seen,
+                entry
+                    .get("workDir")
+                    .or_else(|| entry.get("work_dir"))
+                    .or_else(|| entry.get("cwd"))
+                    .and_then(Value::as_str),
+            );
+        }
+    }
+
+    let workspaces_path = home.join("workspaces.json");
+    if workspaces_path.is_file() {
+        let content = fs::read_to_string(&workspaces_path)
+            .map_err(|err| format!("Failed to read {}: {err}", workspaces_path.display()))?;
+        let workspaces: Value = serde_json::from_str(&content)
+            .map_err(|err| format!("Failed to parse {}: {err}", workspaces_path.display()))?;
+        if let Some(entries) = workspaces.get("workspaces").and_then(Value::as_object) {
+            for entry in entries.values() {
+                push_work_dir(
+                    &mut work_dirs,
+                    &mut seen,
+                    entry
+                        .get("root")
+                        .or_else(|| entry.get("path"))
+                        .and_then(Value::as_str),
+                );
+            }
+        }
+    }
+
+    if let Ok(sessions) = session_store::list_local_sessions() {
+        for session in sessions {
+            push_work_dir(
+                &mut work_dirs,
+                &mut seen,
+                session.get("work_dir").and_then(Value::as_str),
+            );
+        }
+    }
+
     Ok(work_dirs)
 }
 
@@ -511,10 +555,100 @@ mod tests {
         .expect("metadata");
 
         let _home_guard = set_kimi_code_home(&home);
-        let resolved = resolve_work_dir_from_session_dir(&session_dir)
+        let resolved = session_store::work_dir_from_session_dir(&session_dir)
             .expect("lookup")
             .expect("work dir");
         assert_eq!(resolved, work_dir);
+    }
+
+    #[test]
+    fn resolve_work_dir_from_session_dir_uses_cli_cwd_before_hash() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        let work_dir = temp.path().join("project");
+        let stale_work_dir = temp.path().join("stale-project");
+        std::fs::create_dir_all(&work_dir).expect("work dir");
+        std::fs::create_dir_all(&stale_work_dir).expect("stale work dir");
+        std::fs::create_dir_all(&home).expect("home");
+
+        let hash = format!(
+            "{:x}",
+            md5::compute(stale_work_dir.to_string_lossy().as_bytes())
+        );
+        let session_dir = home.join("sessions").join(&hash).join("session-cwd");
+        std::fs::create_dir_all(&session_dir).expect("session dir");
+        std::fs::write(
+            session_dir.join("state.json"),
+            serde_json::to_vec(&json!({
+                "cwd": work_dir.to_string_lossy(),
+            }))
+            .expect("state json"),
+        )
+        .expect("state");
+
+        std::fs::write(
+            home.join("kimi.json"),
+            format!(
+                r#"{{"work_dirs":[{{"path":"{}"}}]}}"#,
+                stale_work_dir.to_string_lossy().replace('\\', "\\\\")
+            ),
+        )
+        .expect("metadata");
+
+        let _home_guard = set_kimi_code_home(&home);
+        let resolved = session_store::work_dir_from_session_dir(&session_dir)
+            .expect("lookup")
+            .expect("work dir");
+        assert_eq!(resolved, work_dir);
+    }
+
+    #[test]
+    fn work_dirs_from_metadata_includes_new_cli_workspace_sources() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        let indexed_dir = temp.path().join("indexed");
+        let workspace_dir = temp.path().join("workspace");
+        let session_dir = temp.path().join("session-workdir");
+        std::fs::create_dir_all(&indexed_dir).expect("indexed dir");
+        std::fs::create_dir_all(&workspace_dir).expect("workspace dir");
+        std::fs::create_dir_all(&session_dir).expect("session dir");
+        std::fs::create_dir_all(&home).expect("home");
+
+        std::fs::write(
+            home.join("session_index.jsonl"),
+            serde_json::to_string(&json!({
+                "workDir": indexed_dir.to_string_lossy(),
+            }))
+            .expect("session index json"),
+        )
+        .expect("session index");
+        std::fs::write(
+            home.join("workspaces.json"),
+            format!(
+                r#"{{"workspaces":{{"workspace-id":{{"root":"{}"}}}}}}"#,
+                workspace_dir.to_string_lossy().replace('\\', "\\\\")
+            ),
+        )
+        .expect("workspaces");
+
+        let session_key = "wd_session";
+        let session_id = "session-from-state";
+        let local_session = home.join("sessions").join(session_key).join(session_id);
+        std::fs::create_dir_all(&local_session).expect("local session");
+        std::fs::write(
+            local_session.join("state.json"),
+            serde_json::to_vec(&json!({
+                "cwd": session_dir.to_string_lossy(),
+            }))
+            .expect("state json"),
+        )
+        .expect("state");
+
+        let _home_guard = set_kimi_code_home(&home);
+        let work_dirs = work_dirs_from_metadata().expect("work dirs");
+        assert!(work_dirs.contains(&indexed_dir.to_string_lossy().to_string()));
+        assert!(work_dirs.contains(&workspace_dir.to_string_lossy().to_string()));
+        assert!(work_dirs.contains(&session_dir.to_string_lossy().to_string()));
     }
 
     #[test]

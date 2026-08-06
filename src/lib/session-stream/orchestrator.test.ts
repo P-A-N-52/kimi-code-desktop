@@ -315,6 +315,22 @@ describe("session-stream orchestrator (G5 flag on)", () => {
     orchestrator.destroy();
   });
 
+  it("starts a runtime created during render when the session is attached", async () => {
+    const orchestrator = createSessionStreamOrchestrator();
+    const options = defaultOptions("session-x");
+
+    // React calls actionsFor() while rendering, then attach() from the layout
+    // effect. The runtime must still perform the initial history replay.
+    orchestrator.actionsFor("session-x", options);
+    orchestrator.attach("session-x", options);
+
+    await vi.waitFor(() => {
+      expect(mocks.replaySessionHistory).toHaveBeenCalledWith("session-x");
+    });
+    expect(orchestrator.getSnapshot().isReplayingHistory).toBe(false);
+    orchestrator.destroy();
+  });
+
   it("reconnectSessions gap-fills restarted workers without touching others", async () => {
     const orchestrator = createSessionStreamOrchestrator();
     orchestrator.attach("session-a", { ...defaultOptions("session-a"), autoConnect: true });
