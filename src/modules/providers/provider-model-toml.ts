@@ -860,7 +860,6 @@ export function addProvider(content: string): TomlMutationResult {
 	);
 	return {
 		content: appendTomlSection(content, providerPath(providerName), [
-			["type", formatTomlString("openai_responses")],
 			["base_url", formatTomlString("")],
 			["api_key", formatTomlString("")],
 		]),

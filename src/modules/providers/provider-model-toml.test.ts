@@ -305,16 +305,16 @@ capabilities = [
 		expect(getProviderModelTomlCompatibilityError("models = {}\n")).toMatch(/顶层 models/);
 	});
 
-	it("does not add display_name to new Provider sections and defaults type to openai_responses", () => {
+	it("does not add display_name or a default type to new Provider sections", () => {
 		const addedProvider = addProvider("");
 
 		expect(addedProvider.error).toBeUndefined();
 		expect(addedProvider.content).toContain("[providers.custom-provider]");
-		expect(addedProvider.content).toContain('type = "openai_responses"');
+		expect(addedProvider.content).not.toContain("type");
 		expect(addedProvider.content).not.toContain("display_name");
 		expect(addedProvider.content).not.toContain("protocol");
 		expect(readProviderModelConfig(addedProvider.content).providers).toEqual([
-			expect.objectContaining({ name: "custom-provider", type: "openai_responses" }),
+			expect.objectContaining({ name: "custom-provider", type: "" }),
 		]);
 	});
 
