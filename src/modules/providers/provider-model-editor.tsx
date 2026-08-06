@@ -10,6 +10,7 @@ import {
 	getProviderModelTomlCompatibilityError,
 	isBuiltInKimiProvider,
 	MODEL_CAPABILITY_OPTIONS,
+	MODEL_PROTOCOL_OPTIONS,
 	PROVIDER_TYPE_OPTIONS,
 	readProviderModelConfig,
 	removeModel,
@@ -20,6 +21,7 @@ import {
 	setModelCapabilities,
 	setModelMaxContextSize,
 	setModelOptionalStringValue,
+	setModelProtocol,
 	setModelStringValue,
 	setModelSupportEfforts,
 	setProviderRawValue,
@@ -698,6 +700,32 @@ export function ProviderModelEditor({ enabled, onDirtyChange }: ProviderModelEdi
 														className={inputClassName()}
 														placeholder="kimi-for-coding"
 													/>
+												</Field>
+												<Field
+													label="线路协议"
+													description="留空表示自动推断；无法推断线路协议时需显式设置。"
+												>
+													<select
+														aria-label="线路协议"
+														value={selectedModel.protocol}
+														onChange={(event) =>
+															updateContent((previous) =>
+																setModelProtocol(
+																	previous,
+																	selectedModel.name,
+																	event.currentTarget.value,
+																),
+															)
+														}
+														className={inputClassName()}
+													>
+														<option value="">（自动推断）</option>
+														{MODEL_PROTOCOL_OPTIONS.map((protocol) => (
+															<option key={protocol} value={protocol}>
+																{protocol}
+															</option>
+														))}
+													</select>
 												</Field>
 												<Field label="最大上下文长度">
 													<input
