@@ -113,3 +113,42 @@ jobs:
 
       - name: Check Apple Silicon target
         run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+
+  macos-intel-check:
+    name: macOS Intel x86_64 Check
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri
+          key: macos-x86_64
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Check i18n catalog coverage
+        run: npm run i18n:check
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Check Intel target
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "x86_64"
+          cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-apple-darwin

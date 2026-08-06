@@ -134,8 +134,9 @@ jobs:
       - name: ACP smoke test
         run: npm run smoke:acp
 
-      - name: Build macOS ARM64 release
+      - name: Build macOS Apple Silicon release
         env:
+          KIMI_MACOS_TARGET: aarch64-apple-darwin
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -158,12 +159,138 @@ jobs:
             src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/release-manifest-macos-arm64.json
           if-no-files-found: error
 
+  macos-intel:
+    name: macOS Intel x86_64 DMG
+    runs-on: macos-15-intel
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+          components: clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri
+          key: macos-x86_64
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Kimi CLI runtime
+        run: |
+          uv tool install kimi-cli --python "${PYTHON_VERSION}"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Frontend tests and build
+        run: |
+          npm run test
+          npm run build
+
+      - name: Rust host tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Verify Intel host and target
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "x86_64"
+          cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-apple-darwin
+
+      - name: ACP smoke test
+        run: npm run smoke:acp
+
+      - name: Build macOS Intel release
+        env:
+          KIMI_MACOS_TARGET: x86_64-apple-darwin
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: bash scripts/release-macos.sh
+
+      - name: Verify Intel DMG and application architecture
+        run: |
+          set -euo pipefail
+          bundle_dir="src-tauri/target/x86_64-apple-darwin/release/bundle/dmg"
+          dmg="$(find "$bundle_dir" -maxdepth 1 -type f -name '*_x64.dmg' -print -quit)"
+          checksums="$bundle_dir/SHA256SUMS-macos-x64.txt"
+          manifest="$bundle_dir/release-manifest-macos-x64.json"
+          test -n "$dmg"
+          test -f "$checksums"
+          test -f "$manifest"
+
+          (
+            cd "$bundle_dir"
+            shasum -a 256 -c "$(basename "$checksums")"
+          )
+
+          dmg_name="$(basename "$dmg")"
+          dmg_bytes="$(stat -f '%z' "$dmg")"
+          dmg_sha256="$(shasum -a 256 "$dmg" | awk '{print $1}')"
+          jq -e \
+            --arg name "$dmg_name" \
+            --arg sha256 "$dmg_sha256" \
+            --argjson bytes "$dmg_bytes" \
+            '.arch == "x86_64" and
+             .target == "x86_64-apple-darwin" and
+             .files.dmg.name == $name and
+             .files.dmg.bytes == $bytes and
+             .files.dmg.sha256 == $sha256' \
+            "$manifest" >/dev/null
+
+          mount_point="$(mktemp -d)"
+          cleanup() {
+            hdiutil detach "$mount_point" >/dev/null 2>&1 || true
+            rmdir "$mount_point" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount_point" "$dmg" >/dev/null
+
+          binary="$(find "$mount_point" -type f -path '*/Contents/MacOS/kimi-code-desktop' -print -quit)"
+          test -n "$binary"
+          file "$binary"
+          file "$binary" | grep -q 'x86_64'
+          test "$(lipo -archs "$binary")" = "x86_64"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kimi-code-desktop-macos-intel
+          path: |
+            src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/SHA256SUMS-macos-x64.txt
+            src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/release-manifest-macos-x64.json
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
     needs:
       - windows-msi
       - macos-arm64
+      - macos-intel
 
     steps:
       - uses: actions/checkout@v4
@@ -178,7 +305,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: kimi-code-desktop-macos-arm64
-          path: release-assets/macos
+          path: release-assets/macos/arm64
+
+      - name: Download macOS Intel release
+        uses: actions/download-artifact@v4
+        with:
+          name: kimi-code-desktop-macos-intel
+          path: release-assets/macos/intel
 
       - name: Validate and publish release
         env:
@@ -205,14 +338,44 @@ jobs:
           mapfile -t msi_files < <(find release-assets/windows -type f -name '*.msi')
           mapfile -t dmg_files < <(find release-assets/macos -type f -name '*.dmg')
           [[ "${#msi_files[@]}" -eq 1 ]]
-          [[ "${#dmg_files[@]}" -eq 1 ]]
+          [[ "${#dmg_files[@]}" -eq 2 ]]
+          [[ "$(find release-assets/macos -type f -name '*_aarch64.dmg' | wc -l)" -eq 1 ]]
+          [[ "$(find release-assets/macos -type f -name '*_x64.dmg' | wc -l)" -eq 1 ]]
           [[ "$(find release-assets/windows -type f -name 'SHA256SUMS.txt' | wc -l)" -eq 1 ]]
           [[ "$(find release-assets/windows -type f -name 'release-manifest.json' | wc -l)" -eq 1 ]]
           [[ "$(find release-assets/windows -type f -name 'kimi-code-desktop.release.json' | wc -l)" -eq 1 ]]
           [[ "$(find release-assets/macos -type f -name 'SHA256SUMS-macos-arm64.txt' | wc -l)" -eq 1 ]]
           [[ "$(find release-assets/macos -type f -name 'release-manifest-macos-arm64.json' | wc -l)" -eq 1 ]]
+          [[ "$(find release-assets/macos -type f -name 'SHA256SUMS-macos-x64.txt' | wc -l)" -eq 1 ]]
+          [[ "$(find release-assets/macos -type f -name 'release-manifest-macos-x64.json' | wc -l)" -eq 1 ]]
 
-          notes="Windows MSI and macOS Apple Silicon DMG release for Kimi Code Desktop $tag."
+          while IFS= read -r checksum_file; do
+            checksum_dir="$(dirname "$checksum_file")"
+            (
+              cd "$checksum_dir"
+              sha256sum -c "$(basename "$checksum_file")"
+            )
+          done < <(find release-assets/macos -type f -name 'SHA256SUMS-macos-*.txt' -print)
+
+          while IFS= read -r manifest; do
+            manifest_dir="$(dirname "$manifest")"
+            dmg_name="$(jq -r '.files.dmg.name' "$manifest")"
+            dmg="${manifest_dir}/${dmg_name}"
+            test -f "$dmg"
+            dmg_bytes="$(stat -c '%s' "$dmg")"
+            dmg_sha256="$(sha256sum "$dmg" | awk '{print $1}')"
+            jq -e \
+              --arg version "$version" \
+              --arg sha256 "$dmg_sha256" \
+              --argjson bytes "$dmg_bytes" \
+              '.version == $version and
+               .platform == "macos" and
+               .files.dmg.bytes == $bytes and
+               .files.dmg.sha256 == $sha256' \
+              "$manifest" >/dev/null
+          done < <(find release-assets/macos -type f -name 'release-manifest-macos-*.json' -print)
+
+          notes="Windows MSI and macOS Apple Silicon and Intel DMG release for Kimi Code Desktop $tag."
           notes_path="docs/releases/$tag-notes.md"
           notes_args=(--notes "$notes")
           if [[ -f "$notes_path" ]]; then

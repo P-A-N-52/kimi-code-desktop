@@ -3,12 +3,31 @@ set -uo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNNER_TEMP="${RUNNER_TEMP:-$PROJECT_ROOT/src-tauri/target/tmp}"
-TARGET="aarch64-apple-darwin"
+TARGET="${KIMI_MACOS_TARGET:-aarch64-apple-darwin}"
+case "$TARGET" in
+  aarch64-apple-darwin)
+    MACOS_ARCH="aarch64"
+    MACOS_ARCH_LABEL="Apple Silicon ARM64"
+    DMG_SUFFIX="aarch64"
+    MANIFEST_SUFFIX="arm64"
+    ;;
+  x86_64-apple-darwin)
+    MACOS_ARCH="x86_64"
+    MACOS_ARCH_LABEL="Intel x86_64"
+    DMG_SUFFIX="x64"
+    MANIFEST_SUFFIX="x64"
+    ;;
+  *)
+    echo "Unsupported macOS target: $TARGET" >&2
+    echo "Supported targets: aarch64-apple-darwin, x86_64-apple-darwin" >&2
+    exit 1
+    ;;
+esac
 BUNDLE_ROOT="$PROJECT_ROOT/src-tauri/target/$TARGET/release/bundle"
 DMG_DIR="$BUNDLE_ROOT/dmg"
 MACOS_DIR="$BUNDLE_ROOT/macos"
-MANIFEST="$DMG_DIR/release-manifest-macos-arm64.json"
-CHECKSUMS="$DMG_DIR/SHA256SUMS-macos-arm64.txt"
+MANIFEST="$DMG_DIR/release-manifest-macos-$MANIFEST_SUFFIX.json"
+CHECKSUMS="$DMG_DIR/SHA256SUMS-macos-$MANIFEST_SUFFIX.txt"
 PACKAGE_VERSION="$(node -p "require('$PROJECT_ROOT/package.json').version")"
 SIGNING_MODE="unsigned"
 NOTARIZATION_STATUS="not-attempted"
@@ -29,7 +48,7 @@ clean_bundle_outputs() {
 
 build_headless_dmg() {
   local app_name="Kimi Code.app"
-  local dmg_name="Kimi Code_${PACKAGE_VERSION}_aarch64.dmg"
+  local dmg_name="Kimi Code_${PACKAGE_VERSION}_${DMG_SUFFIX}.dmg"
   local bundle_script="$DMG_DIR/bundle_dmg.sh"
   local volume_icon="$DMG_DIR/icon.icns"
 
@@ -168,6 +187,14 @@ if [[ -z "$DMG_PATH" ]]; then
 fi
 
 DMG_NAME="$(basename "$DMG_PATH")"
+normalized_dmg_name="$(printf '%s' "$DMG_NAME" | tr ' ' '.')"
+if [[ "$normalized_dmg_name" != "$DMG_NAME" ]]; then
+  normalized_dmg_path="$DMG_DIR/$normalized_dmg_name"
+  # GitHub Release uploads normalize spaces to dots; record the final name in metadata.
+  mv "$DMG_PATH" "$normalized_dmg_path"
+  DMG_PATH="$normalized_dmg_path"
+  DMG_NAME="$normalized_dmg_name"
+fi
 DMG_BYTES="$(stat -f '%z' "$DMG_PATH")"
 DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
 printf '%s  %s\n' "$DMG_SHA256" "$DMG_NAME" > "$CHECKSUMS"
@@ -180,6 +207,8 @@ export KIMI_RELEASE_SIGNING_MODE="$SIGNING_MODE"
 export KIMI_RELEASE_NOTARIZATION_STATUS="$NOTARIZATION_STATUS"
 export KIMI_RELEASE_FALLBACK_REASON="$FALLBACK_REASON"
 export KIMI_RELEASE_DMG_LAYOUT_MODE="$DMG_LAYOUT_MODE"
+export KIMI_RELEASE_ARCH="$MACOS_ARCH"
+export KIMI_RELEASE_TARGET="$TARGET"
 node <<'NODE' > "$MANIFEST"
 const manifest = {
   schema: 1,
@@ -187,8 +216,8 @@ const manifest = {
   buildCommand: "npm run release:macos",
   version: process.env.KIMI_RELEASE_VERSION,
   platform: "macos",
-  arch: "aarch64",
-  target: "aarch64-apple-darwin",
+  arch: process.env.KIMI_RELEASE_ARCH,
+  target: process.env.KIMI_RELEASE_TARGET,
   commit: process.env.GITHUB_SHA || null,
   signingMode: process.env.KIMI_RELEASE_SIGNING_MODE,
   notarizationStatus: process.env.KIMI_RELEASE_NOTARIZATION_STATUS,
@@ -206,7 +235,7 @@ process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
 NODE
 
 {
-  echo "### macOS ARM64 release"
+  echo "### macOS ${MACOS_ARCH_LABEL} release"
   echo
   echo "- DMG: \`$DMG_NAME\`"
   echo "- Signing mode: \`$SIGNING_MODE\`"
@@ -217,5 +246,5 @@ NODE
   fi
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
-echo "macOS ARM64 DMG ready: $DMG_PATH"
+echo "macOS ${MACOS_ARCH_LABEL} DMG ready: $DMG_PATH"
 echo "Signing mode: $SIGNING_MODE; notarization: $NOTARIZATION_STATUS; DMG layout: $DMG_LAYOUT_MODE"
