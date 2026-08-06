@@ -10,19 +10,21 @@
 
 ## 1. 项目边界
 
-Kimi Code Desktop 是 Kimi Code CLI 的独立 Windows 桌面外壳，不是 CLI 源码树。
+`codex/source-runtime` 正在把 Kimi Code Desktop 从 CLI 外壳迁移为源码自有产品。当前可执行代码仍是 ACP 基线；最终产品只交付仓内源码构建的 Kimi Runtime。
 
 ```text
 React UI
   -> Tauri IPC / events
-     -> ACP process and session RPC
-        -> user-installed `kimi acp`
+     -> RuntimeSupervisor
+        -> source-built Kimi desktop runtime child
      -> local config, session history, files, and Git helpers
 ```
 
 必须保持：
 
-- 桌面运行时为 ACP-only，不恢复 Python sidecar 或旧 runtime fallback。
+- 目标运行时为 Source-Runtime-only；不恢复 Python sidecar，不保留 ACP/旧 runtime 的生产 fallback，也不发布双 backend。
+- M4 切换前 ACP 仅作为已验证迁移基线存在；不得宣称已取代，也不得扩展成长期兼容层。
+- Source Runtime 的目录、协议、数据与发布契约以 `docs/plans/2026-08-06-source-runtime-migration.md` 为准。
 - 不为后端尚未支持的能力制作假入口。
 - 自动化测试通过、代码已实现、真实 Tauri/WebView2 已验收是三个不同状态，交付时分别说明。
 
@@ -37,6 +39,7 @@ docs/
   releases/          发布记录
 public/               原样复制的静态资源
 scripts/              检查、冒烟测试、版本与发布脚本
+runtime/              固定 Kimi Code 源码与 source-built Desktop Runtime
 src/
   main.tsx            浏览器入口
   bootstrap.tsx       启动恢复与 React 挂载
@@ -205,12 +208,12 @@ lib     -> 平台 API 与第三方库
 - 保留现有导出或提供兼容层，先迁移调用方，再删除旧入口。
 - 文件名、导出名和目录风格跟随所在区域，不为统一命名批量重命名旧文件。
 
-## 4. 会话与 ACP 变更
+## 4. 会话与 Runtime 变更
 
-`useSessionStream` 是 live event 与 history replay 的前端统一入口。修改 wire、tool、media、subagent、steering、approval 或 status 行为时，必须核对完整链路：
+`useSessionStream` 是 live event 与 history replay 的前端统一入口。M4 前 ACP 是当前适配层；M4 后由 Source Runtime adapter 取代。修改 wire、tool、media、subagent、steering、approval 或 status 行为时，必须核对完整链路：
 
 ```text
-wire type -> ACP translation -> live dispatch
+wire type -> runtime translation -> live dispatch
           -> persisted replay -> state/store -> semantic UI -> generic fallback
 ```
 
@@ -218,8 +221,10 @@ wire type -> ACP translation -> live dispatch
 
 - 一个应用壳只维护一个活动会话 stream。
 - 未知事件、未知工具和未知 display payload 必须保留可用 fallback。
-- session list/get/update/delete 是 ACP 数据、本地 metadata 与运行状态的组合，不按单一远程 CRUD 理解。
+- session list/get/update/delete 是 Runtime 数据、本地 metadata 与运行状态的组合，不按单一远程 CRUD 理解。
 - live 与 replay 的语义必须一致，不能只修其中一条路径。
+- turn 终态必须与 request/turn id 精确关联；不得靠事件时间或广泛清空完成新旧 turn 归属。
+- 未完成 M4 前，新增接口必须能映射到已冻结的 `runtime-v1`，不要继续扩大 ACP 私有面。
 
 ## 5. Rust/Tauri 边界
 
@@ -233,6 +238,15 @@ wire type -> ACP translation -> live dispatch
 | `session_files.rs`、`git_diff.rs` | 当前会话工作区文件与 Git 数据 |
 | `global_config.rs`、`mcp_config.rs` | `~/.kimi-code` 配置 |
 | `security.rs` | 路径与本地访问安全边界 |
+
+Source Runtime 目标模块：
+
+| 模块 | 职责 |
+| --- | --- |
+| `runtime/kimi-code/apps/desktop-runtime` | Kimi source adapter、stdio router 与 Runtime lifecycle |
+| `runtime_supervisor.rs` | source-built 子进程生命周期、请求表、超时和重启 |
+| `runtime_protocol.rs` | `runtime-v1` envelope、codec 和版本协商 |
+| `runtime_translate.rs` | Runtime event 到 Desktop wire 语义的翻译 |
 
 业务逻辑不得持续堆入 `commands.rs`。配置、登录、skills、usage、通知和 runtime readiness 应继续收口在各自模块。
 
@@ -273,7 +287,7 @@ npx biome lint <changed-files>
 
 ## 8. 提交前检查
 
-- 改动是否保持依赖方向和 ACP-only 约束？
+- 改动是否保持依赖方向，并符合 Source-Runtime-only、无生产双 backend 的约束？
 - 新文件是否放在职责正确的目录？
 - 是否保留 unknown、loading 和 error fallback？
 - 是否只修改任务需要的文件？

@@ -2,17 +2,28 @@
 
 ## 项目定位 / Project Role
 
-本仓库是 Kimi Code CLI 的独立 Windows 桌面外壳，不是 CLI 源码树。React/Tauri 负责桌面体验和进程编排；AI 会话、模型、工具及运行时行为由用户安装的 Kimi Code CLI 通过 `kimi acp` 提供。配置、MCP、会话文件和 Git 信息由 Rust 本地辅助模块读写 `~/.kimi-code` 与当前工作区。
+本仓库正在 `codex/source-runtime` 分支迁移为源码自有的 Kimi Code Desktop 产品。React/Tauri 负责桌面体验和进程编排；Kimi Code 源码将作为仓内唯一 AI Runtime 内核构建并随应用交付。迁移完成后不依赖用户安装的 CLI，不使用 ACP，也不保留生产双 backend 或静默 fallback。
 
-English: This repository is an independent Windows desktop shell for Kimi Code CLI, not the CLI source tree. React/Tauri owns the desktop UX and process orchestration; the user-installed Kimi Code CLI provides sessions, models, tools, and runtime behavior through `kimi acp`. Rust helpers handle config, MCP, session files, and Git data in `~/.kimi-code` and the active workspace.
+English: On `codex/source-runtime`, this repository is migrating into a source-owned Kimi Code Desktop product. React/Tauri owns desktop UX and process orchestration; vendored Kimi Code source will be the only AI runtime kernel built and shipped with the app. The completed product will not depend on an installed CLI, ACP, a production dual backend, or a silent fallback.
 
-当前事实来源按优先级为：正在运行的源码和测试、`package.json` 脚本、`.github/DEVELOPMENT.md`、本文件、`README.md`、`docs/plans/`。不要引用已删除的 `docs/DEVELOPMENT_STANDARD.md`、`docs/RELEASE.md` 或 `docs/acp-contract.md`。
+当前可执行代码仍是已验证的 ACP 基线，直到 M4 一次性切换完成；不得把“目标架构已冻结”描述为“ACP 已被替换”。迁移契约以 `docs/plans/2026-08-06-source-runtime-migration.md` 为准。
 
-English: Sources of truth, in order, are the running source and tests, `package.json` scripts, `.github/DEVELOPMENT.md`, this file, `README.md`, and `docs/plans/`. Do not reference the removed `docs/DEVELOPMENT_STANDARD.md`, `docs/RELEASE.md`, or `docs/acp-contract.md`.
+English: Executable code remains the verified ACP baseline until the M4 cutover. Do not describe a frozen target architecture as an implemented ACP replacement. The migration contract is `docs/plans/2026-08-06-source-runtime-migration.md`.
+
+当前事实来源按优先级为：正在运行的源码和测试、`package.json` 脚本、`.github/DEVELOPMENT.md`、本文件、已确认的 Source Runtime 迁移契约、`README.md`、其他 `docs/plans/`。不要引用已删除的 `docs/DEVELOPMENT_STANDARD.md`、`docs/RELEASE.md` 或 `docs/acp-contract.md`。
+
+English: Sources of truth, in order, are running source and tests, `package.json` scripts, `.github/DEVELOPMENT.md`, this file, the accepted Source Runtime migration contract, `README.md`, and other plans. Do not reference the removed `docs/DEVELOPMENT_STANDARD.md`, `docs/RELEASE.md`, or `docs/acp-contract.md`.
 
 开发规范见 `.github/DEVELOPMENT.md`，实现前先阅读。 / Read `.github/DEVELOPMENT.md` before implementation.
 
-## 当前进度（2026-07-20）/ Current Progress
+## 当前进度（2026-08-06）/ Current Progress
+
+### Source Runtime M0（2026-08-06）
+
+- 已冻结 Kimi Code `@moonshot-ai/kimi-code@0.33.0` / commit `53c832dfdf9566afd59a8b3d54ebd36d3cb03d72`。
+- 目标边界为 Tauri 监管的 source-built Node Runtime 子进程，通过 `runtime-v1` stdio JSONL 与 Rust 通信。
+- 当前阶段是契约、源码导入和 worker skeleton；ACP 仍是可执行基线，尚未完成真实 Runtime 切换。
+- 详见 `docs/plans/2026-08-06-source-runtime-migration.md`。
 
 ### 已提交基线 / Committed Baseline
 
@@ -24,9 +35,9 @@ English:
 - The Monochrome V2 visual system, AppShell, session sidebar, message stream, composer, Changes panel, settings shell, and shortcuts landed in the 2026-07-18 V2 commit series.
 - Local `master` is ahead of `origin/master`; do not confuse “not pushed” with “not implemented.”
 
-### 工作区内已实现、仍待收口 / Implemented In The Worktree, Pending Integration
+### 已提交 ACP 迁移基线 / Committed ACP Migration Baseline
 
-- 后端已迁移到 ACP-only：`AcpProcessManager` 负责会话 wire 流，`AcpDesktopClient` 负责会话 RPC；Python sidecar、`sidecar.rs` 和 bundled `kimi-sidecar` 正在删除。
+- 提交 `273c16a` 已收口 ACP 基线：`AcpProcessManager` 负责会话 wire 流，`AcpDesktopClient` 负责会话 RPC；旧 Python sidecar 已退出生产路径。
 - V2 已重新接入单一活动 `useSessionStream`、历史回放、附件、状态消息、工具 display blocks、子代理步骤，以及通用未知 payload fallback。
 - Workspace 已接入 Changes、Files、Agents、Tasks；Composer 已接入 slash 命令、文件上传、忙碌时队列和全局模型显示。
 - `/usage` / `/status` 由桌面本地拉取平台额度（5h / 7d）；未知斜杠指令会拦截提示。详见 `docs/SLASH_COMMAND_PARITY.md`。
@@ -35,16 +46,16 @@ English:
 
 English:
 
-- The backend worktree is ACP-only: `AcpProcessManager` owns session wire streams and `AcpDesktopClient` owns session RPC. The Python sidecar, `sidecar.rs`, and bundled `kimi-sidecar` are being removed.
+- Commit `273c16a` is the closed ACP migration baseline: `AcpProcessManager` owns session wire streams and `AcpDesktopClient` owns session RPC; the old Python sidecar is no longer a production path.
 - V2 reconnects a single active `useSessionStream`, replay, attachments, status messages, tool display blocks, subagent steps, and a generic fallback for unknown payloads.
 - Workspace exposes Changes, Files, Agents, and Tasks. Composer exposes slash commands, uploads, busy-state queueing, and the global model label.
 - `/usage` / `/status` are handled locally with platform quotas (5h / 7d); unknown slash commands are blocked with a desktop hint. See `docs/SLASH_COMMAND_PARITY.md`.
 - Sessions expose active/archived pagination, archive/restore, title generation, and bulk archive/restore/delete. Settings expose dark/light theme, global config, raw `config.toml`, and MCP.
 - Generic send feedback shows “消息发送中” immediately, clears on the first visible response, and preserves empty-terminal or ACP failures as visible errors.
 
-这些内容横跨 staged、unstaged 和 untracked 文件。除非完整验证通过并完成提交，否则在交接中称为“工作区已实现”或“集成中”，不要称为稳定发布能力。
+该基线的自动化门禁和 ACP smoke 已通过，但没有补做真实 Tauri/WebView 可见验收；不得把它描述为已完成 Source Runtime 切换。
 
-English: This work spans staged, unstaged, and untracked files. Until full verification and commit are complete, describe it as “implemented in the worktree” or “in integration,” not as a stable release capability.
+English: Automated gates and ACP smoke passed for this baseline, but real visible Tauri/WebView acceptance was not repeated. Do not describe it as a completed Source Runtime cutover.
 
 ### 尚未完成的验收 / Remaining Acceptance
 
@@ -64,7 +75,7 @@ English:
 
 ## 运行链路 / Runtime Chain
 
-桌面应用为 **ACP-only**；不要恢复 Python sidecar 或新增 legacy runtime fallback。
+当前可执行基线为 **ACP-only**；目标产品为 **Source-Runtime-only**。迁移只允许按已确认方案一次性切换，不恢复 Python sidecar，不新增 legacy runtime fallback，也不发布双 backend。
 
 ```text
 React app shell / useSessionStream
@@ -75,6 +86,17 @@ React app shell / useSessionStream
      -> session_store.rs                               # local metadata + wire.jsonl replay
      -> global_config.rs / mcp_config.rs               # ~/.kimi-code config
      -> session_files.rs / git_diff.rs                 # selected session worktree
+```
+
+目标链路：
+
+```text
+React app shell / useSessionStream
+  -> stable Tauri IPC / events
+     -> RuntimeSupervisor
+        -> source-built runtime/kimi-code/apps/desktop-runtime
+           -> createKimiHarnessV2 / Kimi source
+     -> desktop metadata / session replay adapter / files / Git
 ```
 
 会话 list/get/update/delete 是 ACP 结果与本地 metadata/session state 的组合，不是单一 client 的纯远程 CRUD。历史回放由 `session_store.rs` 直接翻译本地新格式记录；Git diff 针对选中会话的 worktree。
@@ -96,7 +118,7 @@ English: ACP-to-frontend wire compatibility translation lives in `src-tauri/src/
 - `~/.kimi-code` 属于用户运行时数据；测试不得覆盖真实配置、凭据或历史会话。
 - 日常启动使用 `npm run desktop`；本地 release exe 使用 `npm run desktop:release`；MSI 使用 `npm run release:msi`。
 - 不要把 `cargo build --release` 当成可运行桌面构建，也不要让旧 exe/MSI 代替当前源码。
-- 运行时需要 PATH 上的 `kimi` 和可用的 `kimi acp`；不得静默回退到 sidecar。
+- M4 之前的 ACP 基线需要 PATH 上的 `kimi` 和可用的 `kimi acp`；Source Runtime 切换后必须移除此要求，且始终不得静默回退到 sidecar 或外部 CLI。
 
 English:
 
@@ -109,7 +131,7 @@ English:
 - Treat `~/.kimi-code` as user runtime data; tests must not overwrite real config, credentials, or history.
 - Use `npm run desktop` for daily launch, `npm run desktop:release` for a local release executable, and `npm run release:msi` for MSI packaging.
 - Do not use `cargo build --release` as the runnable desktop path or substitute stale artifacts for the source tree.
-- Runtime requires `kimi` on PATH and a usable `kimi acp`; never silently fall back to a sidecar.
+- Before M4, the ACP baseline requires `kimi` on PATH and a usable `kimi acp`. The Source Runtime cutover must remove this requirement and must never silently fall back to a sidecar or external CLI.
 
 ## 标准命令 / Canonical Commands
 
@@ -146,8 +168,10 @@ src-tauri/src/acp_desktop.rs                 # ACP session RPC client
 src-tauri/src/acp_translate.rs               # ACP -> frontend wire translation
 src-tauri/src/session_store.rs               # persisted new-format replay and local metadata
 src-tauri/src/runtime_check.rs               # installed CLI/auth/config readiness
+runtime/kimi-code/                           # pinned upstream source plus Desktop Runtime app
 scripts/check-quick.mjs
 scripts/acp-smoke.mjs
+docs/plans/2026-08-06-source-runtime-migration.md
 docs/plans/2026-07-18-v2-ui-integration.md
 docs/plans/2026-07-18-webview2-acceptance.md
 docs/plans/2026-07-19-generic-send-feedback.md
@@ -179,6 +203,8 @@ npm run smoke:acp
 ```
 
 该命令依赖本机 CLI 与认证状态；报告时把环境阻塞与代码回归分开。UI 完成度必须再走真实 Tauri/WebView2 验收并检查可见 DOM、控制台错误和真实 IPC。
+
+Source Runtime 接入后新增 `smoke:runtime`，并在 M4 删除 ACP smoke 的发布门禁职责。迁移阶段必须分别报告 ACP 基线验证与 Source Runtime skeleton/集成验证。
 
 ACP-only 代码门禁应确认旧 runtime 标识没有重新进入生产路径。搜索命中注释、测试或“legacy wire shape”时需人工分类，不要机械要求全仓零匹配：
 
