@@ -5,8 +5,8 @@
 <h1 align="center">Kimi Code Desktop</h1>
 
 <p align="center">
-  为 Kimi Code CLI 打造的原生 Windows 与 macOS 桌面工作台。<br />
-  A native Windows &amp; macOS workspace for Kimi Code CLI.
+  源码自有的 Kimi Code Windows 与 macOS 桌面工作台。<br />
+  A source-owned Kimi Code workspace for Windows &amp; macOS.
 </p>
 
 <p align="center">
@@ -16,11 +16,11 @@
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-111111" />
 </p>
 
-开发与提交约定见 [结构与开发规范](.github/DEVELOPMENT.md)。
+开发与提交约定见 [结构与开发规范](.github/DEVELOPMENT.md)。Source Runtime 的已确认迁移契约见 [2026-08-06 Source Runtime 方案](docs/plans/2026-08-06-source-runtime-migration.md)。
 
-Kimi Code Desktop 将 Kimi Code 的终端智能体能力带进一个专注、可视、可管理的桌面界面。它不是另一套 AI 运行时：会话、模型、工具调用与智能体能力仍由用户安装的 Kimi Code CLI 提供，桌面端通过 ACP（`kimi acp`）连接，并负责交互、工作区呈现与 Windows / macOS 系统集成。
+Kimi Code Desktop 将 Kimi Code 的智能体能力带进一个专注、可视、可管理的桌面界面。`codex/source-runtime` 正在把 Kimi Code 0.33.0 源码纳入仓库并构建为唯一 Runtime；完成后发布包不依赖用户安装的 CLI，也不使用 ACP 或生产双 backend。
 
-> 当前源码版本为 `1.1.2`，面向 Windows 与 macOS（Apple Silicon）。
+> 当前源码版本为 `1.1.3`。本分支尚在 M0：ACP 仍是可执行基线，Source Runtime 尚未完成真实切换，因此本分支不是可发布状态。
 
 ## 你可以用它做什么
 
@@ -40,22 +40,21 @@ Kimi Code Desktop 将 Kimi Code 的终端智能体能力带进一个专注、可
 
 界面采用 Monochrome V2 设计语言，以紧凑的信息密度、清晰的层级和低干扰动效服务长时间编码。深浅主题切换使用 View Transition 动画，并自动尊重系统的“减少动态效果”偏好。
 
-运行时保持 **ACP-only**，不捆绑或静默回退到旧 Python sidecar：
+当前迁移基线仍是 ACP；目标架构为 **Source-Runtime-only**，不捆绑或静默回退到 ACP、外部 CLI 或旧 Python sidecar：
 
 ```text
 React 19 + Vite
-  └─ Tauri 2 IPC / events
-      ├─ AcpProcessManager       实时会话、发送、审批与取消
-      ├─ AcpDesktopClient        ACP 会话 RPC
-      ├─ session_store.rs        本地元数据与历史回放
-      ├─ global_config.rs        ~/.kimi-code 配置
-      └─ session_files / git     当前会话工作区文件与差异
-           └─ user-installed `kimi acp`
+  └─ stable Tauri 2 IPC / events
+      ├─ RuntimeSupervisor
+      │   └─ source-built desktop-runtime child
+      │       └─ createKimiHarnessV2 / vendored Kimi source
+      ├─ desktop metadata / replay adapter
+      └─ session files / Git
 ```
 
-桌面应用只负责 UI、进程编排和本地集成；Kimi Code CLI 仍是模型、工具及智能体运行行为的唯一来源。
+Runtime 作为 Tauri 监管的独立 OS 子进程运行，通过 `runtime-v1` stdio JSONL 通信。React 不直接依赖 Kimi 内部类型；Rust 保留进程监管、桌面数据、文件和 Git 安全边界。
 
-## 安装
+## 当前稳定版安装（ACP 基线）
 
 ### 1. 安装并配置 Kimi Code CLI
 
@@ -81,7 +80,7 @@ kimi migrate
 
 ## 本地开发
 
-需要 Node.js、npm、Rust stable toolchain（MSVC target）以及已安装的 Kimi Code CLI。
+外层 Desktop 需要 Node.js 24.15.0 以上、npm 和 Rust stable toolchain。M4 之前运行 ACP 基线仍需已安装的 Kimi Code CLI；`npm install` 会安装项目固定的 pnpm 10.33.0，用于 nested Source Runtime workspace，不依赖全局 pnpm 或 Corepack。
 
 ```powershell
 git clone https://github.com/P-A-N-52/kimi-code-desktop.git
@@ -100,6 +99,9 @@ npm run rust:test         # Rust 测试
 npm run rust:check        # Rust 编译检查
 npm run check:quick       # 日常快速门禁
 npm run smoke:acp         # 验证本机 kimi acp
+npm run runtime:install   # 安装固定 Kimi source workspace 依赖
+npm run runtime:build     # 构建 Source Runtime skeleton
+npm run smoke:runtime     # 构建并验证 runtime-v1 协议
 ```
 
 ## 构建与发布
