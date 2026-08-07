@@ -10,12 +10,14 @@ import {
   X,
 } from "lucide-react";
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type ClipboardEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -71,6 +73,9 @@ type ComposerProps = {
   thinkingEffort: string;
   modelControlsDisabled?: boolean;
   modelUpdating?: boolean;
+  thinkingControlsVisible?: boolean;
+  /** Async gate before the model dropdown opens (lazy-connect config load). */
+  onModelPickerOpen?: () => Promise<boolean>;
   onSelectModel: (name: string) => void;
   onToggleThinking: (enabled: boolean) => void;
   onSelectThinkingEffort: (effort: string) => void;
@@ -100,6 +105,8 @@ export function Composer({
   thinkingEffort,
   modelControlsDisabled = false,
   modelUpdating = false,
+  thinkingControlsVisible,
+  onModelPickerOpen,
   onSelectModel,
   onToggleThinking,
   onSelectThinkingEffort,
@@ -109,6 +116,7 @@ export function Composer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const commandMenuRef = useRef<HTMLDivElement>(null);
   const mentionMenuRef = useRef<HTMLDivElement>(null);
+  const dismissedCommandDraftRef = useRef<string | null>(null);
   const [commandMenuOpen, setCommandMenuOpen] = useState(false);
   const [activeCommand, setActiveCommand] = useState(0);
   const [uploading, setUploading] = useState(false);
@@ -139,11 +147,28 @@ export function Composer({
     [commandQuery, slashCommands],
   );
 
-  const closeCommandMenu = () => {
-    setCommandMenuOpen(false);
-  };
+  const closeCommandMenu = useCallback(
+    (dismissedDraft = draft) => {
+      dismissedCommandDraftRef.current = dismissedDraft;
+      setCommandMenuOpen(false);
+    },
+    [draft],
+  );
 
-  const syncTextareaHeight = () => {
+  useEffect(() => {
+    const wantsMenu = draft.startsWith("/") && !draft.includes("\n");
+    if (!wantsMenu) {
+      dismissedCommandDraftRef.current = null;
+      setCommandMenuOpen(false);
+      return;
+    }
+    if (dismissedCommandDraftRef.current === draft) return;
+    setCommandMenuOpen(true);
+    fileMentions.closeMenu();
+    setActiveCommand(0);
+  }, [draft, fileMentions.closeMenu]);
+
+  const syncTextareaHeight = useCallback(() => {
     const node = textareaRef.current;
     if (!node) return;
     // Collapse to min so scrollHeight reflects content, not the previous box.
@@ -155,11 +180,13 @@ export function Composer({
     );
     node.style.height = `${next}px`;
     setTextareaHeight(next);
-  };
+  }, []);
 
   useLayoutEffect(() => {
+    // Re-measure whenever the controlled draft changes.
+    void draft;
     syncTextareaHeight();
-  }, [draft]);
+  }, [draft, syncTextareaHeight]);
 
   const onResizePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -192,15 +219,32 @@ export function Composer({
     handle.addEventListener("pointercancel", onUp);
   };
 
+  const onResizeKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const step = 8;
+    let next: number | null = null;
+    if (event.key === "ArrowUp") next = textareaHeight + step;
+    if (event.key === "ArrowDown") next = textareaHeight - step;
+    if (event.key === "Home") next = TEXTAREA_MIN_HEIGHT;
+    if (event.key === "End") next = TEXTAREA_MAX_HEIGHT;
+    if (next === null) return;
+    event.preventDefault();
+    next = Math.min(Math.max(next, TEXTAREA_MIN_HEIGHT), TEXTAREA_MAX_HEIGHT);
+    manualFloorRef.current = next;
+    setTextareaHeight(next);
+  };
+
   const selectCommand = (command: SlashCommandDef) => {
-    setCommandMenuOpen(false);
     const commandText = `/${command.name}`;
     if (shouldExecuteSlashCommandImmediately(command)) {
+      dismissedCommandDraftRef.current = null;
+      setCommandMenuOpen(false);
       onDraftChange("");
       onSend(commandText);
       return;
     }
-    onDraftChange(`${commandText}${command.inputHint ? " " : " "}`);
+    const nextDraft = `${commandText}${command.inputHint ? " " : " "}`;
+    closeCommandMenu(nextDraft);
+    onDraftChange(nextDraft);
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
@@ -217,25 +261,28 @@ export function Composer({
   const draftRef = useRef(draft);
   draftRef.current = draft;
 
-  const insertPathTokens = (paths: string[]) => {
-    if (paths.length === 0) return;
-    let text = draftRef.current;
-    let caret = textareaRef.current?.selectionStart ?? text.length;
-    for (const rawPath of paths) {
-      const token = formatMentionToken(rawPath.replace(/\\/g, "/"));
-      const inserted = insertTokenAtCaret(text, caret, token);
-      text = inserted.nextText;
-      caret = inserted.nextCaret;
-    }
-    // Sync immediately so sequential inserts (multi-file paste) see prior tokens
-    // before React re-renders and refreshes draftRef from props.
-    draftRef.current = text;
-    onDraftChange(text);
-    requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(caret, caret);
-    });
-  };
+  const insertPathTokens = useCallback(
+    (paths: string[]) => {
+      if (paths.length === 0) return;
+      let text = draftRef.current;
+      let caret = textareaRef.current?.selectionStart ?? text.length;
+      for (const rawPath of paths) {
+        const token = formatMentionToken(rawPath.replace(/\\/g, "/"));
+        const inserted = insertTokenAtCaret(text, caret, token);
+        text = inserted.nextText;
+        caret = inserted.nextCaret;
+      }
+      // Sync immediately so sequential inserts (multi-file paste) see prior tokens
+      // before React re-renders and refreshes draftRef from props.
+      draftRef.current = text;
+      onDraftChange(text);
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+        textareaRef.current?.setSelectionRange(caret, caret);
+      });
+    },
+    [onDraftChange],
+  );
 
   const onComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = Array.from(event.clipboardData.items)
@@ -308,14 +355,19 @@ export function Composer({
           insertPathTokens(event.payload.paths ?? []);
         }),
       );
-      if (cancelled) unlisteners.forEach((unlisten) => unlisten());
+      if (cancelled) {
+        unlisteners.forEach((unlisten) => {
+          unlisten();
+        });
+      }
     })();
     return () => {
       cancelled = true;
-      unlisteners.forEach((unlisten) => unlisten());
+      unlisteners.forEach((unlisten) => {
+        unlisten();
+      });
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sendDisabled, uploading]);
+  }, [insertPathTokens, sendDisabled, uploading]);
 
   useEffect(() => {
     if (!commandMenuOpen && !fileMentions.isOpen) return;
@@ -330,7 +382,7 @@ export function Composer({
     };
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
-  }, [commandMenuOpen, fileMentions.isOpen, fileMentions.closeMenu]);
+  }, [closeCommandMenu, commandMenuOpen, fileMentions.isOpen, fileMentions.closeMenu]);
 
   return (
     <div
@@ -340,14 +392,17 @@ export function Composer({
         dragActive && "border-bright bg-active/40",
       )}
     >
+      {/* biome-ignore lint/a11y/useSemanticElements: an adjustable separator needs range state and keyboard input. */}
       <div
         role="separator"
+        tabIndex={0}
         aria-orientation="horizontal"
         aria-label="调整输入框高度"
         aria-valuemin={TEXTAREA_MIN_HEIGHT}
         aria-valuemax={TEXTAREA_MAX_HEIGHT}
         aria-valuenow={textareaHeight}
         onPointerDown={onResizePointerDown}
+        onKeyDown={onResizeKeyDown}
         className="absolute inset-x-0 top-0 z-20 flex h-3 cursor-ns-resize touch-none items-center justify-center"
       >
         <div className="h-0.5 w-8 rounded-full bg-line-strong/70 transition-colors hover:bg-bright/50" />
@@ -489,6 +544,7 @@ export function Composer({
           onDraftChange(value);
           // Match CLI web: Escape only closes; further typing while still on "/…" reopens.
           const wantsMenu = value.startsWith("/") && !value.includes("\n");
+          dismissedCommandDraftRef.current = null;
           setCommandMenuOpen(wantsMenu);
           if (wantsMenu) {
             fileMentions.closeMenu();
@@ -518,7 +574,24 @@ export function Composer({
           }
         }}
         onKeyDown={(event) => {
+          // Let the IME consume Enter while it is confirming a composition.
+          // keyCode 229 covers WebKit/macOS cases where isComposing flips early.
+          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
           if (fileMentions.isOpen && fileMentions.handleKeyDown(event)) return;
+          if (
+            !commandMenuOpen &&
+            event.key === "/" &&
+            !event.metaKey &&
+            !event.ctrlKey &&
+            !event.altKey &&
+            event.currentTarget.selectionStart === 0 &&
+            event.currentTarget.selectionEnd === 0
+          ) {
+            dismissedCommandDraftRef.current = null;
+            fileMentions.closeMenu();
+            setActiveCommand(0);
+            setCommandMenuOpen(true);
+          }
           if (commandMenuOpen) {
             if (
               visibleCommands.length > 0 &&
@@ -579,6 +652,7 @@ export function Composer({
             disabled={sendDisabled}
             onClick={() => {
               fileMentions.closeMenu();
+              dismissedCommandDraftRef.current = null;
               onDraftChange(draft.startsWith("/") ? draft : "/");
               setCommandMenuOpen(true);
               requestAnimationFrame(() => textareaRef.current?.focus());
@@ -608,6 +682,8 @@ export function Composer({
             thinkingEffort={thinkingEffort}
             disabled={modelControlsDisabled || sendDisabled}
             updating={modelUpdating}
+            thinkingControlsVisible={thinkingControlsVisible}
+            onBeforeOpen={onModelPickerOpen}
             onSelectModel={onSelectModel}
             onToggleThinking={onToggleThinking}
             onSelectThinkingEffort={onSelectThinkingEffort}

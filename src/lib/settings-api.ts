@@ -1,17 +1,23 @@
+import { getApiBaseUrl } from "@/hooks/utils";
 import { apiClient } from "@/lib/apiClient";
 import { getAuthHeader } from "@/lib/auth";
 import {
+  isTauri,
+  type ProviderCatalogEntry,
+  type ProviderCatalogSummary,
+  type TextConfigFile,
   getConfigToml as tauriGetConfigToml,
   getMcpConfig as tauriGetMcpConfig,
-  isTauri,
-  type TextConfigFile,
+  getProviderCatalogEntry as tauriGetProviderCatalogEntry,
+  importProviderFromCatalog as tauriImportProviderFromCatalog,
+  importProviderRegistry as tauriImportProviderRegistry,
+  listProviderCatalog as tauriListProviderCatalog,
   updateConfigToml as tauriUpdateConfigToml,
   updateMcpConfig as tauriUpdateMcpConfig,
   type UpdateTextConfigResponse,
 } from "@/lib/tauri-api";
-import { getApiBaseUrl } from "@/hooks/utils";
 
-const DEFAULT_MCP_JSON = "{\n  \"mcpServers\": {}\n}\n";
+const DEFAULT_MCP_JSON = '{\n  "mcpServers": {}\n}\n';
 
 async function parseJsonResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
@@ -26,6 +32,18 @@ async function parseJsonResponse<T>(response: Response): Promise<T> {
   return data as T;
 }
 
+function dispatchTextConfigUpdate(resp: UpdateTextConfigResponse): void {
+  window.dispatchEvent(
+    new CustomEvent("kimi:config-update", {
+      detail: {
+        restartedSessionIds: resp.restartedSessionIds ?? [],
+        skippedBusySessionIds: resp.skippedBusySessionIds ?? [],
+        requiresRuntimeReadiness: true,
+      },
+    }),
+  );
+}
+
 export async function getConfigTomlFile(): Promise<TextConfigFile> {
   if (isTauri()) {
     return tauriGetConfigToml();
@@ -33,15 +51,13 @@ export async function getConfigTomlFile(): Promise<TextConfigFile> {
   return apiClient.config.getConfigTomlApiConfigTomlGet();
 }
 
-export async function updateConfigTomlFile(
-  content: string,
-): Promise<UpdateTextConfigResponse> {
+export async function updateConfigTomlFile(content: string): Promise<UpdateTextConfigResponse> {
   if (isTauri()) {
     const resp = await tauriUpdateConfigToml(content);
     if (!resp.success) {
       throw new Error(resp.error || "Failed to save config.toml");
     }
-    window.dispatchEvent(new Event("kimi:config-update"));
+    dispatchTextConfigUpdate(resp);
     return resp;
   }
   const resp = await apiClient.config.updateConfigTomlApiConfigTomlPut({
@@ -50,8 +66,42 @@ export async function updateConfigTomlFile(
   if (!resp.success) {
     throw new Error(resp.error || "Failed to save config.toml");
   }
-  window.dispatchEvent(new Event("kimi:config-update"));
+  dispatchTextConfigUpdate(resp);
   return resp;
+}
+
+export async function listProviderCatalog(): Promise<ProviderCatalogSummary[]> {
+  if (!isTauri()) {
+    throw new Error("Provider catalog is only available in the desktop app.");
+  }
+  return tauriListProviderCatalog();
+}
+
+export async function getProviderCatalogEntry(providerId: string): Promise<ProviderCatalogEntry> {
+  if (!isTauri()) {
+    throw new Error("Provider catalog is only available in the desktop app.");
+  }
+  return tauriGetProviderCatalogEntry(providerId);
+}
+
+export async function importProviderFromCatalog(args: {
+  providerId: string;
+  apiKey: string;
+  defaultModel?: string;
+  baseUrl?: string;
+}): Promise<UpdateTextConfigResponse> {
+  const response = await tauriImportProviderFromCatalog(args);
+  dispatchTextConfigUpdate(response);
+  return response;
+}
+
+export async function importProviderRegistry(args: {
+  registryUrl: string;
+  apiKey: string;
+}): Promise<UpdateTextConfigResponse> {
+  const response = await tauriImportProviderRegistry(args);
+  dispatchTextConfigUpdate(response);
+  return response;
 }
 
 export async function getMcpConfigFile(): Promise<TextConfigFile> {
@@ -70,15 +120,13 @@ export async function getMcpConfigFile(): Promise<TextConfigFile> {
   return parseJsonResponse<TextConfigFile>(response);
 }
 
-export async function updateMcpConfigFile(
-  content: string,
-): Promise<UpdateTextConfigResponse> {
+export async function updateMcpConfigFile(content: string): Promise<UpdateTextConfigResponse> {
   if (isTauri()) {
     const resp = await tauriUpdateMcpConfig(content);
     if (!resp.success) {
       throw new Error(resp.error || "Failed to save mcp.json");
     }
-    window.dispatchEvent(new Event("kimi:config-update"));
+    dispatchTextConfigUpdate(resp);
     return resp;
   }
   const response = await fetch(`${getApiBaseUrl()}/api/config/mcp`, {
@@ -93,6 +141,6 @@ export async function updateMcpConfigFile(
   if (!resp.success) {
     throw new Error(resp.error || "Failed to save mcp.json");
   }
-  window.dispatchEvent(new Event("kimi:config-update"));
+  dispatchTextConfigUpdate(resp);
   return resp;
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { RuntimeReadiness } from "@/lib/tauri-api";
 import {
 	getRuntimeReadinessKind,
+	isRuntimeConfigIncomplete,
 	shouldPauseForRuntimeReadiness,
 } from "./runtime-readiness";
 
@@ -49,6 +50,19 @@ describe("runtime readiness", () => {
 		});
 		expect(getRuntimeReadinessKind(state)).toBe("blocked");
 		expect(shouldPauseForRuntimeReadiness(state, false)).toBe(true);
+	});
+
+	it("keeps incomplete config blocked after acknowledgement", () => {
+		const state = readiness({});
+		state.config = { ...state.config, ready: false };
+		expect(isRuntimeConfigIncomplete(state)).toBe(true);
+		expect(getRuntimeReadinessKind(state)).toBe("blocked");
+		expect(shouldPauseForRuntimeReadiness(state, true)).toBe(true);
+	});
+
+	it("does not classify a ready config as incomplete", () => {
+		const state = readiness({});
+		expect(isRuntimeConfigIncomplete(state)).toBe(false);
 	});
 
 	it("allows continuing after a failed readiness command is acknowledged", () => {

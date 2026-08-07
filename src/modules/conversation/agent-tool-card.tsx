@@ -3,6 +3,10 @@ import { useMemo, useState } from "react";
 import type { LiveMessage, SubagentStep } from "@/hooks/types";
 import { parseAgentInput, parseAgentResult } from "@/lib/agent/parseAgentResult";
 import {
+  formatAgentModelDisplay,
+  resolveAgentModelDisplay,
+} from "@/lib/agent-model-display";
+import {
   getSwarmMembers,
   isActiveAgentStatus,
   useAgentMonitorStore,
@@ -402,6 +406,16 @@ export function AgentToolCard({
     (row) => row.phase === "completed" || row.phase === "failed",
   ).length;
   const multi = progressRows.length > 1;
+  const modelDisplay = useMemo(() => {
+    for (const task of childTasks) {
+      const display = resolveAgentModelDisplay({
+        boundModel: task.boundModel,
+        modelPreference: task.modelPreference,
+      });
+      if (display) return display;
+    }
+    return null;
+  }, [childTasks]);
 
   const [open, setOpen] = useState(
     defaultOpen ?? (running || hasSubagentActivity),
@@ -531,6 +545,14 @@ export function AgentToolCard({
                 ) : null}
                 {agentId ? (
                   <span className="font-mono text-[10.5px] text-faint">{agentId}</span>
+                ) : null}
+                {modelDisplay ? (
+                  <span
+                    data-slot="agent-model-chip"
+                    className="inline-flex items-center rounded-r1 border border-line bg-background px-1.5 py-0.5 font-mono text-[10.5px] text-muted"
+                  >
+                    {formatAgentModelDisplay(modelDisplay)}
+                  </span>
                 ) : null}
               </div>
             )}

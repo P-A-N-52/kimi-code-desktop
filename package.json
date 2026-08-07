@@ -2,7 +2,7 @@
   "name": "kimi-code-desktop",
   "private": true,
   "license": "Apache-2.0",
-  "version": "1.0.0",
+  "version": "1.1.3",
   "description": "Kimi Code 桌面应用 / Kimi Code Desktop App",
   "type": "module",
   "scripts": {
@@ -20,6 +20,11 @@
     "release:preflight": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-preflight.ps1",
     "release:msi": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-msi.ps1",
     "release:macos": "bash scripts/release-macos.sh",
+    "runtime:install": "pnpm --dir runtime/kimi-code install --frozen-lockfile",
+    "runtime:typecheck": "pnpm --dir runtime/kimi-code --filter @moonshot-ai/desktop-runtime run typecheck",
+    "runtime:test": "pnpm --dir runtime/kimi-code --filter @moonshot-ai/desktop-runtime run test",
+    "runtime:build": "pnpm --dir runtime/kimi-code --filter @moonshot-ai/desktop-runtime... run build",
+    "smoke:runtime": "npm run runtime:build && pnpm --dir runtime/kimi-code --filter @moonshot-ai/desktop-runtime run smoke",
     "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
     "rust:clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
@@ -39,6 +44,8 @@
     "tauri:build": "npm run release:msi",
     "tauri:build:raw-msi": "tauri build --bundles msi",
     "tauri:build:nsis": "tauri build --bundles nsis",
+    "bench:long-session": "node scripts/bench-long-session.mjs",
+    "gen:long-session-fixture": "node scripts/gen-long-session-fixture.mjs",
     "version:sync": "node scripts/sync-version.js",
     "version:set": "node scripts/sync-version.js"
   },
@@ -84,11 +91,15 @@
     "@vitest/ui": "^4.1.7",
     "happy-dom": "^20.9.0",
     "jsdom": "^29.1.1",
+    "pnpm": "10.33.0",
     "rollup-plugin-visualizer": "6.0.3",
     "smol-toml": "^1.5.2",
     "typescript": "~5.9.3",
     "ultracite": "^7.1.1",
     "vite": "^7.2.4",
     "vitest": "^4.1.7"
+  },
+  "overrides": {
+    "undici": "^7.29.0"
   }
 }

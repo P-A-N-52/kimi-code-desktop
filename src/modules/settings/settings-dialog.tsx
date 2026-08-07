@@ -1,9 +1,11 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { useCustomSubagentsEnabled } from "@/hooks/useCustomSubagents";
 import { useTheme } from "@/hooks/use-theme";
 import { useGlobalConfig } from "@/hooks/useGlobalConfig";
 import {
   notifyGlobalConfigApplied,
+  notifySecondaryModelApplied,
   notifyTextConfigSaved,
 } from "@/lib/config-update-toast";
 import { useI18n, type UiLanguage } from "@/lib/i18n";
@@ -23,6 +25,11 @@ import {
   modelThinkingEfforts,
 } from "@/lib/model-capabilities";
 import {
+  resolveSecondaryModelOnEnable,
+  secondaryModelEffectHint,
+  shouldShowSecondaryModelSettings,
+} from "@/lib/secondary-model";
+import {
   getConfigTomlFile,
   getMcpConfigFile,
   updateConfigTomlFile,
@@ -34,15 +41,18 @@ import { cn } from "@/lib/utils";
 import { desktopVersion, resolveKimiCliVersion } from "@/lib/version";
 import { Button } from "@/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/ui/dialog";
+import { useConfirm } from "@/ui/confirm-dialog";
 import { Switch } from "@/ui/switch";
-import { UsagePanel } from "./usage-panel";
 import { KimiLoginPanel } from "./kimi-login-panel";
+import { UsagePanel } from "./usage-panel";
+import { ProviderModelEditor } from "@/modules/providers/provider-model-editor";
+import { ProvidersPanel } from "@/modules/providers/providers-panel";
 
 export type SettingsTab = "general" | "config" | "mcp" | "usage" | "about";
 
 const TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: "general", label: "通用" },
-  { id: "config", label: "Config" },
+  { id: "config", label: "Providers" },
   { id: "mcp", label: "MCP" },
   { id: "usage", label: "用量" },
   { id: "about", label: "关于" },
@@ -117,7 +127,7 @@ function VersionRow({
   );
 }
 
-function TextConfigEditor({
+export function TextConfigEditor({
   enabled,
   label,
   description,
@@ -137,38 +147,58 @@ function TextConfigEditor({
   const [content, setContent] = useState("");
   const [savedContent, setSavedContent] = useState("");
   const [path, setPath] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loadState, setLoadState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const loadRequestIdRef = useRef(0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isReady = loadState === "ready";
 
   useEffect(() => {
-    onDirtyChange(content !== savedContent);
-  }, [content, onDirtyChange, savedContent]);
+    onDirtyChange(isReady && content !== savedContent);
+  }, [content, isReady, onDirtyChange, savedContent]);
 
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-    setLoading(true);
+  const loadFile = useCallback(async () => {
+    const requestId = loadRequestIdRef.current + 1;
+    loadRequestIdRef.current = requestId;
+    setLoadState("loading");
     setError(null);
-    void load()
-      .then((file) => {
-        if (cancelled) return;
-        setContent(file.content);
-        setSavedContent(file.content);
-        setPath(file.path);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    try {
+      const file = await load();
+      if (requestId !== loadRequestIdRef.current) return;
+      setContent(file.content);
+      setSavedContent(file.content);
+      setPath(file.path);
+      setLoadState("ready");
+    } catch (loadError) {
+      if (requestId !== loadRequestIdRef.current) return;
+      setContent("");
+      setSavedContent("");
+      setPath("");
+      setError(`读取 ${label} 失败：${loadError instanceof Error ? loadError.message : String(loadError)}`);
+      setLoadState("error");
+    }
+  }, [label, load]);
+
+  useEffect(() => {
+    if (!enabled) {
+      loadRequestIdRef.current += 1;
+      setLoadState("idle");
+      return;
+    }
+    void loadFile();
     return () => {
-      cancelled = true;
+      loadRequestIdRef.current += 1;
     };
-  }, [enabled, load]);
+  }, [enabled, loadFile]);
+
+  const retryLoad = () => {
+    if (enabled && loadState !== "loading") {
+      void loadFile();
+    }
+  };
 
   const handleSave = async () => {
+    if (!isReady || saving) return;
     setError(null);
     if (language === "json") {
       try {
@@ -197,16 +227,25 @@ function TextConfigEditor({
     <div className="flex h-full min-h-0 flex-1 flex-col">
       <div className="mb-3 shrink-0">
         <p className="text-[12.5px] text-foreground">{description}</p>
-        <p className="mt-1 truncate font-mono text-[10px] text-faint">{path || "读取中…"}</p>
+        <p className="mt-1 truncate font-mono text-[10px] text-faint">
+          {path || (loadState === "error" ? "读取失败" : "读取中…")}
+        </p>
       </div>
-      {loading ? (
+      {loadState === "idle" || loadState === "loading" ? (
         <p className="py-12 text-center font-mono text-[11px] text-faint">加载中…</p>
+      ) : loadState === "error" ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3">
+          <p className="text-center font-mono text-[11px] text-faint">读取失败，当前内容不会被保存。</p>
+          <Button variant="ghost" onClick={retryLoad}>
+            重试读取
+          </Button>
+        </div>
       ) : (
         <textarea
           value={content}
           onChange={(event) => setContent(event.target.value)}
           spellCheck={false}
-          disabled={saving}
+          disabled={!isReady || saving}
           className="min-h-0 w-full flex-1 resize-none rounded-r2 border border-line bg-background p-3 font-mono text-[11px] leading-relaxed text-foreground outline-none focus:border-line-strong disabled:opacity-60"
         />
       )}
@@ -221,7 +260,7 @@ function TextConfigEditor({
         </span>
         <Button
           className="ml-auto"
-          disabled={loading || saving || content === savedContent}
+          disabled={!isReady || saving || content === savedContent}
           onClick={() => void handleSave()}
         >
           {saving ? "保存中…" : `保存 ${label}`}
@@ -243,12 +282,18 @@ export function SettingsDialog({
 }) {
   const { resolvedLanguage, uiLanguage, setUiLanguage, t } = useI18n();
   const { theme, setThemeWithTransition } = useTheme();
+  const confirm = useConfirm();
+  const {
+    enabled: customSubagentsEnabled,
+    setEnabled: setCustomSubagentsEnabled,
+  } = useCustomSubagentsEnabled();
   const { config, isLoading, isUpdating, error, update } = useGlobalConfig({ enabled: open });
   const [tab, setTab] = useState<SettingsTab>("general");
-  const [dirtyTabs, setDirtyTabs] = useState<Record<"config" | "mcp", boolean>>({
-    config: false,
-    mcp: false,
+  const [configEditorDirty, setConfigEditorDirty] = useState({
+    raw: false,
+    structured: false,
   });
+  const [mcpEditorDirty, setMcpEditorDirty] = useState(false);
   const [cliVersion, setCliVersion] = useState("—");
   const [appVersion, setAppVersion] = useState(desktopVersion);
   const [checkingUpdates, setCheckingUpdates] = useState(false);
@@ -263,27 +308,48 @@ export function SettingsDialog({
   const supportsThinking = modelHasThinkingCapability(selectedModel);
   const forcesThinking = modelForcesThinking(selectedModel);
   const supportedEfforts = modelThinkingEfforts(selectedModel);
-  const currentEditorDirty = (tab === "config" || tab === "mcp") && dirtyTabs[tab];
+  const showSecondaryModelSettings = shouldShowSecondaryModelSettings(config);
+  const secondaryModelEnabled = Boolean(
+    config?.secondaryModelExperimentEnabled &&
+      config.secondaryModelConfigured &&
+      config.secondaryModelValid,
+  );
+  const selectedSecondaryModel = useMemo(
+    () => findConfigModel(config?.models, config?.secondaryModel ?? undefined),
+    [config?.models, config?.secondaryModel],
+  );
+  const secondarySupportedEfforts = modelThinkingEfforts(selectedSecondaryModel);
+  const currentEditorDirty =
+    tab === "config"
+      ? configEditorDirty.raw || configEditorDirty.structured
+      : tab === "mcp"
+        ? mcpEditorDirty
+        : false;
 
-  const confirmDiscardCurrentEditor = () =>
+  const confirmDiscardCurrentEditor = async () =>
     !currentEditorDirty ||
-    window.confirm(
+    (await confirm(
       resolvedLanguage === "zh-CN"
         ? "当前文件有未保存的更改，确定放弃吗？"
         : "The current file has unsaved changes. Discard them?",
-    );
+    ));
 
-  const changeTab = (nextTab: SettingsTab) => {
-    if (nextTab === tab || !confirmDiscardCurrentEditor()) return;
-    if (tab === "config" || tab === "mcp") {
-      setDirtyTabs((current) => ({ ...current, [tab]: false }));
+  const changeTab = async (nextTab: SettingsTab) => {
+    if (nextTab === tab || !(await confirmDiscardCurrentEditor())) return;
+    if (tab === "config") {
+      setConfigEditorDirty({ raw: false, structured: false });
+    } else if (tab === "mcp") {
+      setMcpEditorDirty(false);
     }
     setTab(nextTab);
   };
 
-  const handleOpenChange = (nextOpen: boolean) => {
-    if (!nextOpen && !confirmDiscardCurrentEditor()) return;
-    if (!nextOpen) setDirtyTabs({ config: false, mcp: false });
+  const handleOpenChange = async (nextOpen: boolean) => {
+    if (!nextOpen && !(await confirmDiscardCurrentEditor())) return;
+    if (!nextOpen) {
+      setConfigEditorDirty({ raw: false, structured: false });
+      setMcpEditorDirty(false);
+    }
     onOpenChange(nextOpen);
   };
 
@@ -462,6 +528,53 @@ export function SettingsDialog({
     }
   };
 
+  const applySecondaryModel = async (name: string) => {
+    try {
+      const resp = await update({ secondaryModel: name });
+      notifySecondaryModelApplied(resp, `Secondary model 已设为 ${name}`);
+    } catch (err) {
+      toast.error("更新 Secondary model 失败", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
+  const applySecondaryModelExperiment = async (enabled: boolean, model: string) => {
+    try {
+      const resp = await update({
+        secondaryModelExperimentEnabled: enabled,
+        secondaryModel: model,
+      });
+      notifySecondaryModelApplied(
+        resp,
+        enabled
+          ? `${t("Custom subagents enabled; default model:")} ${model}`
+          : t("Custom subagents disabled"),
+      );
+    } catch (err) {
+      toast.error(
+        enabled
+          ? t("Failed to enable custom subagents")
+          : t("Failed to disable custom subagents"),
+        {
+          description: err instanceof Error ? err.message : String(err),
+        },
+      );
+    }
+  };
+
+  const applySecondaryDefaultEffort = async (effort: string) => {
+    if (!secondarySupportedEfforts.includes(effort)) return;
+    try {
+      const resp = await update({ secondaryDefaultEffort: effort });
+      notifySecondaryModelApplied(resp, `Secondary 思考档位已切换为 ${effort}`);
+    } catch (err) {
+      toast.error("更新 Secondary 思考档位失败", {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="flex h-[min(720px,85vh)] max-w-[820px] flex-col overflow-hidden">
@@ -475,7 +588,7 @@ export function SettingsDialog({
               <button
                 key={item.id}
                 type="button"
-                onClick={() => changeTab(item.id)}
+                onClick={() => void changeTab(item.id)}
                 className={cn(
                   "w-full rounded-r1 px-2.5 py-2 text-left text-[12px] transition-colors",
                   tab === item.id
@@ -541,6 +654,22 @@ export function SettingsDialog({
                     ))}
                   </div>
                 </Section>
+                <Section title="实验功能">
+                  <div className="flex items-start justify-between gap-3 rounded-r1 border border-line/70 bg-surface/40 p-3">
+                    <span className="min-w-0">
+                      <span className="block text-[12.5px] text-muted">自定义 Agent 发现</span>
+                      <span className="mt-1 block text-[10.5px] leading-relaxed text-faint">
+                        仅在此桌面应用本地保存。开启后扫描自定义 Agent；关闭时仍保留 Plugins、Skills
+                        和运行中代理任务。
+                      </span>
+                    </span>
+                    <Switch
+                      aria-label="自定义 Agent 发现"
+                      checked={customSubagentsEnabled}
+                      onCheckedChange={setCustomSubagentsEnabled}
+                    />
+                  </div>
+                </Section>
                 <Section title="Kimi Code 登录（可选）">
                   <KimiLoginPanel
                     onSuccess={() => {
@@ -571,8 +700,8 @@ export function SettingsDialog({
                           ))}
                         </select>
                         <span className="text-[10.5px] text-faint">
-                          新会话与重启后的全局默认。日常切换请用聊天区模型菜单；在 Config
-                          中添加或编辑模型定义。
+                          新会话的全局默认。当前已连接会话的实际 model/thinking
+                          以聊天区模型菜单为准；在 Config 中添加或编辑模型定义。
                         </span>
                       </label>
                       <div className="flex items-center justify-between">
@@ -626,6 +755,116 @@ export function SettingsDialog({
                           </select>
                         </label>
                       )}
+                      {showSecondaryModelSettings ? (
+                        <div className="rounded-r1 border border-line/70 bg-surface/40 p-3">
+                          <div className="mb-2 font-mono text-[10px] font-medium uppercase tracking-[0.09em] text-faint">
+                            Secondary model（实验）
+                          </div>
+                          <div className="flex flex-col gap-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="min-w-0">
+                                <span className="block text-[12.5px] text-muted">
+                                  {t("Enable custom subagents")}
+                                </span>
+                                <span className="mt-1 block text-[10.5px] leading-relaxed text-faint">
+                                  {t(
+                                    "Enable [experimental].secondary-model and write [secondary_model].model at the same time; defaults to the current global model.",
+                                  )}
+                                </span>
+                              </span>
+                              <Switch
+                                aria-label={t("Enable custom subagents")}
+                                checked={secondaryModelEnabled}
+                                disabled={isUpdating}
+                                onCheckedChange={(enabled) => {
+                                  if (enabled) {
+                                    const model = resolveSecondaryModelOnEnable(config);
+                                    if (!model) {
+                                      toast.error(t("No configured model available"));
+                                      return;
+                                    }
+                                    void applySecondaryModelExperiment(true, model);
+                                    return;
+                                  }
+                                  void applySecondaryModelExperiment(false, "");
+                                }}
+                              />
+                            </div>
+                            <label className="flex flex-col gap-1.5">
+                              <span className="text-[12.5px] text-muted">子代理默认模型</span>
+                              <select
+                                aria-label="Secondary model"
+                                value={config.secondaryModel ?? ""}
+                                disabled={isUpdating || !secondaryModelEnabled}
+                                onChange={(event) => {
+                                  const value = event.target.value;
+                                  if (!value) {
+                                    void applySecondaryModelExperiment(false, "");
+                                    return;
+                                  }
+                                  void applySecondaryModel(value);
+                                }}
+                                className="h-8 rounded-r1 border border-line bg-background px-2 font-mono text-[12px] text-foreground outline-none focus:border-line-strong disabled:opacity-60"
+                              >
+                                <option value="">（未配置）</option>
+                                {config.models.map((model) => (
+                                  <option key={model.name} value={model.name}>
+                                    {model.name}（{model.provider}）
+                                  </option>
+                                ))}
+                              </select>
+                              <span className="text-[10.5px] text-faint">
+                                对应官方 `/secondary_model` 与 `[secondary_model].model`；不是聊天区的会话 model 切换。
+                              </span>
+                              <span className="text-[10.5px] text-faint">
+                                {secondaryModelEffectHint()}
+                              </span>
+                            </label>
+                            {config.secondaryModelEnvOverride ? (
+                              <p className="font-mono text-[10.5px] text-warn">
+                                当前由环境变量 KIMI_SECONDARY_MODEL 覆盖 config.toml 显示值。
+                              </p>
+                            ) : null}
+                            {!config.secondaryModelValid && config.secondaryModel ? (
+                              <p className="font-mono text-[10.5px] text-warn">
+                                当前 secondary model 未在 `[models]` 中解析，保存合法 alias 后新子代理才会绑定。
+                              </p>
+                            ) : null}
+                            {secondarySupportedEfforts.length > 0 && config.secondaryModel ? (
+                              <label className="flex items-center justify-between gap-3">
+                                <span className="text-[12.5px] text-muted">Secondary 思考档位</span>
+                                <select
+                                  aria-label="Secondary 思考档位"
+                                  value={
+                                    secondarySupportedEfforts.includes(
+                                      config.secondaryDefaultEffort ?? "",
+                                    )
+                                      ? (config.secondaryDefaultEffort ?? "")
+                                      : selectedSecondaryModel?.defaultEffort ??
+                                        secondarySupportedEfforts[0]
+                                  }
+                                  disabled={isUpdating}
+                                  onChange={(event) =>
+                                    void applySecondaryDefaultEffort(event.target.value)
+                                  }
+                                  className="h-8 rounded-r1 border border-line bg-background px-2 font-mono text-[12px] uppercase text-foreground outline-none focus:border-line-strong disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  {secondarySupportedEfforts.map((effort) => (
+                                    <option key={effort} value={effort}>
+                                      {effort}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            ) : null}
+                            {config.secondaryDefaultEffortEnvOverride ? (
+                              <p className="font-mono text-[10.5px] text-warn">
+                                当前由环境变量 KIMI_SECONDARY_EFFORT 覆盖 config.toml 显示值。
+                              </p>
+                            ) : null}
+                          </div>
+                        </div>
+                      ) : null}
                       {isUpdating && <p className="font-mono text-[10.5px] text-faint">保存中…</p>}
                       {error && <p className="font-mono text-[10.5px] text-danger">{error}</p>}
                     </div>
@@ -636,17 +875,42 @@ export function SettingsDialog({
               </>
             )}
             {tab === "config" && (
-              <TextConfigEditor
+              <ProvidersPanel
                 enabled={open && tab === "config"}
-                label="config.toml"
-                language="toml"
-                description="添加 / 编辑模型、capabilities 与 provider。直接编辑 Kimi Code CLI 的完整 TOML；保存后空闲会话会重启以应用。"
-                load={getConfigTomlFile}
-                save={updateConfigTomlFile}
-                onDirtyChange={(dirty) =>
-                  setDirtyTabs((current) =>
-                    current.config === dirty ? current : { ...current, config: dirty },
-                  )
+                advancedEditorDirty={configEditorDirty.raw}
+                onAdvancedEditorDiscard={() =>
+                  setConfigEditorDirty((current) => ({ ...current, raw: false }))
+                }
+                structuredEditorDirty={configEditorDirty.structured}
+                onStructuredEditorDiscard={() =>
+                  setConfigEditorDirty((current) => ({ ...current, structured: false }))
+                }
+                advancedEditor={
+                  <TextConfigEditor
+                    enabled={open && tab === "config"}
+                    label="config.toml"
+                    language="toml"
+                    description="高级：直接编辑完整 config.toml。保存前仅做 TOML 结构校验；保存后空闲会话会重启以应用。"
+                    load={getConfigTomlFile}
+                    save={updateConfigTomlFile}
+                    onDirtyChange={(dirty) =>
+                      setConfigEditorDirty((current) =>
+                        current.raw === dirty ? current : { ...current, raw: dirty },
+                      )
+                    }
+                  />
+                }
+                structuredEditor={
+                  <ProviderModelEditor
+                    enabled={open && tab === "config"}
+                    onDirtyChange={(dirty) =>
+                      setConfigEditorDirty((current) =>
+                        current.structured === dirty
+                          ? current
+                          : { ...current, structured: dirty },
+                      )
+                    }
+                  />
                 }
               />
             )}
@@ -658,11 +922,7 @@ export function SettingsDialog({
                 description="管理 MCP Server 配置。保存前会在本地检查 JSON 格式。"
                 load={getMcpConfigFile}
                 save={updateMcpConfigFile}
-                onDirtyChange={(dirty) =>
-                  setDirtyTabs((current) =>
-                    current.mcp === dirty ? current : { ...current, mcp: dirty },
-                  )
-                }
+                onDirtyChange={setMcpEditorDirty}
               />
             )}
             {tab === "usage" && <UsagePanel enabled={open && tab === "usage"} />}

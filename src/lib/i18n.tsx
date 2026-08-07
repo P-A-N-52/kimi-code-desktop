@@ -71,6 +71,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Close side chat": "关闭侧聊",
   "Close sidebar": "关闭侧边栏",
   "Close workspace files panel": "关闭工作区文件面板",
+  Collapse: "收起",
   "Collapse agent monitor": "折叠 Agent 监控",
   "Collapse sidebar": "折叠侧边栏",
   "Collapse skills panel": "折叠技能面板",
@@ -169,6 +170,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
     "回车提交 · Shift+回车换行 · Esc 取消",
   Env: "环境变量",
   "Env overrides": "环境变量覆盖",
+  "Expand all": "展开全部",
   "Expand sidebar": "展开侧边栏",
   "Expand workspace panel": "展开工作区面板",
   "Extra skill directories": "额外技能目录",
@@ -395,6 +397,7 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Settings saved": "设置已保存",
   "Show API key": "显示 API 密钥",
   "Show in Finder": "在 Finder 中显示",
+  "Show full output": "显示完整输出",
   "Show thinking stream": "显示思考流",
   "Side Chat": "侧聊",
   "Skills Library": "技能库",
@@ -574,9 +577,9 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "· Balance": "· 余额",
   "Local token usage": "本地 Token 用量",
   "Scanning session records…": "扫描会话记录中…",
-  "Total Tokens": "总 Tokens",
-  "Cache reads": "Cache 读",
-  "Cache writes": "Cache 写",
+  "Total Tokens": "累计 Tokens",
+  "Cache reads": "缓存读取",
+  "Cache writes": "缓存写入",
   Scanned: "已扫描",
   "wire files · matched": "个 wire · 命中",
   "turn records": "条 turn 记录",
@@ -647,6 +650,176 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Cancel Goal": "取消 Goal",
   "Cancel current Goal": "取消当前 Goal",
   "Completion criterion:": "完成条件：",
+  "Global config written; new derived subagents use this model. The main session model is unchanged; idle sessions apply after reconnect, busy sessions need a later reconnect.":
+    "已写入全局 [secondary_model]；新派生的子代理将使用此模型。主会话 model 不变；空闲会话重连后生效，忙碌会话需稍后重连。",
+  Failed: "失败",
+  "Read-only observation: Desktop does not control background tasks or Cron directly.":
+    "只读观察：Desktop 不直接控制后台任务或 Cron。",
+  "Output path:": "输出路径：",
+  "(Waiting for the Agent to return a snapshot or completion notification)":
+    "（等待 Agent 返回快照或完成通知）",
+  "Failed to switch session model": "切换会话模型失败",
+  "Check the ACP connection or try again later.": "请检查 ACP 连接或稍后重试。",
+  "The current runtime cannot modify the session model": "当前运行时无法修改会话模型",
+  "Upgrade Kimi Code or check the ACP connection.": "请升级 Kimi Code 或检查 ACP 连接。",
+  "Failed to update session Thinking": "更新会话 Thinking 失败",
+  "The current runtime cannot modify session Thinking": "当前运行时无法修改会话 Thinking",
+  "Model binding": "模型绑定",
+  "Upstream:": "上游：",
+  "No model binding yet": "暂无模型绑定",
+  "View a summary of providers, model bindings, and capabilities. This only validates the local structure and does not send connection tests to third-party providers.":
+    "查看 Provider、模型绑定与 capabilities 摘要。此处只做本地结构校验，不会向第三方 Provider 发送连接测试。",
+  "“Provider configured” only means a credential source exists in config.toml / login state; it does not mean the current session will definitely work. The actual model/thinking follows the model menu in the chat area.":
+    "「Provider 已配置」只表示 config.toml / 登录状态里存在凭据来源；不等于当前会话一定可用。实际 model/thinking 以聊天区模型菜单为准。",
+  "Kimi account signed in": "Kimi 账号已登录",
+  "Default model:": "默认模型：",
+  "No provider configured yet. Add one in the advanced editor below.":
+    "尚未配置 Provider。可在下方高级编辑器中添加。",
+  "Structural issue": "结构问题",
+  "Kimi Code configuration required": "需要完成 Kimi Code 配置",
+  "Open configuration settings": "打开配置设置",
+  "Failed to update Secondary model": "更新 Secondary model 失败",
+  "Failed to clear Secondary model": "清除 Secondary model 失败",
+  "Failed to update Secondary thinking effort": "更新 Secondary 思考档位失败",
+  "Failed to enable custom subagents": "开启自定义子代理失败",
+  "Failed to disable custom subagents": "关闭自定义子代理失败",
+  "Experimental features": "实验功能",
+  "Custom Agent discovery": "自定义 Agent 发现",
+  "Saved locally in this desktop app only. When enabled, scans custom Agents; when disabled, Plugins, Skills, and running agent tasks are still kept.":
+    "仅在此桌面应用本地保存。开启后扫描自定义 Agent；关闭时仍保留 Plugins、Skills 和运行中代理任务。",
+  "Global defaults for new sessions. The actual model/thinking of a connected session follows the model menu in the chat area; add or edit model definitions in Config.":
+    "新会话的全局默认。当前已连接会话的实际 model/thinking 以聊天区模型菜单为准；在 Config 中添加或编辑模型定义。",
+  "Secondary model (experimental)": "Secondary model（实验）",
+  "Enable custom subagents": "启用自定义子代理",
+  "Enable [experimental].secondary-model and write [secondary_model].model at the same time; defaults to the current global model.":
+    "同时开启 [experimental].secondary-model 并写入 [secondary_model].model；默认沿用当前全局模型。",
+  "Custom subagents enabled; default model:": "自定义子代理已开启，默认模型为：",
+  "Custom subagents disabled": "自定义子代理已关闭",
+  "No configured model available": "未配置可用模型",
+  "Default model for subagents": "子代理默认模型",
+  "(Not configured)": "（未配置）",
+  "Corresponds to the official `/secondary_model` and `[secondary_model].model`; not the session model switch in the chat area.":
+    "对应官方 `/secondary_model` 与 `[secondary_model].model`；不是聊天区的会话 model 切换。",
+  "The experiment flag and model alias are written to global config.toml; newly derived subagents use this model. The main session model is unchanged; idle sessions apply after reconnect, busy sessions need a later reconnect.":
+    "实验开关与模型 alias 均写入全局 config.toml；新派生的子代理将使用此模型。主会话 model 不变；空闲会话重连后生效，忙碌会话需稍后重连。",
+  "Currently overridden by the KIMI_SECONDARY_MODEL environment variable for the config.toml display value.":
+    "当前由环境变量 KIMI_SECONDARY_MODEL 覆盖 config.toml 显示值。",
+  "The current secondary model is not resolved in `[models]`; new subagents will bind only after saving a valid alias.":
+    "当前 secondary model 未在 `[models]` 中解析，保存合法 alias 后新子代理才会绑定。",
+  "Secondary thinking effort": "Secondary 思考档位",
+  "Currently overridden by the KIMI_SECONDARY_EFFORT environment variable for the config.toml display value.":
+    "当前由环境变量 KIMI_SECONDARY_EFFORT 覆盖 config.toml 显示值。",
+  "Advanced: edit the full config.toml directly. Only TOML structure is validated before saving; idle sessions restart to apply after saving.":
+    "高级：直接编辑完整 config.toml。保存前仅做 TOML 结构校验；保存后空闲会话会重启以应用。",
+  "The current session has no AI reply to copy": "当前会话还没有可复制的 AI 回复",
+  "Last AI reply copied": "已复制最后一条 AI 回复",
+  "Copy failed": "复制失败",
+  "Export Markdown is only available in the desktop app": "导出 Markdown 仅在桌面应用中可用",
+  "Session exported": "会话已导出",
+  "Export failed": "导出失败",
+  "Export Markdown…": "导出 Markdown…",
+  "Running tasks": "运行中任务",
+  "Session influence factors": "会话影响因素",
+  "Refresh influence factors": "刷新影响因素",
+  "Custom Agent discovery is off; Plugins, Skills, and running agent tasks are still kept.":
+    "自定义 Agent 发现已关闭；Plugins、Skills 和运行中代理任务仍会保留。",
+  Detected: "检测到",
+  ": may permanently override the main Agent system prompt (body is hidden by default).":
+    "：可能永久覆盖主 Agent 系统提示词（正文默认不展示）。",
+  "No installed plugin metadata found": "未发现已安装 plugin 元数据",
+  "No disk Skill found": "未发现磁盘 Skill",
+  plus: "另有",
+  "Skill(s) not expanded": "个 Skill 未展开",
+  Disk: "磁盘",
+  "Enabled by config": "配置启用",
+  "Same-name lower-priority source:": "同名低优先级来源：",
+  "Disk ·": "磁盘 ·",
+  "Background tasks (read-only)": "后台任务（只读）",
+  "From Task/TaskOutput results the Agent has observed; Desktop does not provide direct stop or control.":
+    "来自 Agent 已观察到的 Task/TaskOutput 结果；Desktop 不提供直接停止或控制。",
+  "Cron schedules (cached)": "Cron 调度（缓存）",
+  "Only shows CronCreate/CronList results the Agent has returned; no Desktop control API.":
+    "仅展示 Agent 已返回的 CronCreate/CronList 结果；无 Desktop 控制 API。",
+  "Next:": "下次：",
+  "Edit model configuration": "编辑模型配置",
+  "Structured changes are written to a local draft; config.toml updates only after saving.":
+    "结构化修改只会写入本地草稿；点保存后才更新 config.toml。",
+  "Add Provider": "添加 Provider",
+  "Known platform": "已知平台",
+  "Select OpenAI, Anthropic, Google, and other platforms from models.dev, then import model and capability metadata automatically.":
+    "从 models.dev 选择 OpenAI、Anthropic、Google 等平台，自动导入模型与能力信息。",
+  "Custom Registry": "自定义 Registry",
+  "Import the Providers and models in an api.json registry at once and retain its source for future synchronization.":
+    "通过 api.json 一次导入 Registry 中的 Provider 和模型，并保留后续同步来源。",
+  "Search platforms": "搜索平台",
+  "Reading catalog…": "正在读取目录…",
+  "No matching platforms": "没有匹配的平台",
+  "Platform API Key": "平台 API Key",
+  "Catalog default model": "目录默认模型",
+  "Do not set yet": "暂不设置",
+  "Base URL (optional)": "Base URL（可选）",
+  "Catalog Base URL": "目录 Base URL",
+  "Enter when the catalog has no endpoint": "目录没有 endpoint 时填写",
+  "Kimi Code saves the Registry source metadata and synchronizes Providers and models from the same source on later startups.":
+    "Kimi Code 会保存 Registry 来源元数据，并在后续启动时同步同一来源的 Provider 与模型。",
+  "Back to add methods": "返回添加方式",
+  "Loading config.toml…": "加载 config.toml 中…",
+  "Structured configuration cannot be safely edited right now; switch to the advanced config.toml editor or retry reading.":
+    "当前无法安全编辑结构化配置；请转用高级 config.toml 编辑器或重试读取。",
+  "Retry reading": "重试读取",
+  "No Provider added yet": "尚未添加 Provider",
+  "Delete Provider": "删除 Provider",
+  "Provider name": "Provider 名称",
+  "Provider Type": "Provider 类型",
+  "Shown as a password; it will not appear in summaries, prompts, or logs.":
+    "密码形式显示；不会出现在摘要、提示或日志中。",
+  "Environment variables (TOML)": "环境变量（TOML）",
+  "Custom Headers (TOML)": "自定义 Headers（TOML）",
+  "This is a built-in Kimi Code Provider; its name, type, and deletion are protected, but its connection configuration can still be overridden.":
+    "这是 Kimi Code 内置 Provider；名称、类型和删除操作受到保护，但仍可覆盖连接配置。",
+  "Nested Provider settings detected; they will be preserved when editing fields on this page.":
+    "已检测到嵌套 Provider 设置；编辑本页字段时会保留它们。",
+  "Select or add a Provider to edit its connection configuration.":
+    "选择或添加一个 Provider 后编辑其连接配置。",
+  "No models for this Provider yet": "此 Provider 暂无模型",
+  Default: "默认",
+  "Delete model": "删除模型",
+  "Model alias": "模型别名",
+  "Model Provider": "模型 Provider",
+  "Upstream model": "上游模型",
+  "Supported thinking efforts": "支持的思考档位",
+  "Comma-separated, for example low, high, max.": "以逗号分隔，例如 low, high, max。",
+  "Default thinking effort": "默认思考档位",
+  "When not set, the current model or Kimi Code selects the default effort.":
+    "未设置时，由当前模型或 Kimi Code 选择默认档位。",
+  "(Not set)": "（未设置）",
+  "(Current value, not listed among supported options)": "（当前值，未列入支持项）",
+  "Select or add a model to edit its definition.": "选择或添加模型后编辑其定义。",
+  "Deleting the current default model automatically switches to another configured model.":
+    "删除当前默认模型时会自动切换到另一个已配置模型。",
+  "(No models yet)": "（尚无模型）",
+  "Structured Provider / model configuration": "结构化 Provider / 模型配置",
+  "After saving successfully, the Provider summary and other global configuration consumers will refresh.":
+    "保存成功后将刷新 Provider 摘要和其他全局配置消费者。",
+  "Back to summary": "返回摘要",
+  "No Provider configured yet. Add one in the structured or advanced editor below.":
+    "尚未配置 Provider。可在下方结构化编辑器或高级编辑器中添加。",
+  "Update available": "可更新",
+  "Read failed; the current content will not be saved.": "读取失败，当前内容不会被保存。",
+  "Context input": "上下文输入",
+  "Cumulative usage for the selected period": "时间段累计调用用量",
+  "Current context usage": "当前上下文使用情况",
+  "Current context · latest model request": "当前上下文 · 最近一次模型请求",
+  "Kimi Plan platform quota": "Kimi Plan 平台额度",
+  "Model requests": "模型请求",
+  "Non-cached input": "非缓存输入",
+  "Output this turn (not counted in the ring)": "本轮输出（不计入圆环）",
+  "Response is taking longer than usual": "响应时间较长",
+  "Shows the quota returned by the platform directly; it does not map to locally accumulated tokens or the current context.":
+    "此处直接展示平台返回的配额，与本地累计 Token、当前上下文不直接换算。",
+  "Summarizes model calls across all sessions and agents in the selected period; cached tokens are counted again on every call and do not represent the current context size.":
+    "汇总所选时间范围内全部会话与代理的模型调用；缓存 Token 会重复计入每次调用， 不代表当前上下文大小。",
+  "Total input": "输入合计",
 };
 
 const EN_US_RESTORE_TRANSLATIONS = Object.entries(ZH_CN_TRANSLATIONS).reduce<
@@ -729,6 +902,11 @@ function translateCore(core: string): string | null {
     return `${countMatch[1]} / ${countMatch[2]}`;
   }
 
+  const olderMessagesMatch = core.match(/^Load earlier messages \((\d+) remaining\)$/);
+  if (olderMessagesMatch) {
+    return `加载更早消息（剩余 ${olderMessagesMatch[1]} 条）`;
+  }
+
   return null;
 }
 
@@ -746,7 +924,32 @@ export function translateUiString(value: string, language: ResolvedUiLanguage): 
 }
 
 function restoreCore(core: string): string | null {
-  return EN_US_RESTORE_TRANSLATIONS[core] ?? null;
+  if (core === "展开全部") {
+    return "Expand all";
+  }
+  if (core === "收起") {
+    return "Collapse";
+  }
+  if (core === "显示完整输出") {
+    return "Show full output";
+  }
+
+  const direct = EN_US_RESTORE_TRANSLATIONS[core];
+  if (direct) {
+    return direct;
+  }
+
+  const olderMessagesMatch = core.match(/^加载更早消息（剩余 (\d+) 条）$/);
+  if (olderMessagesMatch) {
+    return `Load earlier messages (${olderMessagesMatch[1]} remaining)`;
+  }
+
+  const truncatedOutputMatch = core.match(/^输出已截断（共 (\d+) 行）$/);
+  if (truncatedOutputMatch) {
+    return `Output truncated (${truncatedOutputMatch[1]} lines)`;
+  }
+
+  return null;
 }
 
 function restoreUiString(value: string): string {

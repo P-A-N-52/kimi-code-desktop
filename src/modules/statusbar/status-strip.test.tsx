@@ -5,6 +5,19 @@ import type { GoalItem } from "@/lib/goal";
 import { UI_LANGUAGE_STORAGE_KEY, UiLanguageProvider } from "@/lib/i18n";
 import { StatusStrip } from "./status-strip";
 
+const { agentTasksMock } = vi.hoisted(() => ({
+  agentTasksMock: vi.fn<() => Array<{ id: string; sessionId: string; status: string }>>(() => []),
+}));
+
+vi.mock("@/lib/agent-monitor/store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/agent-monitor/store")>();
+  return {
+    ...actual,
+    useAgentMonitorStore: (selector: (state: { tasks: unknown[] }) => unknown) =>
+      selector({ tasks: agentTasksMock() }),
+  };
+});
+
 const ACTIVE_GOAL: GoalItem = {
   objective: "Ship visible Goal controls",
   status: "active",
@@ -123,5 +136,107 @@ describe("StatusStrip Goal controls", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "恢复 Goal" }));
     expect(onGoalControl).toHaveBeenCalledWith("resume");
+  });
+});
+
+describe("StatusStrip permission hot-switch (issue #13)", () => {
+  beforeEach(() => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, "zh-CN");
+  });
+
+  it("keeps the permission pill enabled during busy turns", () => {
+    const onPermissionModeChange = vi.fn();
+    renderStatusStrip(
+      <StatusStrip
+        {...baseProps}
+        modeControlsDisabled={true}
+        permissionModeDisabled={false}
+        onPermissionModeChange={onPermissionModeChange}
+      />,
+    );
+
+    const pill = screen.getByRole("button", { name: /manual/ }) as HTMLButtonElement;
+    expect(pill.disabled).toBe(false);
+    fireEvent.click(pill);
+    fireEvent.click(screen.getByText("yolo"));
+    expect(onPermissionModeChange).toHaveBeenCalledWith("yolo");
+
+    // plan/swarm pills keep the busy gating.
+    expect((screen.getByRole("button", { name: /plan/ }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+
+  it("keeps mode values legible while busy controls are disabled", () => {
+    renderStatusStrip(
+      <StatusStrip
+        {...baseProps}
+        modeControlsDisabled={true}
+        permissionModeDisabled={true}
+        planMode={true}
+        swarmMode={true}
+        goalMode={true}
+      />,
+    );
+
+    for (const name of [/manual/, /plan/, /swarm/, /goal/]) {
+      const pill = screen.getByRole("button", { name });
+      expect(pill.className).toContain("disabled:opacity-100");
+    }
+  });
+});
+
+describe("StatusStrip task running indicator", () => {
+  beforeEach(() => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, "zh-CN");
+    agentTasksMock.mockReturnValue([]);
+  });
+
+  it("hides the badge when no agent tasks are active", () => {
+    renderStatusStrip(<StatusStrip {...baseProps} />);
+    expect(screen.queryByText(/task running/)).toBeNull();
+  });
+
+  it("shows [1 task running] for a single active task", () => {
+    agentTasksMock.mockReturnValue([{ id: "t1", sessionId: "s1", status: "running" }]);
+    renderStatusStrip(<StatusStrip {...baseProps} />);
+    expect(screen.getByText(/\[1 task running\]/)).toBeDefined();
+  });
+
+  it("shows the plural form and counts only active statuses", () => {
+    agentTasksMock.mockReturnValue([
+      { id: "t1", sessionId: "s1", status: "running" },
+      { id: "t2", sessionId: "s2", status: "queued" },
+      { id: "t3", sessionId: "s1", status: "success" },
+    ]);
+    renderStatusStrip(<StatusStrip {...baseProps} />);
+    expect(screen.getByText(/\[2 tasks running\]/)).toBeDefined();
+  });
+});
+
+describe("StatusStrip context usage", () => {
+  beforeEach(() => {
+    window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, "zh-CN");
+  });
+
+  it("labels the context ring as current context rather than cumulative token usage", () => {
+    renderStatusStrip(
+      <StatusStrip
+        {...baseProps}
+        contextUsage={0.5}
+        contextTokens={100}
+        maxContextTokens={200}
+        tokenUsage={{
+          input_other: 10,
+          output: 5,
+          input_cache_read: 90,
+          input_cache_creation: 0,
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "当前上下文使用情况" }).textContent,
+    ).toContain("context: 50%");
   });
 });

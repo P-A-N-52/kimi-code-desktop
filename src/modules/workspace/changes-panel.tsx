@@ -2,8 +2,10 @@ import { FileText, RefreshCw, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { SessionFileEntry } from "@/hooks/useSessions";
 import { useAgentMonitorStore } from "@/lib/agent-monitor/store";
+import { useBackgroundTasksStore } from "@/lib/background-tasks/store";
 import { useToolEventsStore } from "@/lib/tool-events/store";
 import { cn } from "@/lib/utils";
+import type { SlashCommandDef } from "@/lib/slash-command-catalog";
 import { DiffView } from "@/modules/conversation/diff-view";
 import { Button } from "@/ui/button";
 import { IconButton } from "@/ui/icon-button";
@@ -23,6 +25,8 @@ const TABS: Array<{ id: WorkspaceTab; label: string }> = [
 
 type ChangesPanelProps = {
   sessionId: string;
+  workDir?: string | null;
+  runtimeSlashCommands?: readonly SlashCommandDef[];
   activeTab: WorkspaceTab;
   onTabChange: (tab: WorkspaceTab) => void;
   changes: ChangeEntry[];
@@ -131,6 +135,8 @@ function ChangesTab({
 
 export function ChangesPanel({
   sessionId,
+  workDir,
+  runtimeSlashCommands = [],
   activeTab,
   onTabChange,
   changes,
@@ -148,6 +154,12 @@ export function ChangesPanel({
   const agentCount = useAgentMonitorStore(
     (state) => state.tasks.filter((task) => task.sessionId === sessionId).length,
   );
+  const backgroundTaskCount = useBackgroundTasksStore(
+    (state) => state.backgroundTasks.filter((task) => task.sessionId === sessionId).length,
+  );
+  const cronCount = useBackgroundTasksStore(
+    (state) => state.cronSchedules.filter((schedule) => schedule.sessionId === sessionId).length,
+  );
   const todoCount = useToolEventsStore((state) => state.todoItems.length);
   const goalCount = useToolEventsStore((state) => (state.currentGoal ? 1 : 0));
   const newFileCount = useToolEventsStore((state) => state.newFiles.length);
@@ -156,9 +168,9 @@ export function ChangesPanel({
       changes: changes.length,
       files: newFileCount,
       agents: agentCount,
-      tasks: todoCount + goalCount,
+      tasks: todoCount + goalCount + backgroundTaskCount + cronCount,
     }),
-    [agentCount, changes.length, goalCount, newFileCount, todoCount],
+    [agentCount, backgroundTaskCount, changes.length, cronCount, goalCount, newFileCount, todoCount],
   );
 
   return (
@@ -201,12 +213,16 @@ export function ChangesPanel({
         )}
         {activeTab === "agents" && (
           <div className="h-full overflow-y-auto">
-            <AgentsTab sessionId={sessionId} />
+            <AgentsTab
+              sessionId={sessionId}
+              workDir={workDir}
+              runtimeSlashCommands={runtimeSlashCommands}
+            />
           </div>
         )}
         {activeTab === "tasks" && (
           <div className="h-full overflow-y-auto">
-            <TasksTab onGoalControl={onGoalControl} />
+            <TasksTab sessionId={sessionId} onGoalControl={onGoalControl} />
           </div>
         )}
       </div>

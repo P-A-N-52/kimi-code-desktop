@@ -1,14 +1,18 @@
 import { act, renderHook } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useToolEventsStore } from "@/lib/tool-events/store";
+import { SessionStreamOrchestratorProvider } from "@/lib/session-stream/provider";
 import { mergeSlashCommandsByName, useSessionStream } from "./useSessionStream";
 
 let wireMessageHandler: ((message: string) => void) | null = null;
+let globalWireHandler: ((payload: unknown) => void) | null = null;
 
 const mocks = vi.hoisted(() => ({
   controlSessionGoal: vi.fn(),
   getSessionGoalSnapshot: vi.fn(),
 	getSessionRuntimeModes: vi.fn(),
+	getSessionConfigState: vi.fn(),
 	isTauri: vi.fn(),
 	migrateSessionSwarmMode: vi.fn(),
 	onWireMessage: vi.fn(),
@@ -21,12 +25,31 @@ const mocks = vi.hoisted(() => ({
 	getGlobalConfig: vi.fn(),
 	getKimiCliVersion: vi.fn(),
 	getSession: vi.fn(),
+	listenEvent: vi.fn(),
+	isMultiActiveSessionsEnabled: vi.fn(),
+	parseWireEventPayload: (payload: unknown) => {
+		if (typeof payload !== "object" || payload === null) return null;
+		const { session_id, message, messages } = payload as {
+			session_id?: unknown;
+			message?: unknown;
+			messages?: unknown;
+		};
+		if (typeof session_id !== "string") return null;
+		if (typeof message === "string") {
+			return { sessionId: session_id, messages: [message] };
+		}
+		if (Array.isArray(messages) && messages.every((item) => typeof item === "string")) {
+			return { sessionId: session_id, messages };
+		}
+		return null;
+	},
 }));
 
 vi.mock("@/lib/tauri-api", () => ({
   controlSessionGoal: mocks.controlSessionGoal,
   getSessionGoalSnapshot: mocks.getSessionGoalSnapshot,
 	getSessionRuntimeModes: mocks.getSessionRuntimeModes,
+	getSessionConfigState: mocks.getSessionConfigState,
 	isTauri: mocks.isTauri,
 	migrateSessionSwarmMode: mocks.migrateSessionSwarmMode,
 	onWireMessage: mocks.onWireMessage,
@@ -39,6 +62,12 @@ vi.mock("@/lib/tauri-api", () => ({
 	getGlobalConfig: mocks.getGlobalConfig,
 	getKimiCliVersion: mocks.getKimiCliVersion,
 	getSession: mocks.getSession,
+	listenEvent: mocks.listenEvent,
+	parseWireEventPayload: mocks.parseWireEventPayload,
+}));
+
+vi.mock("@/lib/features", () => ({
+	isMultiActiveSessionsEnabled: mocks.isMultiActiveSessionsEnabled,
 }));
 
 vi.mock("@/lib/version", () => ({
@@ -111,6 +140,11 @@ describe("useSessionStream Tauri watchdog", () => {
 			permissionMode: "manual",
 			swarmMode: false,
 			goalMode: false,
+		});
+		mocks.getSessionConfigState.mockResolvedValue({
+			sessionId: "session-1",
+			status: "unknown",
+			options: [],
 		});
 		mocks.migrateSessionSwarmMode.mockResolvedValue(undefined);
 		mocks.wireConnect.mockResolvedValue(undefined);
@@ -732,6 +766,52 @@ describe("useSessionStream Tauri watchdog", () => {
 		});
 	});
 
+	it("hot-switches permission mode while the session is busy", async () => {
+		const { result } = renderHook(() =>
+			useSessionStream({
+				sessionId: "session-1",
+				baseUrl: "http://localhost:5173",
+				autoConnect: true,
+			}),
+		);
+
+		await flushPromises();
+		completeReplay();
+		await flushPromises();
+
+		act(() => {
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					method: "session_status",
+					params: {
+						session_id: "session-1",
+						state: "busy",
+						seq: 2,
+						updated_at: "2026-01-01T00:00:01Z",
+					},
+				}),
+			);
+		});
+		expect(result.current.status).toBe("streaming");
+		mocks.wireSend.mockClear();
+
+		act(() => {
+			expect(result.current.sendSetPermissionMode("yolo")).toBe(true);
+		});
+		await flushPromises();
+
+		expect(result.current.permissionMode).toBe("yolo");
+		expect(
+			mocks.wireSend.mock.calls
+				.map(([, message]) => JSON.parse(message))
+				.find((message) => message.method === "set_permission_mode"),
+		).toMatchObject({
+			method: "set_permission_mode",
+			params: { mode: "yolo" },
+		});
+	});
+
 	it("defers Swarm mode updates until a busy session becomes idle", async () => {
 		const { result } = renderHook(() =>
 			useSessionStream({
@@ -1043,7 +1123,7 @@ describe("useSessionStream Tauri watchdog", () => {
     await flushPromises();
     mocks.wireSend.mockClear();
 
-    let outcome: Awaited<ReturnType<typeof result.current.sendMessage>> = undefined;
+    let outcome: Awaited<ReturnType<typeof result.current.sendMessage>>;
     await act(async () => {
       outcome = await result.current.sendMessage("/goal ship the desktop");
     });
@@ -1783,6 +1863,80 @@ describe("useSessionStream Tauri watchdog", () => {
 		expect(result.current.error?.message).toBe("provider returned 404");
 	});
 
+	it("clears a stale first-response wait from a terminal cancelled status", async () => {
+		const { result } = renderHook(() =>
+			useSessionStream({
+				sessionId: "session-1",
+				baseUrl: "http://localhost:5173",
+				autoConnect: true,
+			}),
+		);
+
+		await flushPromises();
+		completeReplay();
+		await act(async () => {
+			await result.current.sendMessage("Cancel while switching sessions");
+		});
+
+		expect(result.current.isAwaitingFirstResponse).toBe(true);
+
+		act(() => {
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					method: "session_status",
+					params: {
+						session_id: "session-1",
+						state: "idle",
+						seq: 2,
+						reason: "cancelled",
+						updated_at: "2026-01-01T00:00:01Z",
+					},
+				}),
+			);
+		});
+
+		expect(result.current.isAwaitingFirstResponse).toBe(false);
+		expect(result.current.status).toBe("ready");
+		expect(result.current.canCancel).toBe(false);
+	});
+
+	it("keeps waiting through a non-terminal ACP connection idle status", async () => {
+		const { result } = renderHook(() =>
+			useSessionStream({
+				sessionId: "session-1",
+				baseUrl: "http://localhost:5173",
+				autoConnect: true,
+			}),
+		);
+
+		await flushPromises();
+		completeReplay();
+		await act(async () => {
+			await result.current.sendMessage("Keep waiting after ACP connects");
+		});
+
+		act(() => {
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					method: "session_status",
+					params: {
+						session_id: "session-1",
+						state: "idle",
+						seq: 2,
+						reason: "acp_connected",
+						updated_at: "2026-01-01T00:00:01Z",
+					},
+				}),
+			);
+		});
+
+		expect(result.current.isAwaitingFirstResponse).toBe(true);
+		expect(result.current.status).toBe("submitted");
+		expect(result.current.canCancel).toBe(true);
+	});
+
 	it("reports a finished prompt that returned no visible content", async () => {
 		const { result } = renderHook(() =>
 			useSessionStream({
@@ -2385,5 +2539,606 @@ describe("mergeSlashCommandsByName", () => {
 			{ name: "Help", description: "new", aliases: ["h"] },
 			{ name: "skill:demo", description: "skill", aliases: [] },
 		]);
+	});
+});
+
+describe("useSessionStream session config options", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		window.localStorage.clear();
+		useToolEventsStore.getState().clearCurrentGoal();
+		mocks.isTauri.mockReturnValue(true);
+		mocks.onWireMessage.mockImplementation(
+			(_sessionId: string, handler: (message: string) => void) => {
+				wireMessageHandler = handler;
+				return () => undefined;
+			},
+		);
+		mocks.replaySessionHistory.mockResolvedValue([]);
+		mocks.getSessionGoalSnapshot.mockResolvedValue(null);
+		mocks.controlSessionGoal.mockResolvedValue(null);
+		mocks.getSessionRuntimeModes.mockResolvedValue({
+			planMode: false,
+			permissionMode: "manual",
+			swarmMode: false,
+			goalMode: false,
+		});
+		mocks.getSessionConfigState.mockResolvedValue({
+			sessionId: "session-1",
+			status: "unknown",
+			options: [],
+		});
+		mocks.migrateSessionSwarmMode.mockResolvedValue(undefined);
+		mocks.wireConnect.mockResolvedValue(undefined);
+		mocks.wireDisconnect.mockResolvedValue(undefined);
+		mocks.wireSend.mockResolvedValue(undefined);
+		mocks.wireStatus.mockResolvedValue(null);
+		mocks.fetchManagedUsage.mockResolvedValue({
+			kind: "error",
+			message: "Not signed in",
+		});
+		mocks.getGlobalConfig.mockResolvedValue({ defaultModel: "kimi" });
+		mocks.getKimiCliVersion.mockResolvedValue("1.2.3");
+		mocks.getSession.mockResolvedValue({ workDir: "/tmp/demo" });
+	});
+
+	afterEach(() => {
+		wireMessageHandler = null;
+		vi.useRealTimers();
+		vi.clearAllMocks();
+	});
+
+	const knownSessionConfig = {
+		sessionId: "session-1",
+		status: "known" as const,
+		options: [
+			{
+				id: "model",
+				optionType: "select",
+				currentValue: "kimi-k2",
+				options: [{ value: "kimi-k2", label: "Kimi K2" }, { value: "kimi-k1", label: "Kimi K1" }],
+			},
+			{
+				id: "thinking",
+				optionType: "toggle",
+				currentValue: "off",
+			},
+		],
+	};
+
+	async function connectReady() {
+		const hook = renderHook(() =>
+			useSessionStream({
+				sessionId: "session-1",
+				baseUrl: "http://localhost:5173",
+				autoConnect: true,
+			}),
+		);
+		await flushPromises();
+		completeReplay();
+		await flushPromises();
+		return hook;
+	}
+
+	it("applies ConfigOptionUpdate wire events to sessionConfigState", async () => {
+		mocks.getSessionConfigState.mockResolvedValue(knownSessionConfig);
+		const { result } = await connectReady();
+
+		act(() => {
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					method: "event",
+					params: {
+						type: "ConfigOptionUpdate",
+						payload: {
+							session_id: "session-1",
+							status: "known",
+							options: [
+								{
+									id: "thinking",
+									optionType: "toggle",
+									currentValue: "on",
+								},
+								knownSessionConfig.options[0],
+							],
+						},
+					},
+				}),
+			);
+		});
+
+		expect(result.current.sessionConfigState.options.find((opt) => opt.id === "thinking")?.currentValue).toBe(
+			"on",
+		);
+	});
+
+	function seedSessionConfig() {
+		act(() => {
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					method: "event",
+					params: {
+						type: "ConfigOptionUpdate",
+						payload: {
+							session_id: knownSessionConfig.sessionId,
+							status: knownSessionConfig.status,
+							options: knownSessionConfig.options,
+						},
+					},
+				}),
+			);
+		});
+	}
+
+	it("sendSetConfigOption resolves true on wire success without polluting stream error", async () => {
+		mocks.getSessionConfigState.mockResolvedValue(knownSessionConfig);
+		const { result } = await connectReady();
+		seedSessionConfig();
+		expect(result.current.status).toBe("ready");
+
+		let settled = false;
+		let sendOk = false;
+		await act(async () => {
+			const pending = result.current.sendSetConfigOption("model", "kimi-k1");
+			await flushPromises();
+			const sent = mocks.wireSend.mock.calls
+				.map(([, rawMessage]) => JSON.parse(rawMessage))
+				.find((message) => message.method === "set_config_option");
+			expect(sent).toBeDefined();
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					id: sent.id,
+					result: { status: "ok" },
+				}),
+			);
+			sendOk = await pending;
+			settled = true;
+		});
+
+		expect(settled).toBe(true);
+		expect(sendOk).toBe(true);
+		expect(result.current.status).toBe("ready");
+		expect(result.current.error).toBeNull();
+	});
+
+	it("sendSetConfigOption resolves false on wire error without polluting stream error", async () => {
+		mocks.getSessionConfigState.mockResolvedValue(knownSessionConfig);
+		const { result } = await connectReady();
+		seedSessionConfig();
+
+		let sendOk = true;
+		await act(async () => {
+			const pending = result.current.sendSetConfigOption("model", "kimi-k1");
+			await flushPromises();
+			const sent = mocks.wireSend.mock.calls
+				.map(([, rawMessage]) => JSON.parse(rawMessage))
+				.find((message) => message.method === "set_config_option");
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					id: sent.id,
+					error: { code: -32000, message: "invalid model" },
+				}),
+			);
+			sendOk = await pending;
+		});
+
+		expect(sendOk).toBe(false);
+		expect(result.current.status).toBe("ready");
+		expect(result.current.error).toBeNull();
+	});
+
+	it("sendSetConfigOption resolves false when wireSend rejects without stream error", async () => {
+		mocks.getSessionConfigState.mockResolvedValue(knownSessionConfig);
+		const { result } = await connectReady();
+		seedSessionConfig();
+		mocks.wireSend.mockImplementation((_sessionId, rawMessage) => {
+			const parsed = JSON.parse(rawMessage);
+			if (parsed.method === "set_config_option") {
+				return Promise.reject(new Error("IPC failed"));
+			}
+			return Promise.resolve(undefined);
+		});
+
+		let sendOk = true;
+		await act(async () => {
+			sendOk = await result.current.sendSetConfigOption("model", "kimi-k1");
+		});
+
+		expect(sendOk).toBe(false);
+		expect(result.current.status).toBe("ready");
+		expect(result.current.error).toBeNull();
+	});
+});
+
+/**
+ * G5 Phase 0 regression baseline: documents current single-stream behavior.
+ * Phase 1 should flip "disconnects previous worker on switch" when multi-active lands.
+ */
+describe("G5 Phase 0 baseline: single-stream session switch", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		window.localStorage.clear();
+		useToolEventsStore.getState().clearCurrentGoal();
+		mocks.isTauri.mockReturnValue(true);
+		mocks.onWireMessage.mockImplementation(
+			(_sessionId: string, handler: (message: string) => void) => {
+				wireMessageHandler = handler;
+				return () => undefined;
+			},
+		);
+		mocks.replaySessionHistory.mockResolvedValue([]);
+		mocks.getSessionGoalSnapshot.mockResolvedValue(null);
+		mocks.controlSessionGoal.mockResolvedValue(null);
+		mocks.getSessionRuntimeModes.mockImplementation((_sessionId: string) =>
+			Promise.resolve({
+				planMode: false,
+				permissionMode: "manual",
+				swarmMode: false,
+				goalMode: false,
+			}),
+		);
+		mocks.getSessionConfigState.mockImplementation((sessionId: string) =>
+			Promise.resolve({
+				sessionId,
+				status: "unknown",
+				options: [],
+			}),
+		);
+		mocks.migrateSessionSwarmMode.mockResolvedValue(undefined);
+		mocks.wireConnect.mockResolvedValue(undefined);
+		mocks.wireDisconnect.mockResolvedValue(undefined);
+		mocks.wireSend.mockResolvedValue(undefined);
+		mocks.wireStatus.mockResolvedValue(null);
+		mocks.fetchManagedUsage.mockResolvedValue({
+			kind: "error",
+			message: "Not signed in",
+		});
+		mocks.getGlobalConfig.mockResolvedValue({ defaultModel: "kimi" });
+		mocks.getKimiCliVersion.mockResolvedValue("1.2.3");
+		mocks.getSession.mockResolvedValue({ workDir: "/tmp/demo" });
+	});
+
+	afterEach(() => {
+		wireMessageHandler = null;
+		vi.useRealTimers();
+		vi.clearAllMocks();
+	});
+
+	it("disconnects the previous session worker when switching sidebar sessions", async () => {
+		const { rerender, result } = renderHook(
+			(props: { sessionId: string }) =>
+				useSessionStream({
+					sessionId: props.sessionId,
+					baseUrl: "http://localhost:5173",
+					autoConnect: true,
+				}),
+			{ initialProps: { sessionId: "session-a" } },
+		);
+
+		await flushPromises();
+		completeReplay();
+		await flushPromises();
+
+		expect(mocks.wireConnect).toHaveBeenCalledWith("session-a", expect.any(String));
+		expect(mocks.onWireMessage).toHaveBeenCalledWith("session-a", expect.any(Function));
+
+		mocks.wireDisconnect.mockClear();
+		mocks.wireConnect.mockClear();
+		mocks.onWireMessage.mockClear();
+
+		rerender({ sessionId: "session-b" });
+		await flushPromises();
+		completeReplay();
+		await flushPromises();
+
+		expect(mocks.wireDisconnect).toHaveBeenCalledTimes(1);
+		expect(mocks.wireDisconnect.mock.calls[0]?.[0]).toBe("session-a");
+		expect(result.current.messages).toEqual([]);
+		expect(mocks.wireConnect).toHaveBeenCalledWith("session-b", expect.any(String));
+		expect(mocks.onWireMessage).toHaveBeenCalledWith("session-b", expect.any(Function));
+	});
+
+	it("disconnects the previous session worker when switching while session-a is running", async () => {
+		const { rerender, result } = renderHook(
+			(props: { sessionId: string }) =>
+				useSessionStream({
+					sessionId: props.sessionId,
+					baseUrl: "http://localhost:5173",
+					autoConnect: true,
+				}),
+			{ initialProps: { sessionId: "session-a" } },
+		);
+
+		await flushPromises();
+		completeReplay();
+		await flushPromises();
+
+		expect(mocks.wireConnect).toHaveBeenCalledWith("session-a", expect.any(String));
+
+		// In-flight (busy) before sidebar switch — Phase 1 must flip: keep running workers alive.
+		act(() => {
+			wireMessageHandler?.(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					method: "session_status",
+					params: {
+						session_id: "session-a",
+						state: "busy",
+						seq: 2,
+						worker_id: "worker-a",
+						updated_at: "2026-01-01T00:00:01Z",
+					},
+				}),
+			);
+		});
+		expect(result.current.sessionStatus?.state).toBe("busy");
+		expect(result.current.status).toBe("streaming");
+
+		mocks.wireDisconnect.mockClear();
+		mocks.wireConnect.mockClear();
+		mocks.onWireMessage.mockClear();
+
+		rerender({ sessionId: "session-b" });
+		await flushPromises();
+		completeReplay();
+		await flushPromises();
+
+		expect(mocks.wireDisconnect).toHaveBeenCalledTimes(1);
+		expect(mocks.wireDisconnect.mock.calls[0]?.[0]).toBe("session-a");
+		expect(result.current.messages).toEqual([]);
+		expect(mocks.wireConnect).toHaveBeenCalledWith("session-b", expect.any(String));
+		expect(mocks.onWireMessage).toHaveBeenCalledWith("session-b", expect.any(Function));
+	});
+});
+
+describe("G5 multi-active-session mode (flag on)", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		window.localStorage.clear();
+		useToolEventsStore.getState().clearCurrentGoal();
+		mocks.isTauri.mockReturnValue(true);
+		mocks.isMultiActiveSessionsEnabled.mockReturnValue(true);
+		mocks.listenEvent.mockImplementation(
+			(_event: string, handler: (payload: unknown) => void) => {
+				globalWireHandler = handler;
+				return () => {
+					globalWireHandler = null;
+				};
+			},
+		);
+		mocks.onWireMessage.mockImplementation(
+			(_sessionId: string, handler: (message: string) => void) => {
+				wireMessageHandler = handler;
+				return () => undefined;
+			},
+		);
+		mocks.replaySessionHistory.mockResolvedValue([]);
+		mocks.getSessionGoalSnapshot.mockResolvedValue(null);
+		mocks.controlSessionGoal.mockResolvedValue(null);
+		mocks.getSessionRuntimeModes.mockImplementation((_sessionId: string) =>
+			Promise.resolve({
+				planMode: false,
+				permissionMode: "manual",
+				swarmMode: false,
+				goalMode: false,
+			}),
+		);
+		mocks.getSessionConfigState.mockImplementation((sessionId: string) =>
+			Promise.resolve({
+				sessionId,
+				status: "unknown",
+				options: [],
+			}),
+		);
+		mocks.migrateSessionSwarmMode.mockResolvedValue(undefined);
+		mocks.wireConnect.mockResolvedValue(undefined);
+		mocks.wireDisconnect.mockResolvedValue(undefined);
+		mocks.wireSend.mockResolvedValue(undefined);
+		mocks.wireStatus.mockResolvedValue(null);
+		mocks.fetchManagedUsage.mockResolvedValue({
+			kind: "error",
+			message: "Not signed in",
+		});
+		mocks.getGlobalConfig.mockResolvedValue({ defaultModel: "kimi" });
+		mocks.getKimiCliVersion.mockResolvedValue("1.2.3");
+		mocks.getSession.mockResolvedValue({ workDir: "/tmp/demo" });
+	});
+
+	afterEach(() => {
+		wireMessageHandler = null;
+		globalWireHandler = null;
+		vi.useRealTimers();
+		vi.clearAllMocks();
+	});
+
+	const wrapper = ({ children }: { children: React.ReactNode }) => (
+		<SessionStreamOrchestratorProvider>{children}</SessionStreamOrchestratorProvider>
+	);
+
+	/** Answer initialize + replay RPCs through the orchestrator's global listener. */
+	function completeReplayGlobal(sessionId: string) {
+		const sentMessages = mocks.wireSend.mock.calls
+			.filter(([sentSessionId]) => sentSessionId === sessionId)
+			.map(([, rawMessage]) => JSON.parse(rawMessage));
+		const initialize = sentMessages.find((message) => message.method === "initialize");
+		const replay = sentMessages.find((message) => message.method === "replay");
+		if (initialize) {
+			globalWireHandler?.({
+				session_id: sessionId,
+				message: JSON.stringify({
+					jsonrpc: "2.0",
+					id: initialize.id,
+					result: { slash_commands: [] },
+				}),
+			});
+		}
+		if (replay) {
+			globalWireHandler?.({
+				session_id: sessionId,
+				message: JSON.stringify({
+					jsonrpc: "2.0",
+					id: replay.id,
+					result: { status: "finished" },
+				}),
+			});
+		}
+	}
+
+	it("keeps the global listener alive through StrictMode and routes two sessions", async () => {
+		const strictWrapper = ({ children }: { children: React.ReactNode }) => (
+			<StrictMode>
+				<SessionStreamOrchestratorProvider>{children}</SessionStreamOrchestratorProvider>
+			</StrictMode>
+		);
+		const { rerender, result } = renderHook(
+			(props: { sessionId: string }) =>
+				useSessionStream({
+					sessionId: props.sessionId,
+					baseUrl: "http://localhost:5173",
+					autoConnect: true,
+				}),
+			{ initialProps: { sessionId: "session-a" }, wrapper: strictWrapper },
+		);
+
+		await flushPromises();
+		expect(globalWireHandler).not.toBeNull();
+		completeReplayGlobal("session-a");
+		await flushPromises();
+		act(() => {
+			globalWireHandler?.({
+				session_id: "session-a",
+				message: JSON.stringify({
+					jsonrpc: "2.0",
+					method: "event",
+					params: { type: "ContentPart", payload: { type: "text", text: "from a" } },
+				}),
+			});
+		});
+		expect(result.current.messages).toEqual([
+			expect.objectContaining({ variant: "text", content: "from a" }),
+		]);
+
+		rerender({ sessionId: "session-b" });
+		await flushPromises();
+		completeReplayGlobal("session-b");
+		await flushPromises();
+		act(() => {
+			globalWireHandler?.({
+				session_id: "session-b",
+				message: JSON.stringify({
+					jsonrpc: "2.0",
+					method: "event",
+					params: { type: "ContentPart", payload: { type: "text", text: "from b" } },
+				}),
+			});
+		});
+		expect(result.current.messages).toEqual([
+			expect.objectContaining({ variant: "text", content: "from b" }),
+		]);
+	});
+
+	it("keeps the running background worker alive when switching sessions (flipped G5 Phase 0 baseline)", async () => {
+		const { rerender, result } = renderHook(
+			(props: { sessionId: string }) =>
+				useSessionStream({
+					sessionId: props.sessionId,
+					baseUrl: "http://localhost:5173",
+					autoConnect: true,
+				}),
+			{ initialProps: { sessionId: "session-a" }, wrapper },
+		);
+
+		await flushPromises();
+		completeReplayGlobal("session-a");
+		await flushPromises();
+		expect(mocks.wireConnect).toHaveBeenCalledWith("session-a", expect.any(String));
+
+		// In-flight (busy) before the sidebar switch.
+		act(() => {
+			globalWireHandler?.({
+				session_id: "session-a",
+				message: JSON.stringify({
+					jsonrpc: "2.0",
+					method: "session_status",
+					params: {
+						session_id: "session-a",
+						state: "busy",
+						seq: 2,
+						worker_id: "worker-a",
+						updated_at: "2026-01-01T00:00:01Z",
+					},
+				}),
+			});
+		});
+		expect(result.current.sessionStatus?.state).toBe("busy");
+		expect(result.current.status).toBe("streaming");
+
+		mocks.wireDisconnect.mockClear();
+		mocks.wireConnect.mockClear();
+		mocks.onWireMessage.mockClear();
+
+		rerender({ sessionId: "session-b" });
+		await flushPromises();
+		completeReplayGlobal("session-b");
+		await flushPromises();
+
+		// FLIPPED: switching away must NOT disconnect the running session-a worker.
+		expect(mocks.wireDisconnect).not.toHaveBeenCalled();
+		expect(mocks.wireConnect).toHaveBeenCalledWith("session-b", expect.any(String));
+	});
+
+	it("keeps session-a's worker and timeline when switching back after a background turn", async () => {
+		const { rerender, result } = renderHook(
+			(props: { sessionId: string }) =>
+				useSessionStream({
+					sessionId: props.sessionId,
+					baseUrl: "http://localhost:5173",
+					autoConnect: true,
+				}),
+			{ initialProps: { sessionId: "session-a" }, wrapper },
+		);
+
+		await flushPromises();
+		completeReplayGlobal("session-a");
+		await flushPromises();
+
+		// A gets a busy status while visible.
+		act(() => {
+			globalWireHandler?.({
+				session_id: "session-a",
+				message: JSON.stringify({
+					jsonrpc: "2.0",
+					method: "session_status",
+					params: {
+						session_id: "session-a",
+						state: "busy",
+						seq: 2,
+						worker_id: "worker-a",
+						updated_at: "2026-01-01T00:00:01Z",
+					},
+				}),
+			});
+		});
+		expect(result.current.sessionStatus?.state).toBe("busy");
+
+		rerender({ sessionId: "session-b" });
+		await flushPromises();
+		completeReplayGlobal("session-b");
+		await flushPromises();
+		expect(result.current.messages).toEqual([]);
+
+		// Switch back to A: its worker was kept alive, so no reconnect is
+		// needed and the busy timeline is preserved without replay.
+		mocks.wireConnect.mockClear();
+		mocks.wireDisconnect.mockClear();
+		rerender({ sessionId: "session-a" });
+		await flushPromises();
+		expect(mocks.wireConnect).not.toHaveBeenCalled();
+		expect(mocks.wireDisconnect).not.toHaveBeenCalled();
+		expect(result.current.sessionStatus?.state).toBe("busy");
 	});
 });

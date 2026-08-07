@@ -20,10 +20,26 @@ pub struct RestartWorkersSummary {
     pub skipped_busy_session_ids: Vec<String>,
 }
 
+/// Read-only observation view of a live ACP worker (G5 §4.6).
+///
+/// `updated_at` is the worker status timestamp in Unix ms and must stay in
+/// sync with `RuntimeStatus.updated_at`; the name is part of the observation
+/// contract and must not drift to `last_update_at`.
+#[derive(Clone, Debug, Serialize)]
+pub struct WorkerStatusView {
+    pub session_id: String,
+    pub state: String,
+    pub connection_id: Option<String>,
+    pub updated_at: u64,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct WireMessagePayload {
     session_id: String,
-    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    messages: Option<Vec<String>>,
 }
 
 pub(crate) fn emit_wire_message(app: &AppHandle, session_id: &str, message: String) {
@@ -31,7 +47,31 @@ pub(crate) fn emit_wire_message(app: &AppHandle, session_id: &str, message: Stri
         WIRE_EVENT_NAME,
         WireMessagePayload {
             session_id: session_id.to_string(),
-            message,
+            message: Some(message),
+            messages: None,
+        },
+    );
+}
+
+pub(crate) fn emit_wire_messages_batch(
+    app: &AppHandle,
+    session_id: &str,
+    mut messages: Vec<String>,
+) {
+    if messages.is_empty() {
+        return;
+    }
+    if messages.len() == 1 {
+        emit_wire_message(app, session_id, messages.pop().unwrap());
+        return;
+    }
+
+    let _ = app.emit(
+        WIRE_EVENT_NAME,
+        WireMessagePayload {
+            session_id: session_id.to_string(),
+            message: None,
+            messages: Some(messages),
         },
     );
 }

@@ -14,6 +14,7 @@ describe("slash-command-catalog", () => {
       { name: "swarm", description: "Toggle swarm", aliases: [] },
       { name: "plan", description: "Toggle plan", aliases: [] },
       { name: "model", description: "Switch model", aliases: [] },
+      { name: "provider", description: "Manage providers", aliases: [] },
       { name: "compact", description: "Compact", aliases: [], inputHint: "hint" },
       { name: "goal", description: "Create a goal", aliases: [] },
       { name: "plugins", description: "Plugins", aliases: [] },
@@ -115,9 +116,10 @@ describe("slash-command-catalog", () => {
     expect(classifySlashDispatch("/mcp", [])).toEqual({
       kind: "passthrough",
     });
-    expect(classifySlashDispatch("/tasks", [])).toEqual({
-      kind: "passthrough",
-    });
+    expect(classifySlashDispatch("/tasks", []).kind).toBe("blocked");
+    expect(
+      classifySlashDispatch("/tasks", [{ name: "tasks", description: "", aliases: [] }]),
+    ).toEqual({ kind: "passthrough" });
     expect(classifySlashDispatch("/goal soak the GUI", [])).toEqual({
       kind: "local",
       name: "goal",
@@ -125,6 +127,32 @@ describe("slash-command-catalog", () => {
     });
     expect(classifySlashDispatch("/yolo", advertised).kind).toBe("blocked");
     expect(classifySlashDispatch("/version", advertised).kind).toBe("blocked");
+    expect(classifySlashDispatch("/provider", advertised)).toEqual({
+      kind: "blocked",
+      message: expect.stringContaining("model configuration UI"),
+    });
+    expect(classifySlashDispatch("/copy", advertised)).toEqual({
+      kind: "blocked",
+      message: expect.stringContaining("title menu"),
+    });
+    expect(classifySlashDispatch("/export-md", advertised)).toEqual({
+      kind: "blocked",
+      message: expect.stringContaining("Export Markdown"),
+    });
+    expect(classifySlashDispatch("/undo", advertised)).toEqual({
+      kind: "blocked",
+      message: expect.stringContaining("CLI TUI"),
+    });
+    expect(classifySlashDispatch("/fork", advertised)).toEqual({
+      kind: "blocked",
+      message: expect.stringMatching(/ACP.*session\/fork|session\/fork.*ACP/i),
+    });
+    const forkBlocked = classifySlashDispatch("/fork", advertised);
+    expect(forkBlocked.kind).toBe("blocked");
+    if (forkBlocked.kind === "blocked") {
+      expect(forkBlocked.message).not.toMatch(/sidebar/i);
+      expect(forkBlocked.message).toMatch(/CLI TUI/i);
+    }
     expect(classifySlashDispatch("hello", advertised)).toEqual({
       kind: "passthrough",
     });

@@ -29,6 +29,8 @@ export type SessionStatusPayload = {
   state: SessionState;
   seq: number;
   worker_id?: string | null;
+  /** Prompt request completed by a terminal finished/cancelled status. */
+  prompt_request_id?: string | null;
   reason?: string | null;
   detail?: string | null;
   updated_at: string;
@@ -286,9 +288,13 @@ export type AgentTaskWire = {
   subagent_phase?: string | null;
   subagent_type?: string | null;
   parent_tool_call_id?: string | null;
+  parent_agent_id?: string | null;
   suspended_reason?: string | null;
   swarm_index?: number | null;
+  swarm_depth?: number | null;
   run_in_background?: boolean | null;
+  bound_model?: string | null;
+  model_preference?: string | null;
 };
 
 export type TaskCreatedEvent = {
@@ -330,11 +336,15 @@ export type SubagentLifecycleEvent = {
     agent_id?: string | null;
     task_id?: string | null;
     parent_tool_call_id?: string | null;
+    parent_agent_id?: string | null;
     subagent_type?: string | null;
     phase: string;
     description?: string | null;
     swarm_index?: number | null;
+    swarm_depth?: number | null;
     error?: string | null;
+    bound_model?: string | null;
+    model_preference?: string | null;
   };
 };
 
@@ -362,7 +372,43 @@ export type SlashCommandsUpdateEvent = {
       aliases?: string[];
       input_hint?: string | null;
       inputHint?: string | null;
+      source?: string | null;
     }>;
+  };
+};
+
+export type ConfigOptionUpdateEvent = {
+  type: "ConfigOptionUpdate";
+  payload: {
+    session_id: string;
+    status: "known" | "unknown";
+    options: Array<{
+      id: string;
+      optionType?: string;
+      type?: string;
+      label?: string | null;
+      currentValue?: unknown;
+      current_value?: unknown;
+      options?: Array<{ value: unknown; label?: string | null }> | null;
+    }>;
+  };
+};
+
+export type BackgroundTaskObservedEvent = {
+  type: "BackgroundTaskObserved";
+  payload: {
+    session_id: string;
+    tool_call_id: string;
+    tool_name: string;
+    task_id?: string | null;
+    snapshot: string;
+    terminal_state: "running" | "completed" | "failed" | "stopped" | "unknown";
+    output_path?: string | null;
+    cron_id?: string | null;
+    cron_expression?: string | null;
+    human_schedule?: string | null;
+    next_fire_at?: string | null;
+    recurring?: boolean | null;
   };
 };
 
@@ -392,7 +438,9 @@ export type WireEvent =
   | SubagentLifecycleEvent
   | SteerInputEvent
   | PlanDisplayEvent
-  | SlashCommandsUpdateEvent;
+  | SlashCommandsUpdateEvent
+  | ConfigOptionUpdateEvent
+  | BackgroundTaskObservedEvent;
 
 // Parsed wire message
 export type WireMessage = {

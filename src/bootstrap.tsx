@@ -2,8 +2,10 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./app/app.tsx";
+import { ConfirmDialogProvider } from "./ui/confirm-dialog";
 import { ErrorBoundary } from "./ui/error-boundary";
 import { UiLanguageProvider } from "./lib/i18n";
+import { SessionStreamOrchestratorProvider } from "./lib/session-stream/provider";
 
 const DYNAMIC_IMPORT_ERROR_PATTERNS: string[] = [
   "Failed to fetch dynamically imported module",
@@ -51,14 +53,21 @@ const setupDynamicImportRecovery = (): void => {
 
 setupDynamicImportRecovery();
 
-const rootElement = document.getElementById("root")!;
+const rootElement = document.getElementById("root");
+if (!rootElement) {
+  throw new Error("Missing #root element");
+}
 
 const renderApp = () => {
   createRoot(rootElement).render(
     <StrictMode>
       <ErrorBoundary>
         <UiLanguageProvider>
-          <App />
+          <SessionStreamOrchestratorProvider>
+            <ConfirmDialogProvider>
+              <App />
+            </ConfirmDialogProvider>
+          </SessionStreamOrchestratorProvider>
         </UiLanguageProvider>
       </ErrorBoundary>
     </StrictMode>,

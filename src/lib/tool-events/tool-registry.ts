@@ -32,6 +32,9 @@ const PRESENTATIONS: Record<string, Omit<ToolPresentation, "canonicalName">> = {
   TaskList: { displayName: "Task List", category: "task" },
   TaskOutput: { displayName: "Task Output", category: "task" },
   TaskStop: { displayName: "Stop Task", category: "task" },
+  CronCreate: { displayName: "Schedule Cron", category: "task" },
+  CronList: { displayName: "Cron List", category: "task" },
+  CronDelete: { displayName: "Cancel Cron", category: "task" },
   CreateSubagent: { displayName: "Create Agent", category: "agent" },
   Think: { displayName: "Think", category: "generic" },
   SetTodoList: { displayName: "Todo List", category: "todo" },
@@ -62,10 +65,27 @@ const ALIASES: Record<string, string> = {
   agent: "Agent",
   agentswarm: "AgentSwarm",
   swarm: "AgentSwarm",
+  tasklist: "TaskList",
+  taskoutput: "TaskOutput",
+  taskstop: "TaskStop",
+  croncreate: "CronCreate",
+  cronlist: "CronList",
+  crondelete: "CronDelete",
 };
 
+const BACKGROUND_TASK_OBSERVATION_TOOLS = new Set(["TaskList", "TaskOutput", "TaskStop"]);
+
+const CRON_OBSERVATION_TOOLS = new Set(["CronCreate", "CronList", "CronDelete"]);
+
+/** Direct control tools — observed only; Desktop must not expose control buttons (G3). */
+const TASK_CONTROL_TOOLS = new Set(["TaskStop", "CronCreate", "CronDelete", "CronList"]);
+
 export function getToolPresentation(rawName: string): ToolPresentation {
-  const canonicalName = ALIASES[rawName.toLowerCase()] ?? rawName;
+  // ACP implementations may expose the same built-in tool as `TodoList`,
+  // `Todo List`, or `todo_list`. Normalize separators for alias lookup while
+  // preserving the original name for unknown-tool fallback rendering.
+  const aliasKey = rawName.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const canonicalName = ALIASES[aliasKey] ?? rawName;
   const presentation = PRESENTATIONS[canonicalName];
   return {
     canonicalName,
@@ -80,4 +100,21 @@ export function isWriteTool(rawName: string): boolean {
 
 export function isTodoTool(rawName: string): boolean {
   return getToolPresentation(rawName).canonicalName === "SetTodoList";
+}
+
+export function isBackgroundTaskObservationTool(rawName: string): boolean {
+  return BACKGROUND_TASK_OBSERVATION_TOOLS.has(getToolPresentation(rawName).canonicalName);
+}
+
+export function isCronObservationTool(rawName: string): boolean {
+  return CRON_OBSERVATION_TOOLS.has(getToolPresentation(rawName).canonicalName);
+}
+
+export function isTaskControlTool(rawName: string): boolean {
+  return TASK_CONTROL_TOOLS.has(getToolPresentation(rawName).canonicalName);
+}
+
+export function isBackgroundOrCronObservationTool(rawName: string): boolean {
+  const canonical = getToolPresentation(rawName).canonicalName;
+  return BACKGROUND_TASK_OBSERVATION_TOOLS.has(canonical) || CRON_OBSERVATION_TOOLS.has(canonical);
 }

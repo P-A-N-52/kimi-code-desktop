@@ -48,6 +48,30 @@ describe("ToolCard", () => {
     expect(screen.getByText("Wire the workspace")).toBeTruthy();
   });
 
+  it("renders todo tools semantically and hides raw CLI output", () => {
+    render(
+      <ToolCard
+        toolCall={{
+          ...baseToolCall,
+          title: "TodoList",
+          input: {
+            todos: [
+              { title: "定位渲染层", status: "completed" },
+              { title: "汇总结论", status: "in_progress" },
+            ],
+          },
+          output: "[completed] 定位渲染层\n[in_progress] 汇总结论",
+        }}
+      />,
+    );
+
+    // Completed todo cards collapse; open to inspect the semantic body.
+    fireEvent.click(screen.getByRole("button"));
+    expect(screen.getByText("定位渲染层")).toBeTruthy();
+    expect(screen.getByText("汇总结论")).toBeTruthy();
+    expect(screen.queryByText(/\[completed\]/)).toBeNull();
+  });
+
   it("routes Agent tools to AgentToolCard with structured output", () => {
     render(
       <ToolCard
@@ -129,6 +153,27 @@ describe("ToolCard", () => {
 
     expect(screen.getByText("custom_result")).toBeTruthy();
     expect(screen.getByText(/"answer": 42/)).toBeTruthy();
+  });
+
+  it("routes TaskOutput tools to the read-only background task card", () => {
+    render(
+      <ToolCard
+        defaultOpen
+        toolCall={{
+          title: "TaskOutput",
+          type: "tool-call" as never,
+          state: "input-available",
+          toolCallId: "task-output-1",
+          input: { task_id: "bg-1" },
+          output: "status: running",
+          extras: { in_progress: true },
+        }}
+      />,
+    );
+
+    expect(document.querySelector("[data-slot=background-task-tool-card]")).not.toBeNull();
+    expect(screen.getByText(/只读观察/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /停止|Stop|Delete/i })).toBeNull();
   });
 
   it("routes AgentSwarm tool calls to the swarm card", () => {

@@ -12,6 +12,10 @@ export interface SwarmMember {
   text?: string;
   suspendedReason?: string;
   swarmIndex: number;
+  parentAgentId?: string;
+  depth: number;
+  boundModel?: string;
+  modelPreference?: string;
 }
 
 export interface SwarmCardRow {
@@ -20,6 +24,13 @@ export interface SwarmCardRow {
   activity: string;
   phase: SwarmPhase;
   body: string;
+  depth: number;
+  topLevel: boolean;
+}
+
+export interface PlannedSwarmItem {
+  name: string;
+  index: number;
 }
 
 export function phaseForAgentTask(task: AgentTask): SwarmPhase {
@@ -45,6 +56,10 @@ export function agentTaskToSwarmMember(task: AgentTask): SwarmMember {
     text: task.text,
     suspendedReason: task.suspendedReason,
     swarmIndex: task.swarmIndex ?? Number.MAX_SAFE_INTEGER,
+    parentAgentId: task.parentAgentId,
+    depth: task.swarmDepth ?? 0,
+    boundModel: task.boundModel,
+    modelPreference: task.modelPreference,
   };
 }
 
@@ -100,6 +115,8 @@ function resultRow(sub: SwarmResultSubagent, index: number): SwarmCardRow {
     activity: sub.body.split("\n")[0] ?? "",
     phase: outcomeToPhase(sub.outcome),
     body: sub.body,
+    depth: 0,
+    topLevel: true,
   };
 }
 
@@ -117,15 +134,81 @@ function memberCoversResult(member: SwarmMember, sub: SwarmResultSubagent): bool
 export function buildSwarmCardRows(
   members: SwarmMember[],
   result: SwarmResult | null,
+  plannedItems: PlannedSwarmItem[] = [],
 ): SwarmCardRow[] {
-  const memberRows = members.map((m) => ({
-    id: m.id,
-    name: m.name,
-    activity: swarmMemberActivity(m),
-    phase: m.phase,
-    body: swarmMemberBody(m),
-  }));
-  if (!result) return memberRows;
+  const memberById = new Map(members.map((member) => [member.id, member]));
+  const compareMembers = (left: SwarmMember, right: SwarmMember) =>
+    left.swarmIndex - right.swarmIndex || left.id.localeCompare(right.id);
+  const children = new Map<string, SwarmMember[]>();
+  const roots: SwarmMember[] = [];
+  for (const member of members) {
+    if (member.parentAgentId && memberById.has(member.parentAgentId)) {
+      const siblings = children.get(member.parentAgentId) ?? [];
+      siblings.push(member);
+      children.set(member.parentAgentId, siblings);
+    } else {
+      roots.push(member);
+    }
+  }
+  roots.sort(compareMembers);
+  for (const siblings of children.values()) siblings.sort(compareMembers);
+  const orderedMembers: SwarmMember[] = [];
+  const visit = (member: SwarmMember) => {
+    orderedMembers.push(member);
+    for (const child of children.get(member.id) ?? []) visit(child);
+  };
+  for (const root of roots) visit(root);
+  const memberRows = new Map(
+    orderedMembers.map((member) => [
+      member.id,
+      {
+        id: member.id,
+        name: member.name,
+        activity: swarmMemberActivity(member),
+        phase: member.phase,
+        body: swarmMemberBody(member),
+        depth: member.depth,
+        topLevel: member.depth === 0,
+      } satisfies SwarmCardRow,
+    ]),
+  );
+  if (!result) {
+    const rootByIndex = new Map(
+      roots
+        .filter((member) => Number.isFinite(member.swarmIndex))
+        .map((member) => [member.swarmIndex, member] as const),
+    );
+    const branchRows = (root: SwarmMember) => {
+      const branch: SwarmCardRow[] = [];
+      const collect = (member: SwarmMember) => {
+        const row = memberRows.get(member.id);
+        if (row) branch.push(row);
+        for (const child of children.get(member.id) ?? []) collect(child);
+      };
+      collect(root);
+      return branch;
+    };
+    const plannedRows = plannedItems.flatMap((item) => {
+      const root = rootByIndex.get(item.index);
+      return root
+        ? branchRows(root)
+        : [{
+            id: `planned-${item.index}`,
+            name: item.name,
+            activity: "",
+            phase: "queued" as const,
+            body: "",
+            depth: 0,
+            topLevel: true,
+          }];
+    });
+    const plannedIndexes = new Set(plannedItems.map((item) => item.index));
+    const unplannedMembers = roots
+      .filter((member) => !plannedIndexes.has(member.swarmIndex))
+      .flatMap(branchRows);
+
+    return [...plannedRows, ...unplannedMembers];
+  }
 
   const resultOnly = result.subagents
     .filter(
@@ -135,8 +218,12 @@ export function buildSwarmCardRows(
     )
     .map((sub, i) => resultRow(sub, i));
 
-  return memberRows.length > 0
-    ? [...memberRows, ...resultOnly]
+  const orderedRows = orderedMembers.flatMap((member) => {
+    const row = memberRows.get(member.id);
+    return row ? [row] : [];
+  });
+  return orderedRows.length > 0
+    ? [...orderedRows, ...resultOnly]
     : result.subagents.map((s, i) => resultRow(s, i));
 }
 

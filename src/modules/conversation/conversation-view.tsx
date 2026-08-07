@@ -1,3 +1,4 @@
+import { LoaderCircle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useGlobalConfig } from "@/hooks/useGlobalConfig";
@@ -8,9 +9,20 @@ import type {
 } from "@/hooks/useSessionStream";
 import type { SessionFileEntry } from "@/hooks/useSessions";
 import { useSkillSlashCommands } from "@/hooks/useSkillSlashCommands";
-import type { UploadSessionFileResponse } from "@/lib/api/models";
+import type { ConfigModel, UploadSessionFileResponse } from "@/lib/api/models";
+import { ProviderType } from "@/lib/api/models/ProviderType";
+import type { AgentRuntimeCapabilities } from "@/lib/acp-capabilities";
+import { emptyAgentRuntimeCapabilities } from "@/lib/acp-capabilities";
 import { notifyGlobalConfigApplied } from "@/lib/config-update-toast";
+import {
+	canUseSessionConfigOption,
+	getSessionConfigOption,
+	getSessionConfigOptionValue,
+	prefersSetConfigOptionRpc,
+	sessionHasConfigOption,
+} from "@/lib/session-config-state";
 import { parseGoalCommand } from "@/lib/goal";
+import { isReconnectableStreamError } from "@/lib/session-stream/reconnectable-error";
 import {
   findConfigModel,
   modelForcesThinking,
@@ -23,6 +35,7 @@ import {
 } from "@/lib/slash-command-catalog";
 import {
   appendSessionGoalQueue,
+  getAgentRuntimeCapabilities,
   getSessionGoalQueue,
   isTauri,
   moveSessionGoalQueue,
@@ -116,10 +129,19 @@ export function ConversationView({
     sessionId,
     epoch: stream.goalCompletionEpoch,
   });
+  const goalCompletionEpochRef = useRef(stream.goalCompletionEpoch);
+  goalCompletionEpochRef.current = stream.goalCompletionEpoch;
   const goalQueuePromotionInFlightRef = useRef(false);
   const goalQueueMutationInFlightRef = useRef(false);
   const suppressGoalQueuePromotionRef = useRef(false);
+  const reconnectRequestedRef = useRef(false);
+  const reconnectAttemptStartedRef = useRef(false);
+  const [reconnectRequested, setReconnectRequested] = useState(false);
   const { config, update, isUpdating } = useGlobalConfig();
+  const [agentRuntime, setAgentRuntime] = useState<AgentRuntimeCapabilities>(
+    emptyAgentRuntimeCapabilities(),
+  );
+  const sessionConfig = stream.sessionConfigState;
   const busy = stream.status === "submitted" || stream.status === "streaming";
   const currentGoal = useToolEventsStore((state) => state.currentGoal);
   const skillCommands = useSkillSlashCommands();
@@ -134,12 +156,18 @@ export function ConversationView({
     setGoalQueueOpen(false);
     setGoalQueuePendingId(undefined);
     setGoalQueuePromotionRequested(false);
+    // A session switch establishes a new observation baseline. A cached or
+    // replayed stream may already carry completions from before this view
+    // mounted; those must not promote an upcoming Goal as a new live event.
     goalCompletionObservedRef.current = {
       sessionId,
-      epoch: 0,
+      epoch: goalCompletionEpochRef.current,
     };
     goalQueuePromotionInFlightRef.current = false;
     suppressGoalQueuePromotionRef.current = false;
+    reconnectRequestedRef.current = false;
+    reconnectAttemptStartedRef.current = false;
+    setReconnectRequested(false);
 
     if (!isTauri()) return;
     let cancelled = false;
@@ -158,6 +186,35 @@ export function ConversationView({
       cancelled = true;
     };
   }, [sessionId]);
+
+  useEffect(() => {
+    if (!reconnectRequested) return;
+    if (stream.connectionPhase === "reconnecting" || stream.connectionPhase === "connecting") {
+      reconnectAttemptStartedRef.current = true;
+      return;
+    }
+    const reconnected = stream.connectionPhase === "connected" && stream.isConnected;
+    const failed = reconnectAttemptStartedRef.current && stream.connectionPhase === "disconnected";
+    if (!reconnected && !failed) return;
+    reconnectRequestedRef.current = false;
+    reconnectAttemptStartedRef.current = false;
+    setReconnectRequested(false);
+  }, [reconnectRequested, stream.connectionPhase, stream.isConnected]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    void getAgentRuntimeCapabilities()
+      .then((caps) => {
+        if (!cancelled) setAgentRuntime(caps);
+      })
+      .catch(() => {
+        if (!cancelled) setAgentRuntime(emptyAgentRuntimeCapabilities());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!currentGoal || currentGoal.status === "complete") return;
@@ -245,40 +302,174 @@ export function ConversationView({
 
   const selectedModel = config?.defaultModel || "";
   const models = config?.models ?? [];
-  const selectedConfigModel = useMemo(
-    () => findConfigModel(models, selectedModel),
-    [models, selectedModel],
+  const sessionModelOption = getSessionConfigOption(sessionConfig, "model");
+  const canUseSessionModel = canUseSessionConfigOption(
+    agentRuntime,
+    sessionConfig,
+    "model",
   );
+  const canUseSessionThinking = canUseSessionConfigOption(
+    agentRuntime,
+    sessionConfig,
+    "thinking",
+  );
+  const canSetSessionModel = prefersSetConfigOptionRpc(
+    agentRuntime,
+    sessionConfig,
+    "model",
+  );
+  const canSetSessionThinking = prefersSetConfigOptionRpc(
+    agentRuntime,
+    sessionConfig,
+    "thinking",
+  );
+  const displayModels: ConfigModel[] = useMemo(() => {
+    if (sessionModelOption?.options?.length) {
+      return sessionModelOption.options.map((choice) => {
+        const name = String(choice.value ?? "");
+        const label = choice.label ?? name;
+        return {
+          name,
+          provider: label,
+          model: name,
+          maxContextSize: 0,
+          providerType: ProviderType.Kimi,
+        } satisfies ConfigModel;
+      });
+    }
+    return models;
+  }, [models, sessionModelOption]);
+  const displaySelectedModel = useMemo(() => {
+    const sessionValue = getSessionConfigOptionValue(sessionConfig, "model");
+    if (canUseSessionModel && typeof sessionValue === "string" && sessionValue.trim()) {
+      return sessionValue;
+    }
+    return selectedModel;
+  }, [canUseSessionModel, selectedModel, sessionConfig]);
+  const displaySelectedModelLabel = useMemo(() => {
+    if (canUseSessionModel) {
+      return displaySelectedModel || "未知模型";
+    }
+    if (sessionConfig.status === "unknown" && !selectedModel) {
+      return "未知";
+    }
+    return selectedModel || "全局默认";
+  }, [canUseSessionModel, displaySelectedModel, selectedModel, sessionConfig.status]);
+  const selectedConfigModel = useMemo(
+    () => findConfigModel(displayModels.length > 0 ? displayModels : models, displaySelectedModel),
+    [displayModels, displaySelectedModel, models],
+  );
+  const displayThinkingEnabled = useMemo(() => {
+    if (canUseSessionThinking) {
+      const raw = getSessionConfigOptionValue(sessionConfig, "thinking");
+      const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+      if (value === "on" || value === "true") return true;
+      if (value === "off" || value === "false") return false;
+    }
+    return Boolean(config?.defaultThinking);
+  }, [canUseSessionThinking, config?.defaultThinking, sessionConfig]);
+  const modelControlsDisabled =
+    stream.status !== "ready" ||
+    agentRuntime.capabilitiesStale === true;
+  const modelUpdating = isUpdating || stream.sessionConfigUpdating;
+
+  // Latest session config for async polling (lazy-connect load below).
+  const sessionConfigRef = useRef(stream.sessionConfigState);
+  sessionConfigRef.current = stream.sessionConfigState;
 
   const handleSelectModel = useCallback(
     async (name: string) => {
-      if (!name || name === selectedModel) return;
-      try {
-        const resp = await update({ defaultModel: name });
-        notifyGlobalConfigApplied(resp, `已切换到 ${name}`);
-      } catch (error) {
-        toast.error("切换模型失败", {
-          description: error instanceof Error ? error.message : String(error),
-        });
+      if (!name || name === displaySelectedModel) return;
+      if (!canUseSessionModel) {
+        try {
+          const resp = await update({ defaultModel: name });
+          notifyGlobalConfigApplied(resp, `已切换到 ${name}`);
+        } catch (error) {
+          toast.error("切换模型失败", {
+            description: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
       }
+      if (canSetSessionModel) {
+        const ok = await stream.sendSetConfigOption("model", name);
+        if (!ok) {
+          toast.error("切换会话模型失败", {
+            description: "请检查 ACP 连接或稍后重试。",
+          });
+        }
+        return;
+      }
+      toast.error("当前运行时无法修改会话模型", {
+        description: "请升级 Kimi Code 或检查 ACP 连接。",
+      });
     },
-    [selectedModel, update],
+    [canSetSessionModel, canUseSessionModel, displaySelectedModel, stream, update],
   );
+
+  // Opening the model picker while the session config is still unknown
+  // (lazy-connect before the first prompt) connects the ACP wire so
+  // session/resume fills configOptions, then waits for the config to land
+  // before opening the dropdown.
+  const handleModelPickerOpen = useCallback(async (): Promise<boolean> => {
+    if (sessionHasConfigOption(sessionConfigRef.current, "model")) {
+      return true;
+    }
+    // Stable Kimi ACP releases (including 0.32) do not currently advertise
+    // session config options. Keep model switching usable through the existing
+    // global-config + idle-worker restart path instead of blocking the picker.
+    if (!agentRuntime.sessionConfigOptions) {
+      return true;
+    }
+    if (stream.status === "submitted" || stream.status === "streaming") {
+      return false;
+    }
+    stream.connect();
+    for (let attempt = 0; attempt < 16; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (sessionHasConfigOption(sessionConfigRef.current, "model")) {
+        return true;
+      }
+    }
+    // A runtime may advertise the capability but omit configOptions on resume.
+    // Fall back to configured models rather than leaving the menu unusable.
+    return true;
+  }, [agentRuntime.sessionConfigOptions, stream]);
 
   const handleToggleThinking = useCallback(
     async (enabled: boolean) => {
+      if (!canUseSessionThinking) {
+        if (modelForcesThinking(selectedConfigModel)) return;
+        if (!modelHasThinkingCapability(selectedConfigModel)) return;
+        try {
+          const resp = await update({ defaultThinking: enabled });
+          notifyGlobalConfigApplied(
+            resp,
+            enabled ? "思考模式已开启" : "思考模式已关闭",
+          );
+        } catch (error) {
+          toast.error("更新思考模式失败", {
+            description: error instanceof Error ? error.message : String(error),
+          });
+        }
+        return;
+      }
       if (modelForcesThinking(selectedConfigModel)) return;
       if (!modelHasThinkingCapability(selectedConfigModel)) return;
-      try {
-        const resp = await update({ defaultThinking: enabled });
-        notifyGlobalConfigApplied(resp, enabled ? "思考模式已开启" : "思考模式已关闭");
-      } catch (error) {
-        toast.error("更新思考模式失败", {
-          description: error instanceof Error ? error.message : String(error),
-        });
+      if (canSetSessionThinking) {
+        const ok = await stream.sendSetConfigOption("thinking", enabled ? "on" : "off");
+        if (!ok) {
+          toast.error("更新会话 Thinking 失败", {
+            description: "请检查 ACP 连接或稍后重试。",
+          });
+        }
+        return;
       }
+      toast.error("当前运行时无法修改会话 Thinking", {
+        description: "请升级 Kimi Code 或检查 ACP 连接。",
+      });
     },
-    [selectedConfigModel, update],
+    [canSetSessionThinking, canUseSessionThinking, selectedConfigModel, stream, update],
   );
 
   const handleSelectThinkingEffort = useCallback(
@@ -667,17 +858,31 @@ export function ConversationView({
     [],
   );
 
-  const streamDead = stream.status === "error";
+  const streamError = stream.status === "error";
+  const reconnectableStreamError =
+    streamError &&
+    isReconnectableStreamError({
+      error: stream.error,
+      connectionPhase: stream.connectionPhase,
+      sessionStatus: stream.sessionStatus,
+    });
+  const reconnectInProgress =
+    reconnectRequested ||
+    stream.connectionPhase === "connecting" ||
+    stream.connectionPhase === "reconnecting";
+  const streamDead = streamError && reconnectableStreamError;
   const connectingSession =
-    !streamDead &&
+    !streamError &&
     ((stream.isReplayingHistory && stream.status !== "ready") ||
       (!stream.isConnected && stream.status === "submitted"));
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
       <MessageList
+        sessionId={sessionId}
         messages={messages}
         isAwaitingFirstResponse={stream.isAwaitingFirstResponse && !streamDead}
+        connectionPhase={stream.connectionPhase}
         onRespondApproval={(id, decision) => {
           void stream.respondToApproval(id, decision);
         }}
@@ -693,7 +898,7 @@ export function ConversationView({
               {stream.isReplayingHistory ? "正在加载会话历史…" : "正在连接会话…"}
             </output>
           )}
-          {streamDead && (
+          {streamError && (
             <div
               role="alert"
               className="mb-2 flex items-center gap-3 rounded-r2 border border-danger/40 bg-danger/10 px-3 py-2"
@@ -706,13 +911,23 @@ export function ConversationView({
                   ? "（高延迟/VPN/凭据异常时请检查网络后重试）"
                   : ""}
               </p>
-              <button
-                type="button"
-                onClick={() => stream.reconnect()}
-                className="shrink-0 rounded-r1 border border-danger/40 bg-elevated px-2.5 py-1 text-[11px] font-medium text-danger transition-colors hover:bg-hover"
-              >
-                重新连接
-              </button>
+              {reconnectableStreamError && (
+                <button
+                  type="button"
+                  disabled={reconnectInProgress}
+                  onClick={() => {
+                    if (reconnectRequestedRef.current) return;
+                    reconnectRequestedRef.current = true;
+                    reconnectAttemptStartedRef.current = false;
+                    setReconnectRequested(true);
+                    stream.reconnect();
+                  }}
+                  className="flex shrink-0 items-center gap-1 rounded-r1 border border-danger/40 bg-elevated px-2.5 py-1 text-[11px] font-medium text-danger transition-colors hover:bg-hover disabled:cursor-wait disabled:opacity-60"
+                >
+                  {reconnectInProgress && <LoaderCircle size={11} className="animate-spin" />}
+                  {reconnectInProgress ? "正在重连…" : "重新连接"}
+                </button>
+              )}
             </div>
           )}
           {commandResult && (
@@ -768,12 +983,14 @@ export function ConversationView({
             onUploadFile={(file) => onUploadFile(sessionId, file)}
             onOpenContext={() => onOpenWorkspace("files")}
             listDirectory={listDirectory}
-            models={models}
-            selectedModel={selectedModel || "默认模型"}
-            thinkingEnabled={Boolean(config?.defaultThinking)}
+            models={displayModels.length > 0 ? displayModels : models}
+            selectedModel={displaySelectedModelLabel}
+            thinkingEnabled={displayThinkingEnabled}
             thinkingEffort={config?.thinkingEffort ?? ""}
-            modelControlsDisabled={!config}
-            modelUpdating={isUpdating}
+            modelControlsDisabled={modelControlsDisabled}
+            modelUpdating={modelUpdating}
+            thinkingControlsVisible={canUseSessionThinking ? true : undefined}
+            onModelPickerOpen={handleModelPickerOpen}
             onSelectModel={(name) => void handleSelectModel(name)}
             onToggleThinking={(enabled) => void handleToggleThinking(enabled)}
             onSelectThinkingEffort={(effort) => void handleSelectThinkingEffort(effort)}
@@ -800,6 +1017,7 @@ export function ConversationView({
             modeControlsDisabled={
               stream.status !== "ready" || pendingGoalStart !== null || goalStartPending
             }
+            permissionModeDisabled={pendingGoalStart !== null || goalStartPending}
             contextUsage={stream.contextUsage}
             tokenUsage={stream.tokenUsage}
             contextTokens={stream.contextTokens}

@@ -13,6 +13,7 @@ PACKAGE_VERSION="$(node -p "require('$PROJECT_ROOT/package.json').version")"
 SIGNING_MODE="unsigned"
 NOTARIZATION_STATUS="not-attempted"
 FALLBACK_REASON=""
+DMG_LAYOUT_MODE="finder"
 
 clean_bundle_outputs() {
   mkdir -p "$RUNNER_TEMP"
@@ -26,8 +27,38 @@ clean_bundle_outputs() {
   fi
 }
 
+build_headless_dmg() {
+  local app_name="Kimi Code.app"
+  local dmg_name="Kimi Code_${PACKAGE_VERSION}_aarch64.dmg"
+  local bundle_script="$DMG_DIR/bundle_dmg.sh"
+  local volume_icon="$DMG_DIR/icon.icns"
+
+  [[ -f "$bundle_script" ]] || return 1
+  [[ -f "$volume_icon" ]] || return 1
+  [[ -d "$MACOS_DIR/$app_name" ]] || return 1
+
+  echo "Retrying DMG packaging without Finder AppleScript layout."
+  (
+    cd "$MACOS_DIR" || exit 1
+    "$bundle_script" \
+      --skip-jenkins \
+      --volname "Kimi Code" \
+      --icon "$app_name" 180 170 \
+      --app-drop-link 480 170 \
+      --window-size 660 400 \
+      --hide-extension "$app_name" \
+      --volicon "$volume_icon" \
+      "$DMG_DIR/$dmg_name" \
+      "$app_name"
+  ) || return 1
+  DMG_LAYOUT_MODE="headless"
+}
+
 build_dmg() {
-  npm run tauri -- build --bundles dmg --target "$TARGET"
+  if npm run tauri -- build --bundles dmg --target "$TARGET"; then
+    return 0
+  fi
+  build_headless_dmg
 }
 
 prepare_notarization_key() {
@@ -148,6 +179,7 @@ export KIMI_RELEASE_DMG_SHA256="$DMG_SHA256"
 export KIMI_RELEASE_SIGNING_MODE="$SIGNING_MODE"
 export KIMI_RELEASE_NOTARIZATION_STATUS="$NOTARIZATION_STATUS"
 export KIMI_RELEASE_FALLBACK_REASON="$FALLBACK_REASON"
+export KIMI_RELEASE_DMG_LAYOUT_MODE="$DMG_LAYOUT_MODE"
 node <<'NODE' > "$MANIFEST"
 const manifest = {
   schema: 1,
@@ -160,6 +192,7 @@ const manifest = {
   commit: process.env.GITHUB_SHA || null,
   signingMode: process.env.KIMI_RELEASE_SIGNING_MODE,
   notarizationStatus: process.env.KIMI_RELEASE_NOTARIZATION_STATUS,
+  dmgLayoutMode: process.env.KIMI_RELEASE_DMG_LAYOUT_MODE,
   fallbackReason: process.env.KIMI_RELEASE_FALLBACK_REASON || null,
   files: {
     dmg: {
@@ -178,10 +211,11 @@ NODE
   echo "- DMG: \`$DMG_NAME\`"
   echo "- Signing mode: \`$SIGNING_MODE\`"
   echo "- Notarization: \`$NOTARIZATION_STATUS\`"
+  echo "- DMG layout: \`$DMG_LAYOUT_MODE\`"
   if [[ -n "$FALLBACK_REASON" ]]; then
     echo "- Fallback: $FALLBACK_REASON"
   fi
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 echo "macOS ARM64 DMG ready: $DMG_PATH"
-echo "Signing mode: $SIGNING_MODE; notarization: $NOTARIZATION_STATUS"
+echo "Signing mode: $SIGNING_MODE; notarization: $NOTARIZATION_STATUS; DMG layout: $DMG_LAYOUT_MODE"

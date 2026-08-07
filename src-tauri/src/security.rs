@@ -62,6 +62,32 @@ pub fn validate_local_absolute_path(path: &str) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+/// Validate an absolute path for writing a new file (parent may not exist yet).
+pub fn validate_local_write_path(path: &str) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Path must not be empty".to_string());
+    }
+
+    let path_obj = Path::new(trimmed);
+    if !path_obj.is_absolute() {
+        return Err("Path must be absolute".to_string());
+    }
+
+    if is_unc_path(path_obj) {
+        return Err("UNC network paths are not allowed".to_string());
+    }
+
+    if path_obj
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err("Path must not contain '..' components".to_string());
+    }
+
+    Ok(path_obj.to_path_buf())
+}
+
 /// Validate an explicit `KIMI_CODE_BIN` path before launching the CLI.
 pub fn validate_kimi_code_bin_path(path: &str) -> Result<PathBuf, String> {
     let trimmed = path.trim();
@@ -265,6 +291,16 @@ mod tests {
     fn rejects_relative_and_parent_paths() {
         assert!(validate_local_absolute_path("relative/path").is_err());
         assert!(validate_local_absolute_path("/tmp/../etc/passwd").is_err());
+        assert!(validate_local_write_path("relative/out.md").is_err());
+        assert!(validate_local_write_path("/tmp/../etc/out.md").is_err());
+    }
+
+    #[test]
+    fn accepts_absolute_write_paths_without_existing_file() {
+        #[cfg(unix)]
+        assert!(validate_local_write_path("/tmp/kimi-export-test.md").is_ok());
+        #[cfg(windows)]
+        assert!(validate_local_write_path(r"C:\Temp\kimi-export-test.md").is_ok());
     }
 
     #[cfg(windows)]

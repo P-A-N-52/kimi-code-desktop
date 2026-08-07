@@ -2,12 +2,12 @@
 
 use crate::runtime_check::kimi_code_home_dir;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static SESSION_STATE_WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -187,7 +187,9 @@ pub fn delete_session_dir(session_id: &str) -> Result<(), String> {
             "Failed to delete session directory {}: {e}",
             session_dir.display()
         )
-    })
+    })?;
+    clear_latest_turn_usage_cache(session_id);
+    Ok(())
 }
 
 fn state_json_path(session_dir: &Path) -> PathBuf {
@@ -377,6 +379,75 @@ impl SessionUsageSnapshot {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WireFileFingerprint {
+    path: PathBuf,
+    length: u64,
+    modified: Option<SystemTime>,
+}
+
+/// ACP appends wire records outside this process, so the cache is refreshed
+/// whenever the backing wire file changes.
+#[derive(Debug, Clone)]
+struct CachedSessionUsage {
+    fingerprint: WireFileFingerprint,
+    snapshot: Option<SessionUsageSnapshot>,
+}
+
+static LATEST_USAGE_CACHE: OnceLock<Mutex<HashMap<String, CachedSessionUsage>>> = OnceLock::new();
+
+fn latest_usage_cache() -> &'static Mutex<HashMap<String, CachedSessionUsage>> {
+    LATEST_USAGE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn wire_file_fingerprint(path: &Path) -> Option<WireFileFingerprint> {
+    let metadata = fs::metadata(path).ok()?;
+    Some(WireFileFingerprint {
+        path: path.to_path_buf(),
+        length: metadata.len(),
+        modified: metadata.modified().ok(),
+    })
+}
+
+fn cached_latest_turn_usage(
+    session_id: &str,
+    fingerprint: Option<&WireFileFingerprint>,
+) -> Option<Option<SessionUsageSnapshot>> {
+    let fingerprint = fingerprint?;
+    let cache = latest_usage_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = cache.get(session_id)?;
+    (entry.fingerprint == *fingerprint).then(|| entry.snapshot.clone())
+}
+
+fn cache_latest_turn_usage(
+    session_id: &str,
+    fingerprint: Option<WireFileFingerprint>,
+    snapshot: Option<SessionUsageSnapshot>,
+) {
+    let Some(fingerprint) = fingerprint else {
+        return;
+    };
+    latest_usage_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(
+            session_id.to_string(),
+            CachedSessionUsage {
+                fingerprint,
+                snapshot,
+            },
+        );
+}
+
+fn clear_latest_turn_usage_cache(session_id: &str) {
+    latest_usage_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(session_id);
+}
+
 fn usage_field_u64(usage: &Value, keys: &[&str]) -> u64 {
     for key in keys {
         if let Some(value) = usage.get(*key) {
@@ -438,17 +509,7 @@ pub(crate) fn parse_usage_record(record: &Value) -> Option<SessionUsageSnapshot>
     })
 }
 
-/// Read the most recent turn-scoped `usage.record` from the session wire log.
-pub fn latest_turn_usage(session_id: &str) -> Result<Option<SessionUsageSnapshot>, String> {
-    let Some(session_dir) = find_session_dir_by_id(session_id)? else {
-        return Ok(None);
-    };
-    let Some(wire_file) = wire_jsonl_path(&session_dir) else {
-        return Ok(None);
-    };
-    let content = fs::read_to_string(&wire_file)
-        .map_err(|e| format!("Failed to read {}: {e}", wire_file.display()))?;
-
+fn latest_turn_usage_from_content(content: &str) -> Option<SessionUsageSnapshot> {
     let mut latest: Option<SessionUsageSnapshot> = None;
     for line in content.lines() {
         let line = line.trim();
@@ -465,6 +526,31 @@ pub fn latest_turn_usage(session_id: &str) -> Result<Option<SessionUsageSnapshot
                 latest = Some(snapshot);
             }
         }
+    }
+    latest
+}
+
+/// Read the most recent turn-scoped `usage.record` from the session wire log.
+pub fn latest_turn_usage(session_id: &str) -> Result<Option<SessionUsageSnapshot>, String> {
+    let Some(session_dir) = find_session_dir_by_id(session_id)? else {
+        clear_latest_turn_usage_cache(session_id);
+        return Ok(None);
+    };
+    let Some(wire_file) = wire_jsonl_path(&session_dir) else {
+        clear_latest_turn_usage_cache(session_id);
+        return Ok(None);
+    };
+    let fingerprint = wire_file_fingerprint(&wire_file);
+    if let Some(cached) = cached_latest_turn_usage(session_id, fingerprint.as_ref()) {
+        return Ok(cached);
+    }
+
+    let content = fs::read_to_string(&wire_file)
+        .map_err(|e| format!("Failed to read {}: {e}", wire_file.display()))?;
+    let latest = latest_turn_usage_from_content(&content);
+    let refreshed_fingerprint = wire_file_fingerprint(&wire_file);
+    if refreshed_fingerprint == fingerprint {
+        cache_latest_turn_usage(session_id, refreshed_fingerprint, latest.clone());
     }
     Ok(latest)
 }
@@ -483,15 +569,11 @@ pub(crate) struct ResolvedRuntimeModes {
     pub goal_mode: bool,
 }
 
-/// Resolve Plan / permission / Swarm the same way ACP does at worker start:
-/// session wire-log state first, then global defaults, with Swarm from desktop
-/// custom session state.
-pub(crate) fn resolved_runtime_modes(session_id: &str) -> Result<ResolvedRuntimeModes, String> {
+fn resolved_runtime_modes_from_persisted(
+    session_id: &str,
+    persisted: PersistedRuntimeModes,
+) -> Result<ResolvedRuntimeModes, String> {
     let defaults = crate::global_config::runtime_mode_defaults().unwrap_or_default();
-    let persisted = persisted_runtime_modes(session_id).unwrap_or_else(|err| {
-        eprintln!("[session_store] failed to read persisted runtime modes for {session_id}: {err}");
-        PersistedRuntimeModes::default()
-    });
     let permission_mode = persisted
         .permission_mode
         .unwrap_or_else(|| defaults.permission_mode.clone());
@@ -515,8 +597,21 @@ pub(crate) fn resolved_runtime_modes(session_id: &str) -> Result<ResolvedRuntime
     })
 }
 
-fn push_runtime_mode_status(messages: &mut Vec<String>, session_id: &str) -> Result<(), String> {
-    let modes = resolved_runtime_modes(session_id)?;
+/// Resolve Plan / permission / Swarm the same way ACP does at worker start:
+/// session wire-log state first, then global defaults, with Swarm from desktop
+/// custom session state.
+pub(crate) fn resolved_runtime_modes(session_id: &str) -> Result<ResolvedRuntimeModes, String> {
+    let persisted = persisted_runtime_modes(session_id).unwrap_or_else(|err| {
+        eprintln!("[session_store] failed to read persisted runtime modes for {session_id}: {err}");
+        PersistedRuntimeModes::default()
+    });
+    resolved_runtime_modes_from_persisted(session_id, persisted)
+}
+
+fn push_runtime_mode_status(
+    messages: &mut Vec<String>,
+    modes: &ResolvedRuntimeModes,
+) -> Result<(), String> {
     push_event(
         messages,
         "StatusUpdate",
@@ -529,6 +624,21 @@ fn push_runtime_mode_status(messages: &mut Vec<String>, session_id: &str) -> Res
             "goal_mode": modes.goal_mode,
         }),
     )
+}
+
+fn update_persisted_runtime_modes(modes: &mut PersistedRuntimeModes, record: &Value) {
+    match record.get("type").and_then(Value::as_str) {
+        Some("plan_mode.enter") => modes.plan_mode = Some(true),
+        Some("plan_mode.cancel" | "plan_mode.exit") => modes.plan_mode = Some(false),
+        Some("permission.set_mode") => {
+            modes.permission_mode = match record.get("mode").and_then(Value::as_str) {
+                Some("ask" | "default") => Some("manual".to_string()),
+                Some(mode @ ("manual" | "auto" | "yolo")) => Some(mode.to_string()),
+                _ => modes.permission_mode.clone(),
+            };
+        }
+        _ => {}
+    }
 }
 
 /// Read the latest independent Plan and permission states persisted by Kimi Code.
@@ -553,18 +663,7 @@ pub(crate) fn persisted_runtime_modes(session_id: &str) -> Result<PersistedRunti
             .then(|| serde_json::from_str::<Value>(line).ok())
             .flatten()
     }) {
-        match record.get("type").and_then(Value::as_str) {
-            Some("plan_mode.enter") => modes.plan_mode = Some(true),
-            Some("plan_mode.cancel" | "plan_mode.exit") => modes.plan_mode = Some(false),
-            Some("permission.set_mode") => {
-                modes.permission_mode = match record.get("mode").and_then(Value::as_str) {
-                    Some("ask" | "default") => Some("manual".to_string()),
-                    Some(mode @ ("manual" | "auto" | "yolo")) => Some(mode.to_string()),
-                    _ => modes.permission_mode,
-                };
-            }
-            _ => {}
-        }
+        update_persisted_runtime_modes(&mut modes, &record);
     }
 
     Ok(modes)
@@ -712,11 +811,20 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
     let session_dir = find_session_dir_by_id_or_err(session_id)?;
     let Some(wire_file) = wire_jsonl_path(&session_dir) else {
         // Lazy-connect path never starts ACP, so still surface persisted modes.
+        clear_latest_turn_usage_cache(session_id);
+        let modes = resolved_runtime_modes(session_id)?;
+        let session_config = crate::acp_capabilities::resolve_session_config(session_id);
         let mut messages = Vec::new();
-        push_runtime_mode_status(&mut messages, session_id)?;
+        push_runtime_mode_status(&mut messages, &modes)?;
+        push_session_config_snapshot_from_state(
+            &mut messages,
+            session_id,
+            session_config.as_ref(),
+        )?;
         return Ok(messages);
     };
 
+    let initial_fingerprint = wire_file_fingerprint(&wire_file);
     let content = fs::read_to_string(&wire_file)
         .map_err(|e| format!("Failed to read {}: {e}", wire_file.display()))?;
 
@@ -742,8 +850,10 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
     let mut next_step = 1u64;
     let mut emitted_turns = HashSet::new();
     let mut latest_usage: Option<SessionUsageSnapshot> = None;
+    let mut persisted_modes = PersistedRuntimeModes::default();
     for record in records {
-        // Capture turn usage in the same pass so callers do not re-read wire.jsonl.
+        // Capture persisted state and turn usage in the same pass as replay.
+        update_persisted_runtime_modes(&mut persisted_modes, &record);
         if let Some(snapshot) = parse_usage_record(&record) {
             let scope = record.get("usageScope").and_then(Value::as_str);
             if scope.is_none() || scope == Some("turn") {
@@ -783,6 +893,11 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
         }
     }
 
+    let refreshed_fingerprint = wire_file_fingerprint(&wire_file);
+    if refreshed_fingerprint == initial_fingerprint {
+        cache_latest_turn_usage(session_id, refreshed_fingerprint, latest_usage.clone());
+    }
+
     if let Some(usage) = latest_usage {
         let used = usage.context_tokens();
         let model = usage.model.as_deref().unwrap_or("");
@@ -804,9 +919,100 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
 
     // Emit after usage so lazy-connect UIs restore permission / plan / swarm
     // without waiting for an ACP worker (which may never start until a prompt).
-    push_runtime_mode_status(&mut messages, session_id)?;
+    let modes = resolved_runtime_modes_from_persisted(session_id, persisted_modes)?;
+    let session_config = crate::acp_capabilities::resolve_session_config(session_id);
+    push_runtime_mode_status(&mut messages, &modes)?;
+    push_session_config_snapshot_from_state(&mut messages, session_id, session_config.as_ref())?;
 
     Ok(messages)
+}
+
+fn push_session_config_snapshot_from_state(
+    messages: &mut Vec<String>,
+    session_id: &str,
+    state: Option<&crate::acp_capabilities::SessionConfigState>,
+) -> Result<(), String> {
+    let Some(state) = state else {
+        return Ok(());
+    };
+    if state.status != crate::acp_capabilities::SessionConfigStatus::Known
+        || state.options.is_empty()
+    {
+        return Ok(());
+    }
+    messages.push(crate::acp_translate::translate_session_config_snapshot(
+        session_id, state,
+    ));
+    Ok(())
+}
+
+#[cfg(test)]
+fn push_session_config_snapshot(
+    messages: &mut Vec<String>,
+    session_id: &str,
+) -> Result<(), String> {
+    let state = crate::acp_capabilities::resolve_session_config(session_id);
+    push_session_config_snapshot_from_state(messages, session_id, state.as_ref())
+}
+
+const PERSISTED_SESSION_CONFIG_KEY: &str = "session_config";
+
+/// Persist the last known session config snapshot for lazy-connect replay after restart.
+pub fn persist_session_config(
+    session_id: &str,
+    state: &crate::acp_capabilities::SessionConfigState,
+) -> Result<(), String> {
+    let session_dir = find_session_dir_by_id_or_err(session_id)?;
+    let serialized = crate::acp_capabilities::session_config_state_to_value(state);
+    mutate_session_state(&session_dir, |root| {
+        let root = root
+            .as_object_mut()
+            .ok_or_else(|| "Session state is not a JSON object".to_string())?;
+        let custom = root.entry("custom").or_insert_with(|| json!({}));
+        let custom = custom
+            .as_object_mut()
+            .ok_or_else(|| "Session state custom field is not a JSON object".to_string())?;
+        let desktop = custom
+            .entry("kimi_code_desktop")
+            .or_insert_with(|| json!({}));
+        let desktop = desktop
+            .as_object_mut()
+            .ok_or_else(|| "Session desktop state is not a JSON object".to_string())?;
+        desktop.insert(PERSISTED_SESSION_CONFIG_KEY.to_string(), serialized.clone());
+        Ok(())
+    })
+}
+
+/// Read persisted session config for lazy replay when the in-memory store is empty.
+pub fn read_persisted_session_config(
+    session_id: &str,
+) -> Result<Option<crate::acp_capabilities::SessionConfigState>, String> {
+    let session_dir = match find_session_dir_by_id(session_id)? {
+        Some(dir) => dir,
+        None => return Ok(None),
+    };
+    let state_path = state_json_path(&session_dir);
+    if !state_path.is_file() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&state_path)
+        .map_err(|e| format!("Failed to read {}: {e}", state_path.display()))?;
+    let state: Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse {}: {e}", state_path.display()))?;
+    let raw = state
+        .get("custom")
+        .and_then(|custom| custom.get("kimi_code_desktop"))
+        .and_then(|desktop| desktop.get(PERSISTED_SESSION_CONFIG_KEY));
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let mut parsed: crate::acp_capabilities::SessionConfigState =
+        serde_json::from_value(raw.clone())
+            .map_err(|e| format!("Invalid persisted session config: {e}"))?;
+    if parsed.session_id.is_empty() {
+        parsed.session_id = session_id.to_string();
+    }
+    Ok(Some(parsed))
 }
 
 /// Derive a short session title from the first visible user turn in wire history.
@@ -848,7 +1054,9 @@ pub fn fallback_title_from_wire(session_id: &str) -> Result<String, String> {
                 if !is_visible_user_message(message) {
                     continue;
                 }
-                if let Some(title) = title_from_content_parts(&message_content(message)) {
+                if let Some(title) =
+                    title_from_content_parts(&visible_user_message_content(message))
+                {
                     return Ok(title);
                 }
             }
@@ -895,7 +1103,7 @@ fn replay_context_message(
             if !is_visible_user_message(message) {
                 return Ok(());
             }
-            let content = message_content(message);
+            let content = visible_user_message_content(message);
             if content.is_empty() {
                 return Ok(());
             }
@@ -970,12 +1178,13 @@ fn replay_context_message(
 }
 
 fn turn_prompt_content(record: &Value) -> Vec<Value> {
-    record
+    let content = record
         .get("input")
         .or_else(|| record.get("content"))
         .and_then(Value::as_array)
         .cloned()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    crate::acp_translate::user_content_from_acp_prompt(&content)
 }
 
 fn replay_turn_prompt(
@@ -1094,6 +1303,10 @@ fn message_content(message: &Value) -> Vec<Value> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default()
+}
+
+fn visible_user_message_content(message: &Value) -> Vec<Value> {
+    crate::acp_translate::user_content_from_acp_prompt(&message_content(message))
 }
 
 fn is_visible_user_source(value: &Value) -> bool {
@@ -1342,6 +1555,52 @@ mod tests {
     }
 
     #[test]
+    fn latest_turn_usage_refreshes_after_wire_append() {
+        let (_dir, home) = temp_home("usage-cache-refresh");
+        let _guard = set_kimi_code_home(&home);
+        let session_id = "session_usage_cache_refresh";
+        let session_dir = write_session_layout(&home, "wd_cache", session_id);
+        let wire_dir = session_dir.join("agents").join("main");
+        fs::create_dir_all(&wire_dir).expect("wire dir");
+        let wire_file = wire_dir.join("wire.jsonl");
+        fs::write(
+            &wire_file,
+            concat!(
+                r#"{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":10,"output":1},"usageScope":"turn"}"#,
+                "\n"
+            ),
+        )
+        .expect("write initial wire");
+
+        let first = latest_turn_usage(session_id)
+            .expect("read initial usage")
+            .expect("initial snapshot");
+        assert_eq!(first.input_other, 10);
+
+        {
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new()
+                .append(true)
+                .open(&wire_file)
+                .expect("open wire for append");
+            file.write_all(
+                concat!(
+                    r#"{"type":"usage.record","model":"kimi-code/k3","usage":{"inputOther":20,"output":2},"usageScope":"turn"}"#,
+                    "\n"
+                )
+                .as_bytes(),
+            )
+            .expect("append wire");
+        }
+
+        let latest = latest_turn_usage(session_id)
+            .expect("read refreshed usage")
+            .expect("refreshed snapshot");
+        assert_eq!(latest.input_other, 20);
+        assert_eq!(latest.output, 2);
+    }
+
+    #[test]
     fn replay_session_history_appends_usage_status_from_same_read() {
         let (_dir, home) = temp_home("usage-replay");
         let _guard = set_kimi_code_home(&home);
@@ -1444,7 +1703,15 @@ mod tests {
         write_session_layout(&home, "deadbeef", "safe-session");
         let _lock = set_kimi_code_home(&home);
 
-        for invalid in ["../credentials", r"..\credentials", "a/b", r"a\b", ""] {
+        let sep = std::path::MAIN_SEPARATOR;
+        let invalid = vec![
+            "../credentials".to_string(),
+            "a/b".to_string(),
+            format!("..{sep}credentials"),
+            format!("a{sep}b"),
+            String::new(),
+        ];
+        for invalid in &invalid {
             assert!(
                 find_session_dir_by_id(invalid).is_err(),
                 "accepted {invalid:?}"
@@ -1686,6 +1953,61 @@ mod tests {
     }
 
     #[test]
+    fn push_session_config_snapshot_appends_config_option_update() {
+        let session_id = "push-config-snapshot-test";
+        crate::acp_capabilities::set_session_config_from_response(
+            session_id,
+            &serde_json::json!({
+                "configOptions": [{
+                    "id": "model",
+                    "type": "select",
+                    "currentValue": "kimi-k2",
+                    "options": [{ "value": "kimi-k2", "label": "Kimi K2" }]
+                }]
+            }),
+        );
+        let mut messages = Vec::new();
+        push_session_config_snapshot(&mut messages, session_id).expect("push snapshot");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("ConfigOptionUpdate")),
+            "expected ConfigOptionUpdate wire event"
+        );
+        crate::acp_capabilities::clear_session_config(session_id);
+    }
+
+    #[test]
+    fn push_session_config_snapshot_reads_persisted_state_after_memory_clear() {
+        let (_guard, home) = temp_home("user-persist-config");
+        let session_id = "sess-persist-config";
+        write_session_layout(&home, "hash-persist-config", session_id);
+        let _lock = set_kimi_code_home(&home);
+
+        crate::acp_capabilities::set_session_config_from_response(
+            session_id,
+            &serde_json::json!({
+                "configOptions": [{
+                    "id": "thinking",
+                    "type": "toggle",
+                    "currentValue": "on"
+                }]
+            }),
+        );
+        crate::acp_capabilities::clear_session_config(session_id);
+
+        let mut messages = Vec::new();
+        push_session_config_snapshot(&mut messages, session_id).expect("push snapshot");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.contains("ConfigOptionUpdate")
+                    && message.contains("thinking")),
+            "expected persisted ConfigOptionUpdate wire event"
+        );
+    }
+
+    #[test]
     fn replay_session_history_translates_context_append_messages() {
         let (_guard, home) = temp_home("user-context");
         let session_id = "sess-context";
@@ -1834,6 +2156,84 @@ mod tests {
     }
 
     #[test]
+    fn replay_restores_user_content_from_desktop_compat_prompts() {
+        let (_guard, home) = temp_home("desktop-compat-prompt");
+        let session_id = "sess-desktop-compat-prompt";
+        let session_dir = write_session_layout(&home, "hash-desktop-compat-prompt", session_id);
+        let wire_path = session_dir.join("agents").join("main");
+        fs::create_dir_all(&wire_path).expect("wire dir");
+
+        let prompt = crate::acp_translate::legacy_user_input_to_acp_prompt_with_swarm(
+            &json!({ "user_input": "review in parallel", "goal_action": "create" }),
+            true,
+            true,
+        );
+        let record = json!({
+            "type": "turn.prompt",
+            "input": prompt,
+            "origin": { "kind": "user" }
+        });
+        fs::write(wire_path.join("wire.jsonl"), format!("{record}\n")).expect("write wire");
+
+        let _lock = set_kimi_code_home(&home);
+        let messages = replay_session_history(session_id).expect("replay");
+        let parsed: Vec<Value> = messages
+            .iter()
+            .map(|message| serde_json::from_str(message).expect("json"))
+            .collect();
+
+        assert_eq!(parsed[0]["params"]["type"], "TurnBegin");
+        assert_eq!(
+            parsed[0]["params"]["payload"]["user_input"],
+            "review in parallel"
+        );
+        assert!(!messages
+            .iter()
+            .any(|message| message.contains("kimi-code-desktop")));
+    }
+
+    #[test]
+    fn replay_context_fallback_removes_legacy_desktop_instruction() {
+        let (_guard, home) = temp_home("legacy-desktop-compat-context");
+        let session_id = "sess-legacy-desktop-compat-context";
+        let session_dir =
+            write_session_layout(&home, "hash-legacy-desktop-compat-context", session_id);
+        let wire_path = session_dir.join("agents").join("main");
+        fs::create_dir_all(&wire_path).expect("wire dir");
+        let legacy_swarm = concat!(
+            "<system-reminder>\n",
+            "Swarm mode is enabled for this turn. When the request can be split into two ",
+            "or more independent items, use AgentSwarm. AgentSwarm must be the only tool ",
+            "call in that model response. If parallel delegation would not help, continue ",
+            "normally.\n",
+            "</system-reminder>"
+        );
+        let record = json!({
+            "type": "context.append_message",
+            "message": {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "legacy request" },
+                    { "type": "text", "text": legacy_swarm }
+                ],
+                "origin": { "kind": "user" }
+            }
+        });
+        fs::write(wire_path.join("wire.jsonl"), format!("{record}\n")).expect("write wire");
+
+        let _lock = set_kimi_code_home(&home);
+        let messages = replay_session_history(session_id).expect("replay");
+        let parsed: Vec<Value> = messages
+            .iter()
+            .map(|message| serde_json::from_str(message).expect("json"))
+            .collect();
+        assert_eq!(
+            parsed[0]["params"]["payload"]["user_input"],
+            "legacy request"
+        );
+    }
+
+    #[test]
     fn replay_session_history_reads_turn_prompt_input_field() {
         let (_guard, home) = temp_home("user-input");
         let session_id = "sess-input";
@@ -1914,16 +2314,25 @@ mod tests {
         let session_dir = write_session_layout(&home, "hash-title", session_id);
         let wire_path = session_dir.join("agents").join("main");
         fs::create_dir_all(&wire_path).expect("wire dir");
-        fs::write(
-            wire_path.join("wire.jsonl"),
-            concat!(
-                r#"{"type":"metadata","message":{}}"#,
-                "\n",
-                r#"{"type":"turn.prompt","input":[{"type":"text","text":"Investigate the ACP bridge"}],"origin":{"kind":"user"}}"#,
-                "\n",
-            ),
-        )
-        .expect("write wire");
+        let prompt = crate::acp_translate::legacy_user_input_to_acp_prompt_with_swarm(
+            &json!({ "user_input": "Investigate the ACP bridge" }),
+            true,
+            false,
+        );
+        let records = [
+            json!({ "type": "metadata", "message": {} }),
+            json!({
+                "type": "turn.prompt",
+                "input": prompt,
+                "origin": { "kind": "user" }
+            }),
+        ];
+        let content = records
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(wire_path.join("wire.jsonl"), format!("{content}\n")).expect("write wire");
 
         let _lock = set_kimi_code_home(&home);
         let title = fallback_title_from_wire(session_id).expect("title");

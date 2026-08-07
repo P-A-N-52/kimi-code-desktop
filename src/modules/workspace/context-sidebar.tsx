@@ -515,7 +515,7 @@ export function ContextSidebar({
           ) : null}
           {detail === "tasks" ? (
             <div className="h-full overflow-y-auto">
-              <TasksTab onGoalControl={onGoalControl} />
+              <TasksTab sessionId={sessionId} onGoalControl={onGoalControl} />
             </div>
           ) : null}
           {detail === "compare" ? (

@@ -34,6 +34,14 @@ export type SubagentStep =
       status: "running" | "success" | "error";
       output?: string;
       errorText?: string;
+    }
+  | {
+      /** A subagent spawned by a subagent (nested SubagentEvent). */
+      kind: "subagent";
+      agentId: string;
+      agentType?: string;
+      status: "running" | "success" | "error" | "cancelled";
+      steps: SubagentStep[];
     };
 
 /**

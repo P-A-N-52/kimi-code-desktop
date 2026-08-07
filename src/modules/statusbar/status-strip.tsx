@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { TokenUsage } from "@/hooks/wireTypes";
+import { isActiveAgentStatus, useAgentMonitorStore } from "@/lib/agent-monitor/store";
 import type { GoalItem } from "@/lib/goal";
 import { cn } from "@/lib/utils";
 import { StatusPill } from "@/ui/status-pill";
@@ -58,6 +59,7 @@ export function StatusStrip({
   onGoalModeChange,
   onGoalControl,
   modeControlsDisabled,
+  permissionModeDisabled,
   contextUsage,
   tokenUsage,
   contextTokens = null,
@@ -74,6 +76,8 @@ export function StatusStrip({
   onGoalModeChange: (enabled: boolean) => void;
   onGoalControl?: (action: "pause" | "resume" | "cancel") => Promise<unknown>;
   modeControlsDisabled: boolean;
+  /** Permission pill only; defaults to modeControlsDisabled. Busy turns must keep it enabled (issue #13). */
+  permissionModeDisabled?: boolean;
   contextUsage: number;
   tokenUsage: TokenUsage | null;
   contextTokens?: number | null;
@@ -84,7 +88,14 @@ export function StatusStrip({
     "pause" | "resume" | "cancel" | null
   >(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  // Mirrors the CLI's bottom status line ("[1 task running]"); counts active
+  // agent tasks across sessions. `.length` keeps the snapshot a primitive so
+  // useSyncExternalStore cannot loop on fresh array references.
+  const activeTaskCount = useAgentMonitorStore(
+    (state) => state.tasks.filter((task) => isActiveAgentStatus(task.status)).length,
+  );
   const current = MODES.find((m) => m.key === permissionMode) ?? MODES[0];
+  const permissionDisabled = permissionModeDisabled ?? modeControlsDisabled;
   const runGoalControl = (action: "pause" | "resume" | "cancel") => {
     if (!onGoalControl || goalControlPending) return;
     setGoalControlPending(action);
@@ -107,7 +118,8 @@ export function StatusStrip({
       <div ref={menuRef} className="relative">
         <StatusPill
           tone={permissionMode === "auto" ? "amber" : permissionMode === "yolo" ? "red" : "neutral"}
-          disabled={modeControlsDisabled}
+          disabled={permissionDisabled}
+          className="disabled:opacity-100"
           onClick={() => setMenuOpen((v) => !v)}
         >
           <current.icon size={12} strokeWidth={1.5} />
@@ -151,9 +163,19 @@ export function StatusStrip({
           </div>
         )}
       </div>
+      {activeTaskCount > 0 && (
+        <span
+          className="flex items-center gap-1 rounded-r1 border border-line/70 bg-elevated px-1.5 py-0.5 font-mono text-[10px] text-muted"
+          title={`${activeTaskCount} task${activeTaskCount > 1 ? "s" : ""} running`}
+        >
+          <LoaderCircle size={10} strokeWidth={2} className="animate-spin text-warn" />
+          [{activeTaskCount} task{activeTaskCount > 1 ? "s" : ""} running]
+        </span>
+      )}
       <StatusPill
         on={planMode}
         disabled={modeControlsDisabled}
+        className="disabled:opacity-100"
         onClick={() => onPlanModeChange(!planMode)}
       >
         <ClipboardList size={12} strokeWidth={1.5} />
@@ -162,6 +184,7 @@ export function StatusStrip({
       <StatusPill
         on={swarmMode}
         disabled={modeControlsDisabled}
+        className="disabled:opacity-100"
         onClick={() => onSwarmModeChange(!swarmMode)}
       >
         <Boxes size={12} strokeWidth={1.5} />
@@ -170,6 +193,7 @@ export function StatusStrip({
       <StatusPill
         on={goalMode}
         disabled={modeControlsDisabled || currentGoal != null}
+        className="disabled:opacity-100"
         onClick={() => onGoalModeChange(!goalMode)}
         title={goalMode ? "取消下一条 Goal" : "将下一条消息作为 Goal"}
       >

@@ -17,6 +17,8 @@ export function ModelPicker({
 	thinkingEffort,
 	disabled = false,
 	updating = false,
+	thinkingControlsVisible,
+	onBeforeOpen,
 	onSelectModel,
 	onToggleThinking,
 	onSelectThinkingEffort,
@@ -28,6 +30,10 @@ export function ModelPicker({
 	thinkingEffort: string;
 	disabled?: boolean;
 	updating?: boolean;
+	/** When set, overrides model-capability detection for the Thinking block. */
+	thinkingControlsVisible?: boolean;
+	/** Async gate before the dropdown opens (e.g. lazy-connect to load session config). */
+	onBeforeOpen?: () => Promise<boolean>;
 	onSelectModel: (name: string) => void;
 	onToggleThinking: (enabled: boolean) => void;
 	onSelectThinkingEffort: (effort: string) => void;
@@ -35,12 +41,14 @@ export function ModelPicker({
 	onManageConfig?: () => void;
 }) {
 	const [open, setOpen] = useState(false);
+	const [opening, setOpening] = useState(false);
 	const rootRef = useRef<HTMLDivElement>(null);
 	const selected = useMemo(
 		() => findConfigModel(models, selectedModel),
 		[models, selectedModel],
 	);
-	const supportsThinking = modelHasThinkingCapability(selected);
+	const supportsThinking =
+		thinkingControlsVisible ?? modelHasThinkingCapability(selected);
 	const forcesThinking = modelForcesThinking(selected);
 	const supportedEfforts = modelThinkingEfforts(selected);
 	const activeEffort = supportedEfforts.includes(thinkingEffort)
@@ -72,8 +80,19 @@ export function ModelPicker({
 				aria-label={`当前模型 ${label}`}
 				aria-expanded={open}
 				aria-haspopup="listbox"
-				disabled={disabled}
-				onClick={() => setOpen((value) => !value)}
+				disabled={disabled || opening}
+				onClick={() => {
+					if (!onBeforeOpen) {
+						setOpen((value) => !value);
+						return;
+					}
+					setOpening(true);
+					void onBeforeOpen()
+						.then((ok) => {
+							if (ok) setOpen(true);
+						})
+						.finally(() => setOpening(false));
+				}}
 				className="flex h-7 max-w-full min-w-0 items-center gap-1.5 rounded-full border border-line px-2.5 font-mono text-[11px] font-medium text-muted transition-colors hover:bg-hover hover:text-foreground disabled:pointer-events-none disabled:opacity-45 sm:max-w-44"
 			>
 				<span className="truncate">{label}</span>

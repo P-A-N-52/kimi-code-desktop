@@ -6,10 +6,12 @@ import { useSessionStream } from "@/hooks/useSessionStream";
 import { DirectoryNotFoundError, useSessions } from "@/hooks/useSessions";
 import { getApiBaseUrl, hasPlatformModifier } from "@/hooks/utils";
 import type { SessionStatus, UploadSessionFileResponse } from "@/lib/api/models";
+import { clearBackgroundTasksSession } from "@/lib/background-tasks/sync";
 import { useDomTranslations, useI18n } from "@/lib/i18n";
 import { classifyIdleReason } from "@/lib/idle-turn";
 import { openKimiCodeWebsite } from "@/lib/kimi-code-link";
 import { shouldPauseForRuntimeReadiness } from "@/lib/runtime-readiness";
+import { useSessionStreamOrchestrator } from "@/lib/session-stream/provider";
 import {
   checkRuntimeReadiness,
   isTauri,
@@ -27,6 +29,7 @@ import { AppSidebar } from "@/modules/sessions/app-sidebar";
 import { SettingsDialog, type SettingsTab } from "@/modules/settings/settings-dialog";
 import { type SessionModeDraft, shouldAutoApprove } from "@/modules/statusbar/permission-mode";
 import { Topbar } from "@/modules/topbar/topbar";
+import { useDesktopUpdate } from "@/modules/update/desktop-update";
 import type { WorkspaceTab } from "@/modules/workspace/changes-panel";
 import { ContextSidebar } from "@/modules/workspace/context-sidebar";
 import {
@@ -50,6 +53,7 @@ export default function App() {
   useTheme();
   useDomTranslations();
   const { resolvedLanguage, t } = useI18n();
+  const desktopUpdate = useDesktopUpdate();
 
   useLayoutEffect(() => {
     if (isTauri()) {
@@ -117,6 +121,36 @@ export default function App() {
       Boolean(runtimeCheckError) ||
       shouldPauseForRuntimeReadiness(runtimeReadiness, hasAcknowledgedRuntime));
 
+  // G5: forward the runtime readiness gate into the multi-session orchestrator
+  // (no-op when the flag is off — the context value is null then).
+  const sessionStreamOrchestrator = useSessionStreamOrchestrator();
+  useEffect(() => {
+    sessionStreamOrchestrator?.setPaused(shouldPauseRuntime);
+  }, [sessionStreamOrchestrator, shouldPauseRuntime]);
+
+  // G5 §4.8: after a config-triggered worker restart, replay gap-fill every
+  // restarted session. Global model defaults do not need the startup readiness
+  // gate, while raw config saves continue to request it by default.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          restartedSessionIds?: string[];
+          requiresRuntimeReadiness?: boolean;
+        }>
+      ).detail;
+      const restarted = detail?.restartedSessionIds;
+      if (restarted && restarted.length > 0) {
+        sessionStreamOrchestrator?.reconnectSessions(restarted);
+      }
+      if (detail?.requiresRuntimeReadiness !== false) {
+        void runRuntimeReadinessCheck();
+      }
+    };
+    window.addEventListener("kimi:config-update", handler);
+    return () => window.removeEventListener("kimi:config-update", handler);
+  }, [runRuntimeReadinessCheck, sessionStreamOrchestrator]);
+
   const {
     sessions,
     archivedSessions,
@@ -165,16 +199,11 @@ export default function App() {
     [sessions, selectedSessionId],
   );
 
-  const anyRunning = useMemo(() => sessions.some((s) => s.isRunning), [sessions]);
-
   const handleSessionStatus = useCallback(
     (status: SessionStatus) => {
       applySessionStatus(status);
       if (status.state !== "idle") return;
       const reason = status.reason ?? "";
-      if (reason === "config_update") {
-        window.dispatchEvent(new Event("kimi:config-update"));
-      }
       const classified = classifyIdleReason(reason);
       if (!classified.isTurnComplete) return;
       if (isTauri() && !document.hasFocus() && classified.wouldNotifySuccess) {
@@ -284,10 +313,12 @@ export default function App() {
     }
   }, [dismissGoalCancel, goalCancelTarget, selectedSessionId, stream.controlGoal]);
   const userClosedPanelRef = useRef(false);
+  const lastSemanticChangeCountRef = useRef<number | null>(null);
 
   useEffect(() => {
     void selectedSessionId;
     userClosedPanelRef.current = false;
+    lastSemanticChangeCountRef.current = null;
     setPanelOpen(false);
     setWorkspaceTab("changes");
     setGoalCancelOpen(false);
@@ -308,6 +339,39 @@ export default function App() {
   const pendingApprovalsRef = useRef(pendingApprovals);
   pendingApprovalsRef.current = pendingApprovals;
   const permissionMode = stream.permissionMode;
+
+  // G5 §4.7: session deletion must release the orchestrator lease and drop the
+  // view state BEFORE the Rust delete_session persists the removal, so no late
+  // wire event can write into a ghost session.
+  const handleDeleteSession = useCallback(
+    (sessionId: string) => {
+      sessionStreamOrchestrator?.disconnectSession(sessionId, "delete");
+      clearBackgroundTasksSession(sessionId);
+      for (const key of notifiedApprovalsRef.current) {
+        if (key.startsWith(`${sessionId}:`)) {
+          notifiedApprovalsRef.current.delete(key);
+        }
+      }
+      void deleteSession(sessionId);
+    },
+    [deleteSession, sessionStreamOrchestrator],
+  );
+
+  const handleBulkDeleteSessions = useCallback(
+    async (sessionIds: string[]) => {
+      for (const sessionId of sessionIds) {
+        sessionStreamOrchestrator?.disconnectSession(sessionId, "delete");
+        clearBackgroundTasksSession(sessionId);
+        for (const key of notifiedApprovalsRef.current) {
+          if (key.startsWith(`${sessionId}:`)) {
+            notifiedApprovalsRef.current.delete(key);
+          }
+        }
+      }
+      await bulkDeleteSessions(sessionIds);
+    },
+    [bulkDeleteSessions, sessionStreamOrchestrator],
+  );
 
   useEffect(() => {
     if (!isTauri() || document.hasFocus()) return;
@@ -343,11 +407,22 @@ export default function App() {
   }, [pendingApprovals, permissionMode, selectedSessionId, t]);
 
   useEffect(() => {
-    if (changes.length > 0 && !userClosedPanelRef.current) {
-      setWorkspaceTab("changes");
-      setPanelOpen(true);
+    const previousCount = lastSemanticChangeCountRef.current;
+    lastSemanticChangeCountRef.current = semanticChanges.length;
+
+    if (
+      previousCount === null ||
+      stream.isReplayingHistory ||
+      semanticChanges.length === previousCount ||
+      semanticChanges.length === 0 ||
+      userClosedPanelRef.current
+    ) {
+      return;
     }
-  }, [changes.length]);
+
+    setWorkspaceTab("changes");
+    setPanelOpen(true);
+  }, [semanticChanges.length, stream.isReplayingHistory]);
 
   const handleApproveAll = useCallback(() => {
     for (const approval of pendingApprovals) {
@@ -460,17 +535,27 @@ export default function App() {
 
   if (shouldPauseRuntime) {
     return (
-      <ReadinessOverlay
-        checking={isCheckingRuntime}
-        readiness={runtimeReadiness}
-        error={runtimeCheckError}
-        onRetry={runRuntimeReadinessCheck}
-        onContinue={() => {
-          setRuntimeCheckError(null);
-          setHasAcknowledgedRuntime(true);
-        }}
-        onOpenDownload={() => void openKimiCodeWebsite()}
-      />
+      <>
+        {!showSettings && (
+          <ReadinessOverlay
+            checking={isCheckingRuntime}
+            readiness={runtimeReadiness}
+            error={runtimeCheckError}
+            onRetry={runRuntimeReadinessCheck}
+            onContinue={() => {
+              setRuntimeCheckError(null);
+              setHasAcknowledgedRuntime(true);
+            }}
+            onOpenDownload={() => void openKimiCodeWebsite()}
+            onOpenSettings={() => openSettings("config")}
+          />
+        )}
+        <SettingsDialog
+          open={showSettings}
+          onOpenChange={handleSettingsOpenChange}
+          initialTab={settingsInitialTab}
+        />
+      </>
     );
   }
 
@@ -480,17 +565,17 @@ export default function App() {
         sidebar={
           <AppSidebar
             collapsed={!sidebarOpen}
-            running={anyRunning}
             onToggleCollapsed={() => setSidebarOpen((v) => !v)}
             onNewSession={handleNewSession}
             onOpenSettings={() => openSettings()}
+            updateAvailable={desktopUpdate !== null}
             sessions={sessions}
             archivedSessions={archivedSessions}
             selectedId={selectedSessionId}
             searchQuery={searchQuery}
             onSearchQueryChange={setSearchQuery}
             onSelect={selectSession}
-            onDelete={(id) => void deleteSession(id)}
+            onDelete={handleDeleteSession}
             onRename={(id, title) => void renameSession(id, title)}
             onArchive={(id) => void archiveSession(id)}
             onUnarchive={(id) => void unarchiveSession(id)}
@@ -500,9 +585,7 @@ export default function App() {
             onBulkUnarchive={async (ids) => {
               await bulkUnarchiveSessions(ids);
             }}
-            onBulkDelete={async (ids) => {
-              await bulkDeleteSessions(ids);
-            }}
+            onBulkDelete={handleBulkDeleteSessions}
             onArchiveOlderThan={async (days) => {
               await archiveSessionsOlderThan(days);
             }}
@@ -529,7 +612,8 @@ export default function App() {
             title={currentSession?.title ?? "Kimi Code"}
             shortId={selectedSessionId ? selectedSessionId.slice(0, 6) : undefined}
             sessionId={selectedSessionId || undefined}
-            workDir={currentSession?.workDir ?? undefined}
+            workDir={currentSession?.workDir}
+            messages={stream.messages}
             panelOpen={panelOpen}
             onTogglePanel={() => setPanelOpen((v) => !v)}
             onOpenSettings={() => openSettings()}

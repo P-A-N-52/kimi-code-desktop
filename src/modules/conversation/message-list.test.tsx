@@ -1,28 +1,37 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { LiveMessage } from "@/hooks/types";
 import { MessageList } from "./message-list";
 
 const renderMessages = (messages: LiveMessage[]) =>
   render(
-    <MessageList
-      messages={messages}
-      onRespondApproval={vi.fn()}
-      onRespondQuestion={vi.fn()}
-    />,
+    <MessageList messages={messages} onRespondApproval={vi.fn()} onRespondQuestion={vi.fn()} />,
   );
 
 describe("MessageList semantic rendering", () => {
-  it("shows sending feedback until the first response replaces it", () => {
+  it("distinguishes ACP connection from waiting for the model", () => {
     const { rerender } = render(
       <MessageList
         messages={[{ id: "user", role: "user", content: "Hello" }]}
         isAwaitingFirstResponse
+        connectionPhase="connecting"
         onRespondApproval={vi.fn()}
         onRespondQuestion={vi.fn()}
       />,
     );
-    expect(screen.getByText("等待模型响应…")).toBeTruthy();
+    expect(screen.getByText("正在连接 ACP…")).toBeTruthy();
+
+    rerender(
+      <MessageList
+        messages={[{ id: "user", role: "user", content: "Hello" }]}
+        isAwaitingFirstResponse
+        connectionPhase="connected"
+        onRespondApproval={vi.fn()}
+        onRespondQuestion={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText("正在连接 ACP…")).toBeNull();
+    expect(screen.getByText("ACP 已连接，等待模型响应…")).toBeTruthy();
 
     rerender(
       <MessageList
@@ -34,8 +43,78 @@ describe("MessageList semantic rendering", () => {
         onRespondQuestion={vi.fn()}
       />,
     );
-    expect(screen.queryByText("等待模型响应…")).toBeNull();
+    expect(screen.queryByText("ACP 已连接，等待模型响应…")).toBeNull();
     expect(screen.getByText("Hi")).toBeTruthy();
+  });
+
+  it("marks a first response wait as slow after 45 seconds", () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <MessageList
+          messages={[{ id: "user", role: "user", content: "Hello" }]}
+          isAwaitingFirstResponse
+          connectionPhase="connected"
+          onRespondApproval={vi.fn()}
+          onRespondQuestion={vi.fn()}
+        />,
+      );
+
+      expect(screen.queryByText("响应时间较长")).toBeNull();
+      act(() => vi.advanceTimersByTime(45_000));
+      expect(screen.getByText("响应时间较长")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts the slow-response clock only after the current session connects", () => {
+    vi.useFakeTimers();
+    try {
+      const props = {
+        messages: [{ id: "user", role: "user" as const, content: "Hello" }],
+        isAwaitingFirstResponse: true,
+        onRespondApproval: vi.fn(),
+        onRespondQuestion: vi.fn(),
+      };
+      const { rerender } = render(
+        <MessageList {...props} sessionId="session-1" connectionPhase="connecting" />,
+      );
+
+      act(() => vi.advanceTimersByTime(40_000));
+      rerender(<MessageList {...props} sessionId="session-1" connectionPhase="connected" />);
+      act(() => vi.advanceTimersByTime(44_999));
+      expect(screen.queryByText("响应时间较长")).toBeNull();
+
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByText("响应时间较长")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("restarts the slow-response clock when the active session changes", () => {
+    vi.useFakeTimers();
+    try {
+      const props = {
+        messages: [{ id: "user", role: "user" as const, content: "Hello" }],
+        isAwaitingFirstResponse: true,
+        connectionPhase: "connected" as const,
+        onRespondApproval: vi.fn(),
+        onRespondQuestion: vi.fn(),
+      };
+      const { rerender } = render(<MessageList {...props} sessionId="session-1" />);
+
+      act(() => vi.advanceTimersByTime(44_000));
+      rerender(<MessageList {...props} sessionId="session-2" />);
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(screen.queryByText("响应时间较长")).toBeNull();
+
+      act(() => vi.advanceTimersByTime(44_000));
+      expect(screen.getByText("响应时间较长")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("replaces sending feedback with a persistent error report", () => {
@@ -49,7 +128,7 @@ describe("MessageList semantic rendering", () => {
       />,
     );
 
-    expect(screen.queryByText("等待模型响应…")).toBeNull();
+    expect(screen.queryByText("ACP 已连接，等待模型响应…")).toBeNull();
     expect(screen.getByText("错误报告：provider returned 404")).toBeTruthy();
   });
 
@@ -323,5 +402,129 @@ describe("MessageList semantic rendering", () => {
     expect(screen.getByText("已跳过，未作答")).toBeTruthy();
     expect(screen.queryByText(/User dismissed/)).toBeNull();
     expect(screen.queryByText("等待子代理步骤…")).toBeNull();
+  });
+});
+
+describe("MessageList todo merging (issue #13)", () => {
+  const todoMessage = (id: string, title: string, toolTitle = "TodoList"): LiveMessage => ({
+    id,
+    role: "assistant",
+    variant: "tool",
+    toolCall: {
+      title: toolTitle,
+      type: "tool-TodoList" as never,
+      state: "output-available",
+      toolCallId: id,
+      input: { todos: [{ title, status: "in_progress" }] },
+    },
+  });
+
+  it("renders only the newest SetTodoList card and leaves other tools alone", () => {
+    renderMessages([
+      todoMessage("t1", "旧清单项"),
+      {
+        id: "bash-1",
+        role: "assistant",
+        variant: "tool",
+        toolCall: {
+          title: "Bash",
+          type: "tool-Bash" as never,
+          state: "output-available",
+          toolCallId: "bash-1",
+          input: { command: "ls" },
+        },
+      },
+      todoMessage("t2", "新清单项"),
+    ]);
+
+    // One todo card (the newest); the stale one is skipped entirely.
+    expect(screen.getAllByText("Todo List")).toHaveLength(1);
+    expect(screen.queryAllByText(/旧清单项/)).toHaveLength(0);
+    // Non-todo tool cards are unaffected.
+    expect(screen.getByText("ls")).toBeTruthy();
+  });
+
+  it("merges live ACP Todo List titles even when replay message ids collide", () => {
+    renderMessages([
+      todoMessage("replayed-assistant", "旧清单项", "Todo List"),
+      todoMessage("replayed-assistant", "新清单项", "Todo List"),
+    ]);
+
+    expect(screen.getAllByText("Todo List")).toHaveLength(1);
+    expect(screen.queryByText(/旧清单项/)).toBeNull();
+    expect(screen.getAllByText(/新清单项/).length).toBeGreaterThan(0);
+  });
+});
+
+describe("MessageList long-session windowing (issue #13)", () => {
+  const textMessages = (count: number, prefix = "message"): LiveMessage[] =>
+    Array.from({ length: count }, (_, index) => ({
+      id: `${prefix}-${index}`,
+      role: "assistant",
+      variant: "text",
+      content: `${prefix} ${index}`,
+    }));
+
+  it("bounds the initial DOM and loads older history in pages", () => {
+    renderMessages(textMessages(300));
+
+    expect(screen.queryByText("message 179")).toBeNull();
+    expect(screen.getByText("message 180")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "加载更早消息（剩余 180 条）" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "加载更早消息（剩余 180 条）" }));
+
+    expect(screen.queryByText("message 79")).toBeNull();
+    expect(screen.getByText("message 80")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "加载更早消息（剩余 80 条）" })).toBeTruthy();
+  });
+
+  it("keeps an unresolved interaction visible outside the recent window", () => {
+    const messages = textMessages(300);
+    messages[0] = {
+      id: "approval-old",
+      role: "assistant",
+      variant: "tool",
+      toolCall: {
+        title: "Bash",
+        type: "tool-Bash" as never,
+        state: "approval-requested",
+        toolCallId: "approval-old",
+        approval: {
+          id: "approval-old",
+          action: "Bash",
+          description: "Run old pending command",
+          sender: "Kimi",
+          submitted: false,
+          resolved: false,
+        },
+      },
+    };
+
+    renderMessages(messages);
+
+    expect(screen.getAllByText("Run old pending command").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "加载更早消息（剩余 179 条）" })).toBeTruthy();
+  });
+
+  it("resets the expanded history window when the session changes", () => {
+    const props = {
+      isAwaitingFirstResponse: false,
+      errorMessage: undefined,
+      onRespondApproval: vi.fn(),
+      onRespondQuestion: vi.fn(),
+    };
+    const view = render(
+      <MessageList sessionId="session-a" messages={textMessages(300, "a")} {...props} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "加载更早消息（剩余 180 条）" }));
+    expect(screen.getByText("a 80")).toBeTruthy();
+
+    view.rerender(
+      <MessageList sessionId="session-b" messages={textMessages(300, "b")} {...props} />,
+    );
+
+    expect(screen.queryByText("b 179")).toBeNull();
+    expect(screen.getByText("b 180")).toBeTruthy();
   });
 });

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GoalStartConfirmationResult, UseSessionStreamReturn } from "@/hooks/useSessionStream";
+import { emptySessionConfigState } from "@/lib/session-config-state";
 import { useToolEventsStore } from "@/lib/tool-events/store";
 import type { SessionModeDraft } from "@/modules/statusbar/permission-mode";
 import { ConversationView } from "./conversation-view";
@@ -23,23 +24,50 @@ const tauriApi = vi.hoisted(() => {
       async (_sessionId: string, _goalId: string, _direction: "up" | "down") => emptySnapshot(),
     ),
     removeSessionGoalQueue: vi.fn(async (_sessionId: string, _goalId: string) => emptySnapshot()),
+    getAgentRuntimeCapabilities: vi.fn(async () => ({
+      loadSession: false,
+      promptImage: false,
+      promptAudio: false,
+      promptEmbeddedContext: false,
+      mcpHttp: false,
+      mcpSse: false,
+      sessionList: false,
+      sessionResume: false,
+      sessionConfigOptions: false,
+      authMethods: [],
+    })),
     updateSessionGoalQueue: vi.fn(async (_sessionId: string, _goalId: string, _objective: string) =>
       emptySnapshot(),
     ),
   };
 });
 
+const globalConfigApi = vi.hoisted(() => ({
+  config: {
+    defaultModel: "kimi",
+    models: [] as Array<{
+      name: string;
+      provider: string;
+      model: string;
+      maxContextSize: number;
+      providerType: "kimi";
+    }>,
+    defaultThinking: false,
+    thinkingEffort: "",
+  },
+  update: vi.fn(async () => ({
+    config: null,
+    restartedSessionIds: ["test-session"],
+    skippedBusySessionIds: [],
+  })),
+}));
+
 vi.mock("@/lib/tauri-api", () => tauriApi);
 
 vi.mock("@/hooks/useGlobalConfig", () => ({
   useGlobalConfig: () => ({
-    config: {
-      defaultModel: "kimi",
-      models: [],
-      defaultThinking: false,
-      thinkingEffort: "",
-    },
-    update: vi.fn(),
+    config: globalConfigApi.config,
+    update: globalConfigApi.update,
     isUpdating: false,
   }),
 }));
@@ -54,11 +82,17 @@ vi.mock("@/modules/composer/composer", () => ({
     onDraftChange,
     onSend,
     sendDisabled,
+    selectedModel,
+    onModelPickerOpen,
+    onSelectModel,
   }: {
     draft: string;
     onDraftChange: (value: string) => void;
     onSend: () => void;
     sendDisabled?: boolean;
+    selectedModel: string;
+    onModelPickerOpen?: () => Promise<boolean>;
+    onSelectModel: (name: string) => void;
   }) => (
     <div>
       <input
@@ -70,6 +104,19 @@ vi.mock("@/modules/composer/composer", () => ({
         发送
       </button>
       <output data-testid="composer-disabled">{String(Boolean(sendDisabled))}</output>
+      <output data-testid="selected-model">{selectedModel}</output>
+      <button
+        type="button"
+        hidden
+        data-testid="switch-model"
+        onClick={() => {
+          void onModelPickerOpen?.().then((open) => {
+            if (open) onSelectModel("demo/next");
+          });
+        }}
+      >
+        切换模型
+      </button>
     </div>
   ),
 }));
@@ -107,6 +154,7 @@ function makeStream(
     currentStep: 0,
     goalCompletionEpoch: 0,
     isConnected: true,
+    connectionPhase: "connected",
     sendMessage,
     runLocalInfoCommand: vi.fn(),
     respondToApproval: vi.fn(),
@@ -128,9 +176,130 @@ function makeStream(
     goalMode: true,
     sendSetGoalMode: vi.fn(() => true),
     slashCommands: [],
+    sessionConfigState: emptySessionConfigState("test-session"),
+    sessionConfigUpdating: false,
+    sendSetConfigOption: vi.fn(async () => true),
     ...overrides,
   };
 }
+
+describe("ConversationView ACP reconnect", () => {
+  it("offers reconnect for a disconnected ACP error and guards repeated clicks", () => {
+    const reconnect = vi.fn();
+    const stream = makeStream(vi.fn(), {
+      status: "error",
+      isConnected: false,
+      connectionPhase: "disconnected",
+      error: new Error("ACP connection closed"),
+      reconnect,
+    });
+    renderConversation("reconnectable-error", stream);
+
+    const button = screen.getByRole("button", { name: "重新连接" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(
+      (screen.getByRole("button", { name: "正在重连…" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it("keeps Composer usable and omits reconnect for an ordinary prompt error", () => {
+    const stream = makeStream(vi.fn(), {
+      status: "error",
+      connectionPhase: "connected",
+      error: new Error("Prompt rejected: invalid argument"),
+    });
+    renderConversation("prompt-error", stream);
+
+    expect(screen.queryByRole("button", { name: "重新连接" })).toBeNull();
+    expect(screen.getByTestId("composer-disabled").textContent).toBe("false");
+  });
+});
+
+describe("ConversationView model switching fallback", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    globalConfigApi.config.defaultModel = "kimi";
+    globalConfigApi.config.models = [
+      {
+        name: "kimi",
+        provider: "kimi",
+        model: "kimi",
+        maxContextSize: 0,
+        providerType: "kimi",
+      },
+      {
+        name: "demo/next",
+        provider: "demo",
+        model: "next",
+        maxContextSize: 0,
+        providerType: "kimi",
+      },
+    ];
+  });
+
+  it("switches through global config when ACP has no session config options", async () => {
+    const stream = makeStream(vi.fn());
+    renderConversation("test-session", stream);
+
+    expect(screen.getByTestId("selected-model").textContent).toBe("kimi");
+    fireEvent.click(screen.getByTestId("switch-model"));
+
+    await waitFor(() => {
+      expect(globalConfigApi.update).toHaveBeenCalledWith({ defaultModel: "demo/next" });
+    });
+    expect(stream.connect).not.toHaveBeenCalled();
+    expect(stream.sendSetConfigOption).not.toHaveBeenCalled();
+  });
+
+  it("keeps session-scoped switching when ACP declares model config options", async () => {
+    tauriApi.isTauri.mockReturnValue(true);
+    tauriApi.getAgentRuntimeCapabilities.mockResolvedValueOnce({
+      loadSession: true,
+      promptImage: true,
+      promptAudio: false,
+      promptEmbeddedContext: true,
+      mcpHttp: true,
+      mcpSse: true,
+      sessionList: true,
+      sessionResume: true,
+      sessionConfigOptions: true,
+      authMethods: [],
+    });
+    const sendSetConfigOption = vi.fn(async () => true);
+    const stream = makeStream(vi.fn(), {
+      sessionConfigState: {
+        sessionId: "test-session",
+        status: "known",
+        options: [
+          {
+            id: "model",
+            optionType: "select",
+            currentValue: "kimi",
+            options: [
+              { value: "kimi", label: "Kimi" },
+              { value: "demo/next", label: "Next" },
+            ],
+          },
+        ],
+      },
+      sendSetConfigOption,
+    });
+    renderConversation("test-session", stream);
+    await waitFor(() => {
+      expect(tauriApi.getAgentRuntimeCapabilities).toHaveBeenCalled();
+    });
+
+    fireEvent.click(screen.getByTestId("switch-model"));
+
+    await waitFor(() => {
+      expect(sendSetConfigOption).toHaveBeenCalledWith("model", "demo/next");
+    });
+    expect(globalConfigApi.update).not.toHaveBeenCalled();
+  });
+});
 
 function conversation(
   sessionId: string,
@@ -365,6 +534,31 @@ describe("ConversationView upcoming Goal queue", () => {
     renderConversation("goal-queue-mount", makeStream(sendMessage));
 
     await waitFor(() => expect(tauriApi.getSessionGoalQueue).toHaveBeenCalled());
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a switched-to session's historical completion as live", async () => {
+    tauriApi.getSessionGoalQueue
+      .mockResolvedValueOnce({ goals: [] })
+      .mockResolvedValue({ goals: [upcomingGoal] });
+    const sendMessage = vi.fn<UseSessionStreamReturn["sendMessage"]>();
+    const view = renderConversation("goal-queue-before-switch", makeStream(sendMessage));
+
+    await waitFor(() => {
+      expect(tauriApi.getSessionGoalQueue).toHaveBeenCalledWith("goal-queue-before-switch");
+    });
+
+    view.rerender(
+      conversation(
+        "goal-queue-after-switch",
+        makeStream(sendMessage, { goalCompletionEpoch: 1 }),
+      ),
+    );
+
+    await waitFor(() => {
+      expect(tauriApi.getSessionGoalQueue).toHaveBeenCalledWith("goal-queue-after-switch");
+    });
+    expect(tauriApi.getSessionGoalQueue).toHaveBeenCalledTimes(2);
     expect(sendMessage).not.toHaveBeenCalled();
   });
 

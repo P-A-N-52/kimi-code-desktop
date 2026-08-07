@@ -76,7 +76,7 @@ function SearchResults({ data }: { data: unknown }) {
   );
 }
 
-function TodoItems({ data }: { data: unknown }) {
+export function TodoItems({ data }: { data: unknown }) {
   const record = asRecord(data);
   const items = Array.isArray(data)
     ? data
@@ -208,8 +208,8 @@ export function ToolDisplayContent({ display }: { display?: DisplayBlock[] }) {
   if (!display?.length) return null;
   return (
     <div data-slot="tool-display" className="divide-y divide-line">
-      {display.map((item) => (
-        <DisplayItem key={`${item.type}:${pretty(item.data)}`} item={item} />
+      {display.map((item, index) => (
+        <DisplayItem key={`${item.type}:${index}`} item={item} />
       ))}
     </div>
   );

@@ -5,20 +5,22 @@
 <h1 align="center">Kimi Code Desktop</h1>
 
 <p align="center">
-  为 Kimi Code CLI 打造的原生 Windows 桌面工作台。<br />
-  A native Windows workspace for Kimi Code CLI.
+  源码自有的 Kimi Code Windows 与 macOS 桌面工作台。<br />
+  A source-owned Kimi Code workspace for Windows &amp; macOS.
 </p>
 
 <p align="center">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-111111" />
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-111111" />
   <img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-111111" />
   <img alt="React" src="https://img.shields.io/badge/React-19-111111" />
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-111111" />
 </p>
 
-Kimi Code Desktop 将 Kimi Code 的终端智能体能力带进一个专注、可视、可管理的桌面界面。它不是另一套 AI 运行时：会话、模型、工具调用与智能体能力仍由用户安装的 Kimi Code CLI 提供，桌面端通过 ACP（`kimi acp`）连接，并负责交互、工作区呈现与 Windows 集成。
+开发与提交约定见 [结构与开发规范](.github/DEVELOPMENT.md)。Source Runtime 的已确认迁移契约见 [2026-08-06 Source Runtime 方案](docs/plans/2026-08-06-source-runtime-migration.md)。
 
-> 当前源码版本为 `1.0.0`，面向 Windows。
+Kimi Code Desktop 将 Kimi Code 的智能体能力带进一个专注、可视、可管理的桌面界面。`codex/source-runtime` 正在把 Kimi Code 0.33.0 源码纳入仓库并构建为唯一 Runtime；完成后发布包不依赖用户安装的 CLI，也不使用 ACP 或生产双 backend。
+
+> 当前源码版本为 `1.1.3`。本分支尚在 M0：ACP 仍是可执行基线，Source Runtime 尚未完成真实切换，因此本分支不是可发布状态。
 
 ## 你可以用它做什么
 
@@ -26,31 +28,33 @@ Kimi Code Desktop 将 Kimi Code 的终端智能体能力带进一个专注、可
 - **真实还原会话进度**：统一处理实时事件与本地历史回放，保留附件、工具结果、任务状态和子智能体步骤。
 - **掌握整个工作区**：在 Changes、Files、Agents 和 Tasks 面板之间切换，不离开对话即可查看改动和执行进度。
 - **控制智能体行为**：支持权限模式、Plan、Swarm、模型状态、文件上传、Slash Commands，以及忙碌时的消息队列。
-- **管理大量会话**：搜索、重命名、归档、恢复、批量处理，并可按 30 / 60 / 90 天一键归档长期未活跃会话。
+- **管理大量会话**：搜索、重命名、归档、恢复、批量处理，并可按 30 / 60 / 90 天一键归档长期未活跃会话；桌面端会为已访问会话保留独立 stream，切回运行中会话时自动回连补齐事件。
 - **查看用量与上下文**：展示当前上下文窗口、Token 明细、平台额度，以及今日 / 7 天 / 30 天本地用量趋势；`/usage` 与 `/status` 会在 Composer 上方即时呈现结果。
+- **任务状态一目了然**：状态条实时显示 `[N task running]`（与 CLI 一致）；后台任务与 Cron 调度在 Tasks 面板只读展示；子代理步骤支持任意层级嵌套，子代理派生的子代理也有独立可折叠视图。
 - **融入 Windows**：提供系统托盘、任务完成与审批通知、全局快捷键，并确保重复启动时聚焦已有窗口。
-- **直接管理运行时配置**：在设置中切换深浅主题、编辑全局配置与原始 `config.toml`、管理 MCP Server，并查看桌面端与 CLI 版本。
+- **原生 macOS 体验**：Apple Silicon 原生构建、Finder 中显示、`super+shift+k` 快捷键、原生菜单（含界面语言切换）、自动探测 Homebrew / uv 安装的 Kimi CLI。
+- **中英界面即时切换**：界面语言支持跟随系统 / English / 简体中文，无需重启。
+- **直接管理运行时配置**：在设置中切换深浅主题、编辑全局配置与原始 `config.toml`、管理 MCP Server，并可启用与配置实验性的 Secondary model。
 
 ## 设计与架构
 
 界面采用 Monochrome V2 设计语言，以紧凑的信息密度、清晰的层级和低干扰动效服务长时间编码。深浅主题切换使用 View Transition 动画，并自动尊重系统的“减少动态效果”偏好。
 
-运行时保持 **ACP-only**，不捆绑或静默回退到旧 Python sidecar：
+当前迁移基线仍是 ACP；目标架构为 **Source-Runtime-only**，不捆绑或静默回退到 ACP、外部 CLI 或旧 Python sidecar：
 
 ```text
 React 19 + Vite
-  └─ Tauri 2 IPC / events
-      ├─ AcpProcessManager       实时会话、发送、审批与取消
-      ├─ AcpDesktopClient        ACP 会话 RPC
-      ├─ session_store.rs        本地元数据与历史回放
-      ├─ global_config.rs        ~/.kimi-code 配置
-      └─ session_files / git     当前会话工作区文件与差异
-           └─ user-installed `kimi acp`
+  └─ stable Tauri 2 IPC / events
+      ├─ RuntimeSupervisor
+      │   └─ source-built desktop-runtime child
+      │       └─ createKimiHarnessV2 / vendored Kimi source
+      ├─ desktop metadata / replay adapter
+      └─ session files / Git
 ```
 
-桌面应用只负责 UI、进程编排和本地集成；Kimi Code CLI 仍是模型、工具及智能体运行行为的唯一来源。
+Runtime 作为 Tauri 监管的独立 OS 子进程运行，通过 `runtime-v1` stdio JSONL 通信。React 不直接依赖 Kimi 内部类型；Rust 保留进程监管、桌面数据、文件和 Git 安全边界。
 
-## 安装
+## 当前稳定版安装（ACP 基线）
 
 ### 1. 安装并配置 Kimi Code CLI
 
@@ -76,7 +80,7 @@ kimi migrate
 
 ## 本地开发
 
-需要 Node.js、npm、Rust stable toolchain（MSVC target）以及已安装的 Kimi Code CLI。
+外层 Desktop 需要 Node.js 24.15.0 以上、npm 和 Rust stable toolchain。M4 之前运行 ACP 基线仍需已安装的 Kimi Code CLI；`npm install` 会安装项目固定的 pnpm 10.33.0，用于 nested Source Runtime workspace，不依赖全局 pnpm 或 Corepack。
 
 ```powershell
 git clone https://github.com/P-A-N-52/kimi-code-desktop.git
@@ -95,6 +99,9 @@ npm run rust:test         # Rust 测试
 npm run rust:check        # Rust 编译检查
 npm run check:quick       # 日常快速门禁
 npm run smoke:acp         # 验证本机 kimi acp
+npm run runtime:install   # 安装固定 Kimi source workspace 依赖
+npm run runtime:build     # 构建 Source Runtime skeleton
+npm run smoke:runtime     # 构建并验证 runtime-v1 协议
 ```
 
 ## 参与贡献 / Contributing
@@ -147,11 +154,18 @@ src-tauri\target\release\kimi-code-desktop.exe
 src-tauri\target\release\bundle\msi\Kimi Code_<version>_x64_en-US.msi
 ```
 
+macOS 产物位置：
+
+```text
+src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/Kimi Code_<version>_aarch64.dmg
+src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Kimi Code.app
+```
+
 不要使用裸 `cargo build --release` 代替桌面构建；它会绕过 Tauri 的前端构建流程。
 
 ## 当前边界
 
-- 目前仅面向 Windows。
+- 目前支持 Windows 与 macOS（Apple Silicon）；macOS 构建默认不签名、不公证，正式分发需要配置 Apple 开发者凭据。
 - 运行时必须能够访问已安装、已配置可用 provider 的 Kimi Code CLI，不要求 Kimi 账号登录，也不提供 legacy sidecar fallback。
 - 当前提供手动深色 / 浅色切换；跟随系统主题尚未接入。
 - ACP 尚不支持 fork-at-turn，因此桌面端不会伪造会话分叉能力。
