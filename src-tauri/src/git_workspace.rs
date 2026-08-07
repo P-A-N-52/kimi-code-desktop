@@ -6,15 +6,18 @@ use std::collections::{BTreeSet, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::{Condvar, LazyLock, Mutex};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const READ_TIMEOUT: Duration = Duration::from_secs(15);
 const MUTATION_TIMEOUT: Duration = Duration::from_secs(90);
 const MAX_COMMAND_OUTPUT: usize = 2 * 1024 * 1024;
 const MAX_COMMIT_MESSAGE: usize = 1_000;
-static GIT_MUTATION_LOCKS: LazyLock<(Mutex<HashSet<PathBuf>>, Condvar)> =
-    LazyLock::new(|| (Mutex::new(HashSet::new()), Condvar::new()));
+static GIT_MUTATION_LOCKS: OnceLock<(Mutex<HashSet<PathBuf>>, Condvar)> = OnceLock::new();
+
+fn git_mutation_locks() -> &'static (Mutex<HashSet<PathBuf>>, Condvar) {
+    GIT_MUTATION_LOCKS.get_or_init(|| (Mutex::new(HashSet::new()), Condvar::new()))
+}
 
 struct MutationGuard(PathBuf);
 
@@ -23,7 +26,7 @@ impl MutationGuard {
         let key = work_dir
             .canonicalize()
             .map_err(|error| format!("Failed to resolve workspace for mutation: {error}"))?;
-        let (locks, changed) = &*GIT_MUTATION_LOCKS;
+        let (locks, changed) = git_mutation_locks();
         let mut active = locks
             .lock()
             .map_err(|_| "Git mutation lock failed".to_string())?;
@@ -39,7 +42,7 @@ impl MutationGuard {
 
 impl Drop for MutationGuard {
     fn drop(&mut self) {
-        let (locks, changed) = &*GIT_MUTATION_LOCKS;
+        let (locks, changed) = git_mutation_locks();
         if let Ok(mut active) = locks.lock() {
             active.remove(&self.0);
             changed.notify_all();
@@ -368,7 +371,7 @@ fn require_gh_auth<'a>(
     if !authenticated {
         return Err(message);
     }
-    executables.gh.as_deref().ok_or_else(|| message)
+    executables.gh.as_deref().ok_or(message)
 }
 
 fn parse_numstat(output: &Output) -> Result<(Vec<Value>, u64, u64), String> {
