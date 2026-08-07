@@ -173,7 +173,13 @@ export function createTurnHandlers(ctx: RuntimeHandlerContext): RuntimeHandlerEn
         }
       }
       if (params.planMode === true) {
-        await agent.enterPlan();
+        // Idempotent: the Desktop may have already entered plan mode through
+        // session.setMode (M4) — the ACP-era wire always re-sent the mode
+        // state with the prompt, and re-entering an active plan mode throws
+        // `session.plan_mode_invalid` engine-side.
+        if ((await agent.getPlan()) === null) {
+          await agent.enterPlan();
+        }
       }
       const launched = await agent.prompt({
         input: toPromptParts(params.input, request.method),

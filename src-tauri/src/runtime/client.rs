@@ -1,9 +1,10 @@
 //! Typed runtime-v1 client over `RuntimeSupervisor` (M2 wave 2, M3 wave 2).
 //!
 //! Contract authority: `runtime/kimi-code/apps/desktop-runtime/src/protocol.ts`
-//! plus the M3 parity schemas in `protocol-parity.ts`. Every method gets a
-//! typed call: serialize params, block with an explicit timeout, deserialize.
-//! The typed params/results live in the `client_types` submodule.
+//! plus the M3 parity schemas in `protocol-parity.ts` and the M4 additions in
+//! `protocol-schemas.ts`. Every method gets a typed call: serialize params,
+//! block with an explicit timeout, deserialize. The typed params/results live
+//! in the `client_types` submodule (M1 + M3) and `client_types_m4` (M4).
 //!
 //! Error classes mirror the supervisor:
 //! - Fatal: `RuntimeError` variants meaning the process or the protocol is
@@ -26,6 +27,8 @@
 
 #[path = "client_types.rs"]
 mod client_types;
+#[path = "client_types_m4.rs"]
+mod client_types_m4;
 
 pub use client_types::{
     ApprovalDecision, ApprovalRespondParams, ApprovalScope, AuthCancelLoginResult,
@@ -37,6 +40,12 @@ pub use client_types::{
     SessionReplayResult, SessionsCreateParams, SessionsForkParams, SessionsListParams,
     SessionsListResult, SessionsUpdateParams, ShutdownResult, TurnCancelParams, TurnCancelResult,
     TurnStartParams, TurnStartResult, TurnSteerParams, TurnSteerResult,
+};
+pub use client_types_m4::{
+    ProviderCatalogEntry, ProviderCatalogModel, ProviderCatalogSummary, ProvidersCatalogListResult,
+    ProvidersImportCatalogConfig, ProvidersImportRegistryConfig, ProvidersImportResult,
+    ProvidersImportSourceParams, SessionModeKind, SessionPermissionMode, SessionSetModeParams,
+    SessionSetModeResult,
 };
 
 use super::protocol::{FaultCode, ProtocolFault, RuntimeInfo, METHOD_GET_INFO, METHOD_SHUTDOWN};
@@ -72,6 +81,11 @@ const METHOD_AUTH_CANCEL_LOGIN: &str = "auth.cancelLogin";
 const METHOD_AUTH_LOGOUT: &str = "auth.logout";
 const METHOD_AUTH_STATUS: &str = "auth.status";
 const METHOD_USAGE_GET: &str = "usage.get";
+
+// M4 additions (mirrored as public constants in `protocol.rs`).
+const METHOD_SESSION_SET_MODE: &str = "session.setMode";
+const METHOD_PROVIDERS_CATALOG_LIST: &str = "providers.catalog.list";
+const METHOD_PROVIDERS_CATALOG_GET: &str = "providers.catalog.get";
 
 /// Typed facade over one `RuntimeSupervisor`; every call is synchronous with
 /// an explicit timeout (see the module docs for the error classes).
@@ -292,10 +306,89 @@ impl<'a> RuntimeClient<'a> {
         &self,
         params: &ProvidersImportParams,
         timeout: Duration,
-    ) -> Result<EmptyResult, RuntimeError> {
+    ) -> Result<ProvidersImportResult, RuntimeError> {
         self.call_typed(
             METHOD_PROVIDERS_IMPORT,
             to_params(METHOD_PROVIDERS_IMPORT, params)?,
+            timeout,
+        )
+    }
+
+    /// `providers.import` catalog channel (`source: "catalog"`): import a
+    /// models.dev directory entry as a configured provider, models included.
+    pub fn providers_import_catalog(
+        &self,
+        entry_id: &str,
+        config: &ProvidersImportCatalogConfig,
+        timeout: Duration,
+    ) -> Result<ProvidersImportResult, RuntimeError> {
+        let params = ProvidersImportSourceParams::Catalog {
+            entry_id: entry_id.to_string(),
+            config: config.clone(),
+        };
+        self.call_typed(
+            METHOD_PROVIDERS_IMPORT,
+            to_params(METHOD_PROVIDERS_IMPORT, &params)?,
+            timeout,
+        )
+    }
+
+    /// `providers.import` registry channel (`source: "registry"`): import a
+    /// custom api.json document. An absent `config.api_key` falls back to the
+    /// runtime process env `KIMI_REGISTRY_API_KEY` runtime-side.
+    pub fn providers_import_registry(
+        &self,
+        registry_url: &str,
+        config: Option<&ProvidersImportRegistryConfig>,
+        timeout: Duration,
+    ) -> Result<ProvidersImportResult, RuntimeError> {
+        let params = ProvidersImportSourceParams::Registry {
+            registry_url: registry_url.to_string(),
+            config: config.cloned(),
+        };
+        self.call_typed(
+            METHOD_PROVIDERS_IMPORT,
+            to_params(METHOD_PROVIDERS_IMPORT, &params)?,
+            timeout,
+        )
+    }
+
+    /// `providers.catalog.list` — the importable provider directory behind
+    /// the Settings picker (Desktop `ProviderCatalogSummary` DTOs).
+    pub fn providers_catalog_list(
+        &self,
+        timeout: Duration,
+    ) -> Result<ProvidersCatalogListResult, RuntimeError> {
+        self.call_typed(METHOD_PROVIDERS_CATALOG_LIST, json!({}), timeout)
+    }
+
+    /// `providers.catalog.get` — one directory entry (Desktop
+    /// `ProviderCatalogEntry` DTO).
+    pub fn providers_catalog_get(
+        &self,
+        entry_id: &str,
+        timeout: Duration,
+    ) -> Result<ProviderCatalogEntry, RuntimeError> {
+        self.call_typed(
+            METHOD_PROVIDERS_CATALOG_GET,
+            json!({ "entryId": entry_id }),
+            timeout,
+        )
+    }
+
+    /// `session.setMode` — mid-session plan/permission mode control (M4).
+    /// Session-scoped: the envelope-level `sessionId` is attached. The
+    /// permission arm hot-switches mid-turn; the plan arm answers
+    /// `session_busy` while a turn is live.
+    pub fn session_set_mode(
+        &self,
+        params: &SessionSetModeParams,
+        timeout: Duration,
+    ) -> Result<SessionSetModeResult, RuntimeError> {
+        self.call_typed_session(
+            METHOD_SESSION_SET_MODE,
+            params.session_id(),
+            to_params(METHOD_SESSION_SET_MODE, params)?,
             timeout,
         )
     }

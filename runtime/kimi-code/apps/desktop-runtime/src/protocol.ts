@@ -118,6 +118,14 @@ export const SESSION_FAMILY_METHODS = [
   'sessions.fork',
   'session.open',
   'session.close',
+  /**
+   * M4: mid-session mode control (plan / permission), replacing the ACP-era
+   * wire commands `set_plan_mode {enabled}` / `set_permission_mode {mode}`.
+   * The permission arm hot-switches mid-turn (existing Desktop behavior, not
+   * negotiable); the plan arm stays idle-gated. No new capability gate — the
+   * sessions family gate covers it. Handler: session-mode-router.ts.
+   */
+  'session.setMode',
 ] as const;
 
 export const TURN_FAMILY_METHODS = [
@@ -133,6 +141,15 @@ export const CONFIG_FAMILY_METHODS = [
   'config.update',
   'models.list',
   'providers.list',
+  /**
+   * M4: the importable provider directory (models.dev, engine
+   * `IModelsDevImportService`) behind the Desktop Settings provider picker,
+   * plus the catalog/registry import channels on `providers.import`
+   * (protocol-schemas.ts). No new capability gate — the config family gate
+   * covers them.
+   */
+  'providers.catalog.list',
+  'providers.catalog.get',
   'providers.import',
 ] as const;
 

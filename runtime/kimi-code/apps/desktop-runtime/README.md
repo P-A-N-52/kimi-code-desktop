@@ -17,7 +17,8 @@ Desktop's Rust `RuntimeSupervisor`; it owns the engine composition root
 - `src/engine.ts` / `src/kimi-runtime-adapter.ts` — engine lifecycle.
 - `src/session-manager.ts` / `src/turn-router.ts` / `src/config-router.ts` —
   the three M1 method families (`sessions.fork` is a separate export in
-  session-manager.ts); `src/replay-router.ts` (plus `src/replay/`) and
+  session-manager.ts); `src/session-mode-router.ts` is the M4
+  `session.setMode` handler; `src/replay-router.ts` (plus `src/replay/`) and
   `src/auth-router.ts` are the M3 parity families — history replay, auth +
   managed usage; `src/event-bridge.ts` translates engine events into
   runtime-v1 session events.
@@ -31,9 +32,36 @@ pnpm --filter @moonshot-ai/desktop-runtime run build
 pnpm --filter @moonshot-ai/desktop-runtime run smoke   # needs a build first
 ```
 
+## M4 additions (wired end to end)
+
+31 runtime-v1 methods have real handlers. The M4 wave added:
+
+- **`session.setMode`** (session family) — mid-session plan/permission mode
+  control replacing the ACP-era `set_plan_mode` / `set_permission_mode` wire
+  commands. Params are a discriminated union on `mode` (`plan` → `enabled`,
+  `permission` → `permissionMode`); the plan arm is idle-gated
+  (`session_busy` while a turn is live) and idempotent, the permission arm
+  hot-switches mid-turn. The result echoes the arm's outcome (`planMode`
+  engine readback / applied `permissionMode`) and is the only mode-status
+  echo channel — engine-initiated mode changes emit no runtime-v1 event.
+- **`providers.catalog.list` / `providers.catalog.get`** (config family) —
+  the importable models.dev directory via the engine's
+  `IModelsDevImportService` (offline built-in snapshot fallback), mapped
+  onto the Desktop `ProviderCatalogSummary` / `ProviderCatalogEntry` DTOs.
+- **`providers.import` source channels** — `{source: "catalog", entryId,
+  config}` imports a directory entry (provider + model aliases, optional
+  `defaultModel` selection); `{source: "registry", registryUrl, config?}`
+  imports a custom api.json document through the engine's
+  `importCustomRegistry` (the CLI `kimi provider add <url>` flow). The
+  registry bearer key resolves params → env `KIMI_REGISTRY_API_KEY` → the
+  stored key of a previous import from the same URL. Failures classify into
+  `registry_auth_required` / `registry_unavailable` / `registry_invalid`
+  (non-retryable); a 401/403 answered with a JSON error body degrades to
+  `registry_unavailable` because the engine folds the status away.
+
 ## M3 status (wired end to end)
 
-All 28 runtime-v1 methods have real handlers and the capability snapshot
+All M3 runtime-v1 methods have real handlers and the capability snapshot
 reports every family wired (`sessions` / `turns` / `config` / `replay` /
 `auth` / `usage` / `fork` = true, `events` = the full 25-name
 `SESSION_EVENT_NAMES` set):

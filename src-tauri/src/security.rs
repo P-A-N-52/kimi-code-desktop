@@ -88,21 +88,6 @@ pub fn validate_local_write_path(path: &str) -> Result<PathBuf, String> {
     Ok(path_obj.to_path_buf())
 }
 
-/// Validate an explicit `KIMI_CODE_BIN` path before launching the CLI.
-pub fn validate_kimi_code_bin_path(path: &str) -> Result<PathBuf, String> {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return Err("KIMI_CODE_BIN must not be empty".to_string());
-    }
-
-    let path_obj = Path::new(trimmed);
-    if !path_obj.is_absolute() {
-        return Err("KIMI_CODE_BIN must be an absolute path".to_string());
-    }
-
-    validate_executable_path(path_obj)
-}
-
 /// Validate a filesystem path that will be executed directly.
 pub fn validate_executable_path(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() {
@@ -231,11 +216,90 @@ fn is_in_temp_dir(path: &Path) -> bool {
     false
 }
 
+/// Resolve a user-supplied session-file path (absolute or workspace-relative)
+/// against the canonical session workspace root. Any path that escapes above
+/// the workspace root — lexically, canonically, or via a dangling symlink — is
+/// rejected. Moved here from `the pre-cutover ACP translation module` during the M4 cutover; the
+/// ACP copy stays until W3 deletes the ACP modules.
+pub fn normalize_workspace_path(raw: &str, workspace: &Path) -> Result<PathBuf, String> {
+    let workspace_root = std::fs::canonicalize(workspace).map_err(|err| {
+        format!(
+            "Session workspace `{}` is not accessible: {err}",
+            workspace.display()
+        )
+    })?;
+
+    let logical = if Path::new(raw).is_absolute() {
+        normalize_path(Path::new(raw))
+    } else {
+        normalize_path(&workspace_root.join(raw))
+    };
+
+    ensure_path_under_workspace(logical, &workspace_root)
+}
+
+fn ensure_path_under_workspace(logical: PathBuf, workspace_root: &Path) -> Result<PathBuf, String> {
+    if logical.exists() {
+        let canonical = std::fs::canonicalize(&logical)
+            .map_err(|err| format!("Path `{}` could not be resolved: {err}", logical.display()))?;
+        return ensure_canonical_within_workspace(&canonical, workspace_root);
+    }
+
+    let mut ancestor = logical.clone();
+    let mut suffix = PathBuf::new();
+    while !ancestor.exists() {
+        let file_name = ancestor
+            .file_name()
+            .ok_or_else(|| format!("Path `{}` is invalid", logical.display()))?;
+        suffix = Path::new(file_name).join(suffix);
+        if !ancestor.pop() {
+            ancestor = workspace_root.to_path_buf();
+            break;
+        }
+    }
+
+    let canonical_ancestor = std::fs::canonicalize(&ancestor)
+        .map_err(|err| format!("Path `{}` could not be resolved: {err}", logical.display()))?;
+    ensure_canonical_within_workspace(&canonical_ancestor, workspace_root)?;
+    Ok(canonical_ancestor.join(suffix))
+}
+
+fn ensure_canonical_within_workspace(
+    path: &Path,
+    workspace_root: &Path,
+) -> Result<PathBuf, String> {
+    if path.starts_with(workspace_root) {
+        Ok(path.to_path_buf())
+    } else {
+        Err(format!(
+            "Path `{}` is outside the session workspace `{}`",
+            path.display(),
+            workspace_root.display()
+        ))
+    }
+}
+
+/// Lexically normalize `..`/`.` components without touching the filesystem.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::io::Write;
     use tempfile::TempDir;
 
     #[test]
@@ -249,33 +313,6 @@ mod tests {
         assert!(validate_http_external_url("file:///etc/passwd").is_err());
         assert!(validate_http_external_url("javascript:alert(1)").is_err());
         assert!(validate_http_external_url("").is_err());
-    }
-
-    #[test]
-    fn rejects_relative_kimi_code_bin() {
-        assert!(validate_kimi_code_bin_path("kimi").is_err());
-        assert!(validate_kimi_code_bin_path("./kimi").is_err());
-    }
-
-    #[test]
-    fn rejects_temp_kimi_code_bin() {
-        let dir = TempDir::new().expect("tempdir");
-        let exe = dir.path().join("kimi.exe");
-        std::fs::write(&exe, b"fake").expect("write fake exe");
-        let err = validate_kimi_code_bin_path(&exe.to_string_lossy()).expect_err("temp exe");
-        assert!(err.contains("temporary"));
-    }
-
-    #[test]
-    fn accepts_regular_file_outside_temp() {
-        let parent = std::env::current_dir().expect("cwd");
-        let exe = parent.join("security-test-kimi-bin.exe");
-        let mut file = std::fs::File::create(&exe).expect("create exe");
-        file.write_all(b"fake").expect("write exe");
-
-        let result = validate_kimi_code_bin_path(&exe.to_string_lossy());
-        let _ = std::fs::remove_file(&exe);
-        result.expect("regular file outside temp should be accepted");
     }
 
     #[test]
@@ -361,5 +398,61 @@ mod tests {
             }
         });
         assert!(validate_mcp_config_json(&bad).is_err());
+    }
+
+    #[test]
+    fn normalize_workspace_path_resolves_relative_inside_workspace() {
+        let dir = TempDir::new().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("sub")).expect("nested dir");
+        std::fs::write(dir.path().join("sub/note.md"), b"hello").expect("file");
+
+        let resolved = normalize_workspace_path("sub/note.md", dir.path()).expect("relative path");
+        assert_eq!(
+            resolved,
+            dir.path().join("sub/note.md").canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn normalize_workspace_path_accepts_absolute_inside_workspace() {
+        let dir = TempDir::new().expect("tempdir");
+        std::fs::write(dir.path().join("a.txt"), b"a").expect("file");
+
+        let target = dir.path().join("a.txt").canonicalize().unwrap();
+        let resolved =
+            normalize_workspace_path(&target.to_string_lossy(), dir.path()).expect("absolute");
+        assert_eq!(resolved, target);
+    }
+
+    #[test]
+    fn normalize_workspace_path_rejects_escape_via_parent_components() {
+        let dir = TempDir::new().expect("tempdir");
+        let sep = std::path::MAIN_SEPARATOR;
+        let err = normalize_workspace_path(&format!("..{sep}..{sep}etc{sep}passwd"), dir.path())
+            .expect_err("escape must be rejected");
+        assert!(err.contains("outside"));
+    }
+
+    #[test]
+    fn normalize_workspace_path_rejects_symlink_escape() {
+        let dir = TempDir::new().expect("tempdir");
+        let outside = TempDir::new().expect("outside dir");
+        std::fs::write(outside.path().join("secret.txt"), b"secret").expect("secret file");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).expect("symlink");
+            let err = normalize_workspace_path("link/secret.txt", dir.path())
+                .expect_err("symlink escape must be rejected");
+            assert!(err.contains("outside"));
+        }
+    }
+
+    #[test]
+    fn normalize_workspace_path_resolves_not_yet_created_file() {
+        let dir = TempDir::new().expect("tempdir");
+        let resolved = normalize_workspace_path("new/nested/file.txt", dir.path())
+            .expect("dangling path stays inside the workspace");
+        assert!(resolved.starts_with(dir.path().canonicalize().unwrap()));
+        assert!(resolved.ends_with("file.txt"));
     }
 }
