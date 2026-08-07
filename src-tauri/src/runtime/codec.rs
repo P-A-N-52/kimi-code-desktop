@@ -128,7 +128,7 @@ fn read_frame_bytes<R: BufRead>(
 ) -> Result<Option<Vec<u8>>, FrameReadError> {
     let mut buf = Vec::new();
     loop {
-        let room = (max_frame_bytes + 1).saturating_sub(buf.len());
+        let room = max_frame_bytes.saturating_add(1).saturating_sub(buf.len());
         if room == 0 {
             return Err(frame_too_large(max_frame_bytes).into());
         }

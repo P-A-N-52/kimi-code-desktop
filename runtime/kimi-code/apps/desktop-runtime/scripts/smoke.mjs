@@ -7,10 +7,19 @@ import { join } from 'node:path';
 const appRoot = join(import.meta.dirname, '..');
 const libraryPath = join(appRoot, 'dist/index.mjs');
 const mainPath = join(appRoot, 'dist/main.mjs');
+// When set, spawn the given executable instead of `node dist/main.mjs` —
+// used to run the full chain against the M5 SEA sidecar artifact
+// (`RUNTIME_EXEC=<path to desktop-runtime-*>`).
+const runtimeExec = process.env.RUNTIME_EXEC?.trim() || undefined;
 
 await Promise.all([access(libraryPath), access(mainPath)]).catch(() => {
   throw new Error('Desktop runtime dist is missing. Run the package build before smoke.');
 });
+if (runtimeExec) {
+  await access(runtimeExec).catch(() => {
+    throw new Error(`RUNTIME_EXEC=${runtimeExec} does not exist.`);
+  });
+}
 
 const runtime = await import(libraryPath);
 const libraryFrames = [];
@@ -68,10 +77,16 @@ assert(
 const kimiHome = await mkdtemp(join(tmpdir(), 'desktop-runtime-smoke-'));
 const workDir = await mkdtemp(join(tmpdir(), 'desktop-runtime-smoke-work-'));
 let registryServer;
-const child = spawn(process.execPath, [mainPath], {
-  stdio: ['pipe', 'pipe', 'pipe'],
-  env: { ...process.env, KIMI_CODE_HOME: kimiHome },
-});
+// The SEA artifact embeds its own main; `node dist/main.mjs` is the dev path.
+const child = runtimeExec
+  ? spawn(runtimeExec, [], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, KIMI_CODE_HOME: kimiHome },
+    })
+  : spawn(process.execPath, [mainPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, KIMI_CODE_HOME: kimiHome },
+    });
 let stderr = '';
 child.stderr.setEncoding('utf8');
 child.stderr.on('data', (chunk) => {
@@ -179,6 +194,12 @@ try {
       infoResult.capabilities?.turns === true &&
       infoResult.capabilities?.config === true,
     'getInfo did not report the wired families',
+  );
+  // Release gate: the process must self-identify as the pinned kimi source
+  // (KIMI_SOURCE_COMMIT in src/protocol.ts), whatever executable hosts it.
+  assert(
+    infoResult.kimiSource?.commit === '53c832dfdf9566afd59a8b3d54ebd36d3cb03d72',
+    `getInfo did not report the pinned kimi source commit (${String(infoResult.kimiSource?.commit)})`,
   );
 
   const created = assertOk(

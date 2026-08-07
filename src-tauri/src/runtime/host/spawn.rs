@@ -3,8 +3,11 @@
 //! Split out of `host.rs` to keep each file under the 600-line module
 //! budget. Dev default is the source-tree dist entry
 //! `runtime/kimi-code/apps/desktop-runtime/dist/main.mjs` spawned with
-//! `node`; `KIMI_RUNTIME_ENTRY` overrides the entry point (tests and fixture
-//! injection).
+//! `node`; release (non-debug) builds exec the M5 SEA sidecar bundled via
+//! Tauri `externalBin` (`binaries/desktop-runtime`) — a Node single
+//! executable that needs no `node` on PATH. `KIMI_RUNTIME_ENTRY` overrides
+//! the entry point (tests and fixture injection) and stays highest priority
+//! in both modes.
 
 use crate::runtime::protocol::RuntimeInfo;
 use crate::runtime::supervisor::SpawnConfig;
@@ -16,6 +19,11 @@ const MIN_NODE_VERSION: (u64, u64, u64) = (24, 15, 0);
 
 /// Env override for the runtime entry point (tests / fixture injection).
 const RUNTIME_ENTRY_ENV: &str = "KIMI_RUNTIME_ENTRY";
+
+/// Sidecar base name matching the Tauri `bundle.externalBin` value
+/// (`binaries/desktop-runtime`); the built artifact is
+/// `src-tauri/binaries/desktop-runtime-<target-triple>`.
+const RUNTIME_SIDECAR: &str = "desktop-runtime";
 
 /// Spawn inputs for the next runtime child plus the resolved entry path
 /// (kept apart so `readiness::check_artifact` can gate the file first).
@@ -36,22 +44,58 @@ fn default_runtime_entry() -> PathBuf {
         .join("main.mjs")
 }
 
-pub(super) fn resolve_spawn_config() -> ResolvedSpawn {
-    let entry = std::env::var(RUNTIME_ENTRY_ENV)
+/// Release default: the SEA sidecar placed next to the app executable.
+/// Tauri `externalBin` bundles the sidecar beside the main binary on macOS
+/// (`Kimi Code.app/Contents/MacOS/desktop-runtime`).
+fn release_runtime_sidecar() -> PathBuf {
+    std::env::current_exe()
         .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(default_runtime_entry);
+        .and_then(|exe| exe.parent().map(|parent| parent.to_path_buf()))
+        .unwrap_or_default()
+        .join(RUNTIME_SIDECAR)
+}
+
+/// Spawn `node <entry>` (dev path and `KIMI_RUNTIME_ENTRY` override).
+fn node_spawn(entry: &std::path::Path) -> ResolvedSpawn {
     ResolvedSpawn {
+        entry: entry.to_path_buf(),
         config: SpawnConfig {
             program: "node".to_string(),
             args: vec![entry.to_string_lossy().into_owned()],
             env: Vec::new(),
             cwd: None,
         },
-        entry,
     }
+}
+
+/// Spawn the SEA sidecar directly (release path): no `node`, no args.
+fn sidecar_spawn(sidecar: &std::path::Path) -> ResolvedSpawn {
+    ResolvedSpawn {
+        entry: sidecar.to_path_buf(),
+        config: SpawnConfig {
+            program: sidecar.to_string_lossy().into_owned(),
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: None,
+        },
+    }
+}
+
+pub(super) fn resolve_spawn_config() -> ResolvedSpawn {
+    // Highest priority: env override (tests / fixture injection). It always
+    // spawns `node <entry>`, even in release builds.
+    if let Some(entry) = std::env::var(RUNTIME_ENTRY_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return node_spawn(&PathBuf::from(entry));
+    }
+    // `tauri dev` builds debug; `tauri build` builds release.
+    if !cfg!(debug_assertions) {
+        return sidecar_spawn(&release_runtime_sidecar());
+    }
+    node_spawn(&default_runtime_entry())
 }
 
 fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
@@ -155,5 +199,32 @@ mod tests {
             Some(value) => std::env::set_var(RUNTIME_ENTRY_ENV, value),
             None => std::env::remove_var(RUNTIME_ENTRY_ENV),
         }
+    }
+
+    #[test]
+    fn release_spawn_execs_the_sidecar_without_node_or_args() {
+        let sidecar = PathBuf::from("/bundle/Kimi Code.app/Contents/MacOS/desktop-runtime");
+        let resolved = sidecar_spawn(&sidecar);
+        assert_eq!(resolved.entry, sidecar);
+        assert_eq!(resolved.config.program, sidecar.to_string_lossy());
+        assert_ne!(resolved.config.program, "node");
+        assert!(resolved.config.args.is_empty(), "SEA sidecar takes no args");
+        assert!(resolved.config.env.is_empty());
+    }
+
+    #[test]
+    fn release_sidecar_name_matches_the_tauri_external_bin_base() {
+        // `bundle.externalBin` is `binaries/desktop-runtime`; the bundled
+        // artifact is `desktop-runtime-<target-triple>` without the suffix,
+        // and `release_runtime_sidecar` must resolve that base name next to
+        // the app executable.
+        assert_eq!(RUNTIME_SIDECAR, "desktop-runtime");
+        let sidecar = release_runtime_sidecar();
+        assert_eq!(
+            sidecar.file_name().and_then(|name| name.to_str()),
+            Some(RUNTIME_SIDECAR),
+            "release sidecar path: {}",
+            sidecar.display()
+        );
     }
 }

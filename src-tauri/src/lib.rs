@@ -123,6 +123,12 @@ pub fn run() {
             native_menu::handle_menu_event(app, event.id().as_ref());
         })
         .setup(|app| {
+            // Best-effort pre-cutover migration preflight: scan + backup +
+            // marker. Runs before any session can be opened; failures are
+            // logged, never fatal.
+            if let Err(err) = runtime::migrate::run_startup_preflight() {
+                eprintln!("[WARN] source-runtime migration preflight failed: {err}");
+            }
             let handle = app.handle().clone();
             tray::setup_tray(&handle)?;
             #[cfg(target_os = "macos")]

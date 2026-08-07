@@ -24,6 +24,7 @@
 pub mod client;
 pub mod codec;
 pub mod host;
+pub mod migrate;
 pub mod protocol;
 pub(crate) mod pump;
 pub mod readiness;
