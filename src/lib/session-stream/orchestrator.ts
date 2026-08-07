@@ -15,15 +15,11 @@
  * visible snapshot and forwards actions through this object.
  */
 
-import { listenEvent, parseWireEventPayload } from "@/lib/tauri-api";
-import { emptySessionConfigState } from "@/lib/session-config-state";
 import type { LiveMessage } from "@/hooks/types";
 import type { UploadSessionFileResponse } from "@/lib/api/models";
-import {
-  createSessionRuntime,
-  type SessionRuntime,
-  type SessionRuntimeOptions,
-} from "./runtime";
+import { emptySessionConfigState } from "@/lib/session-config-state";
+import { listenEvent, parseWireEventPayload } from "@/lib/tauri-api";
+import { createSessionRuntime, type SessionRuntime, type SessionRuntimeOptions } from "./runtime";
 import type { SessionViewState } from "./types";
 
 /** Interim live-worker cap (G5 §4.4 option A). Full LRU lands in Phase 2. */
@@ -87,6 +83,7 @@ export type SessionRuntimeActions = {
 type OrchestratorEntry = {
   runtime: SessionRuntime;
   lastVisibleAt: number;
+  /** `actionsFor()` may create an entry during render before `attach()` runs. */
   started: boolean;
 };
 
@@ -284,10 +281,7 @@ export function createSessionStreamOrchestrator(): SessionStreamOrchestrator {
       emit();
     },
 
-    actionsFor(
-      sessionId: string | null,
-      options: SessionRuntimeOptions,
-    ): SessionRuntimeActions {
+    actionsFor(sessionId: string | null, options: SessionRuntimeOptions): SessionRuntimeActions {
       if (sessionId === null) {
         return {
           sendMessage: async () => undefined,
@@ -346,7 +340,12 @@ export function createSessionStreamOrchestrator(): SessionStreamOrchestrator {
         if (visibleSessionId !== null) {
           const entry = runtimes.get(visibleSessionId);
           if (entry) {
-            entry.runtime.connect();
+            if (!entry.started) {
+              entry.started = true;
+              entry.runtime.start();
+            } else {
+              entry.runtime.connect();
+            }
           }
         }
       }

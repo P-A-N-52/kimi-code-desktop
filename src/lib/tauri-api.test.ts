@@ -1,16 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+const { listenMock } = vi.hoisted(() => ({ listenMock: vi.fn() }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => true,
   invoke: invokeMock,
 }));
 
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: (...args: unknown[]) => listenMock(...args),
+}));
+
 import {
   getSessionInfluenceSnapshot,
   listSessions,
+  onWireMessage,
+  parseWireEventPayload,
   updateGlobalConfig,
+  updateSessionsArchive,
+  updateWorkDirArchive,
   wireListWorkers,
 } from "./tauri-api";
 
@@ -123,23 +132,52 @@ describe("listSessions", () => {
   });
 
   it("falls back to a valid date for unparseable timestamps", async () => {
-    invokeMock.mockResolvedValue([
-      { session_id: "bad", title: "D", last_updated: "not-a-date" },
-    ]);
+    invokeMock.mockResolvedValue([{ session_id: "bad", title: "D", last_updated: "not-a-date" }]);
     const sessions = await listSessions({});
     expect(Number.isNaN(sessions[0].lastUpdated.getTime())).toBe(false);
   });
 });
 
+describe("updateSessionsArchive", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(["one", "two"]);
+  });
+
+  it("forwards the full project archive request to Tauri", async () => {
+    await expect(updateSessionsArchive(["one", "two"], true)).resolves.toEqual(["one", "two"]);
+    expect(invokeMock).toHaveBeenCalledWith("update_sessions_archive", {
+      sessionIds: ["one", "two"],
+      archived: true,
+    });
+  });
+});
+
+describe("updateWorkDirArchive", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(["one", "two"]);
+  });
+
+  it("forwards the project directory archive request to Tauri", async () => {
+    await expect(updateWorkDirArchive("/workspace/demo", true)).resolves.toEqual(["one", "two"]);
+    expect(invokeMock).toHaveBeenCalledWith("update_work_dir_archive", {
+      workDir: "/workspace/demo",
+      archived: true,
+    });
+  });
+
+  it("forwards visible session IDs as a fallback anchor", async () => {
+    await updateWorkDirArchive("/workspace/demo", true, ["one", "two"]);
+    expect(invokeMock).toHaveBeenCalledWith("update_work_dir_archive", {
+      workDir: "/workspace/demo",
+      archived: true,
+      sessionIds: ["one", "two"],
+    });
+  });
+});
+
 // ── wire:message payload parsing (single + batched) ────────────────────────
-
-const { listenMock } = vi.hoisted(() => ({ listenMock: vi.fn() }));
-
-vi.mock("@tauri-apps/api/event", () => ({
-  listen: (...args: unknown[]) => listenMock(...args),
-}));
-
-import { onWireMessage, parseWireEventPayload } from "./tauri-api";
 
 describe("parseWireEventPayload", () => {
   it("parses the single-message shape", () => {

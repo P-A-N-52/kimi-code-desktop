@@ -26,27 +26,63 @@ pub fn sessions_root() -> Result<PathBuf, String> {
 }
 
 fn work_dir_by_hash() -> Result<std::collections::HashMap<String, String>, String> {
-    let metadata_path = kimi_code_home_dir()?.join("kimi.json");
-    if !metadata_path.is_file() {
-        return Ok(std::collections::HashMap::new());
-    }
-    let content = fs::read_to_string(&metadata_path)
-        .map_err(|err| format!("Failed to read {}: {err}", metadata_path.display()))?;
-    let metadata: Value = serde_json::from_str(&content)
-        .map_err(|err| format!("Failed to parse {}: {err}", metadata_path.display()))?;
     let mut result = std::collections::HashMap::new();
-    if let Some(entries) = metadata.get("work_dirs").and_then(Value::as_array) {
-        for entry in entries {
-            if let Some(path) = entry.get("path").and_then(Value::as_str) {
-                let hash = format!("{:x}", md5::compute(path.as_bytes()));
-                result.insert(hash, path.to_string());
+
+    let metadata_path = kimi_code_home_dir()?.join("kimi.json");
+    if metadata_path.is_file() {
+        let content = fs::read_to_string(&metadata_path)
+            .map_err(|err| format!("Failed to read {}: {err}", metadata_path.display()))?;
+        let metadata: Value = serde_json::from_str(&content)
+            .map_err(|err| format!("Failed to parse {}: {err}", metadata_path.display()))?;
+        if let Some(entries) = metadata.get("work_dirs").and_then(Value::as_array) {
+            for entry in entries {
+                if let Some(path) = entry
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                {
+                    let hash = format!("{:x}", md5::compute(path.as_bytes()));
+                    result.insert(hash, path.to_string());
+                }
             }
         }
     }
+
+    // Newer Kimi Code versions use stable workspace keys such as
+    // `wd_project_<hash>` for the session directory and store the actual root
+    // path in workspaces.json. Keep this lookup local to the session store so
+    // old sessions without cwd/workDir can still be grouped and archived.
+    let workspaces_path = kimi_code_home_dir()?.join("workspaces.json");
+    if workspaces_path.is_file() {
+        let content = fs::read_to_string(&workspaces_path)
+            .map_err(|err| format!("Failed to read {}: {err}", workspaces_path.display()))?;
+        let workspaces: Value = serde_json::from_str(&content)
+            .map_err(|err| format!("Failed to parse {}: {err}", workspaces_path.display()))?;
+        if let Some(entries) = workspaces.get("workspaces").and_then(Value::as_object) {
+            for (workspace_key, entry) in entries {
+                let Some(path) = entry
+                    .get("root")
+                    .or_else(|| entry.get("path"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|path| !path.is_empty())
+                else {
+                    continue;
+                };
+                result.insert(workspace_key.clone(), path.to_string());
+                result.insert(
+                    format!("{:x}", md5::compute(path.as_bytes())),
+                    path.to_string(),
+                );
+            }
+        }
+    }
+
     Ok(result)
 }
 
-fn resolve_work_dir_from_session_dir(session_dir: &Path) -> Option<String> {
+fn resolve_work_dir_from_session_dir_hash(session_dir: &Path) -> Option<String> {
     let hash_key = session_dir
         .parent()
         .and_then(|parent| parent.file_name())
@@ -56,18 +92,18 @@ fn resolve_work_dir_from_session_dir(session_dir: &Path) -> Option<String> {
         .and_then(|map| map.get(hash_key).cloned())
 }
 
-fn work_dir_value_from_state(state: &Value, session_dir: &Path) -> Value {
-    let from_state = state
-        .get("workDir")
-        .or_else(|| state.get("work_dir"))
-        .and_then(Value::as_str)
+fn state_work_dir(state: &Value) -> Option<String> {
+    ["cwd", "workDir", "work_dir"]
+        .into_iter()
+        .filter_map(|key| state.get(key).and_then(Value::as_str))
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| Value::String(value.to_string()));
-    if let Some(value) = from_state {
-        return value;
-    }
-    resolve_work_dir_from_session_dir(session_dir)
+        .find(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn work_dir_value_from_state(state: &Value, session_dir: &Path) -> Value {
+    state_work_dir(state)
+        .or_else(|| resolve_work_dir_from_session_dir_hash(session_dir))
         .map(Value::String)
         .unwrap_or(Value::Null)
 }
@@ -194,6 +230,32 @@ pub fn delete_session_dir(session_id: &str) -> Result<(), String> {
 
 fn state_json_path(session_dir: &Path) -> PathBuf {
     session_dir.join("state.json")
+}
+
+/// Resolve the work directory recorded by Kimi CLI for a local session.
+///
+/// Recent CLI versions persist `cwd`; older desktop sessions use `workDir` or
+/// `work_dir`, and the original layout can still be recovered from kimi.json's
+/// work-directory hash.
+pub fn work_dir_from_session_dir(session_dir: &Path) -> Result<Option<PathBuf>, String> {
+    let state_path = state_json_path(session_dir);
+    if state_path.is_file() {
+        let content = fs::read_to_string(&state_path)
+            .map_err(|e| format!("Failed to read {}: {e}", state_path.display()))?;
+        let state: Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse {}: {e}", state_path.display()))?;
+        if let Some(work_dir) = state_work_dir(&state) {
+            return Ok(Some(PathBuf::from(work_dir)));
+        }
+    }
+
+    Ok(resolve_work_dir_from_session_dir_hash(session_dir).map(PathBuf::from))
+}
+
+/// Resolve the working directory recorded for one locally persisted session.
+pub fn work_dir_for_session_id(session_id: &str) -> Result<Option<PathBuf>, String> {
+    let session_dir = find_session_dir_by_id_or_err(session_id)?;
+    work_dir_from_session_dir(&session_dir)
 }
 
 fn write_file_atomically(path: &Path, body: &[u8]) -> Result<(), String> {
@@ -335,6 +397,47 @@ pub fn list_local_sessions() -> Result<Vec<Value>, String> {
         }
     }
     Ok(sessions)
+}
+
+fn comparable_work_dir(work_dir: &str) -> String {
+    let path = Path::new(work_dir.trim());
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let mut value = resolved.to_string_lossy().replace('\\', "/");
+    while value.len() > 1 && value.ends_with('/') {
+        value.pop();
+    }
+    #[cfg(any(windows, target_os = "macos"))]
+    {
+        value = value.to_lowercase();
+    }
+    value
+}
+
+/// Return every locally persisted session whose recorded working directory
+/// belongs to `work_dir`, regardless of its archive state.
+pub fn list_session_ids_for_work_dir(work_dir: &str) -> Result<Vec<String>, String> {
+    let target = work_dir.trim();
+    if target.is_empty() {
+        return Ok(Vec::new());
+    }
+    let target = comparable_work_dir(target);
+
+    let mut session_ids: Vec<String> = list_local_sessions()?
+        .into_iter()
+        .filter_map(|session| {
+            let session_work_dir = session.get("work_dir").and_then(Value::as_str)?;
+            if comparable_work_dir(session_work_dir) == target {
+                session
+                    .get("session_id")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            } else {
+                None
+            }
+        })
+        .collect();
+    session_ids.sort();
+    Ok(session_ids)
 }
 
 fn wire_jsonl_path(session_dir: &Path) -> Option<PathBuf> {
@@ -1906,6 +2009,72 @@ mod tests {
     }
 
     #[test]
+    fn lists_all_session_ids_for_a_project_work_dir() {
+        let (_dir, home) = temp_home("project-session-list");
+        let first = write_session_layout(&home, "hash-one", "session-one");
+        let second = write_session_layout(&home, "hash-two", "session-two");
+        let other = write_session_layout(&home, "hash-other", "session-other");
+        for (path, work_dir) in [
+            (&first, "/workspace/demo"),
+            (&second, "/workspace/demo/"),
+            (&other, "/workspace/other"),
+        ] {
+            fs::write(
+                path.join("state.json"),
+                format!(r#"{{"workDir":"{work_dir}","archived":false}}"#),
+            )
+            .expect("write state");
+        }
+
+        let _lock = set_kimi_code_home(&home);
+        assert_eq!(
+            list_session_ids_for_work_dir("/workspace/demo").expect("list project sessions"),
+            vec!["session-one", "session-two"]
+        );
+    }
+
+    #[test]
+    fn resolves_new_workspace_layout_when_state_has_no_work_dir() {
+        let (_dir, home) = temp_home("workspace-session-list");
+        let project = _dir.path().join("project");
+        fs::create_dir_all(&project).expect("project dir");
+        let session_dir =
+            write_session_layout(&home, "wd_project_d9fb9f27b940", "session-from-workspace");
+        fs::write(
+            session_dir.join("state.json"),
+            serde_json::to_vec(&json!({
+                "title": "Workspace session",
+                "archived": false,
+            }))
+            .expect("state json"),
+        )
+        .expect("state");
+        fs::write(
+            home.join("workspaces.json"),
+            serde_json::to_vec(&json!({
+                "workspaces": {
+                    "wd_project_d9fb9f27b940": {
+                        "root": project.to_string_lossy(),
+                    }
+                }
+            }))
+            .expect("workspaces json"),
+        )
+        .expect("workspaces");
+
+        let _lock = set_kimi_code_home(&home);
+        assert_eq!(
+            read_local_session("session-from-workspace").expect("read session")["work_dir"],
+            project.to_string_lossy().to_string()
+        );
+        assert_eq!(
+            list_session_ids_for_work_dir(&project.to_string_lossy())
+                .expect("list project sessions"),
+            vec!["session-from-workspace"]
+        );
+    }
+
+    #[test]
     fn replay_session_history_ignores_legacy_wire_records() {
         let (_guard, home) = temp_home("user3");
         let session_id = "sess-replay";
@@ -2396,6 +2565,36 @@ mod tests {
         merge_local_metadata_into_legacy(&mut legacy, session_id);
         assert_eq!(legacy["work_dir"], work_path);
         assert_eq!(legacy["archived"], true);
+    }
+
+    #[test]
+    fn local_session_reads_work_dir_from_cli_cwd() {
+        let (_guard, home) = temp_home("workdir-cwd");
+        let session_id = "session-cwd-workdir";
+        let session_dir = write_session_layout(&home, "wd_project", session_id);
+        fs::write(
+            session_dir.join("state.json"),
+            r#"{
+                "cwd":"/Users/example/project",
+                "title":"CLI session"
+            }"#,
+        )
+        .expect("write state");
+
+        let _lock = set_kimi_code_home(&home);
+        let session = read_local_session(session_id).expect("read local session");
+        assert_eq!(session["work_dir"], "/Users/example/project");
+
+        let resolved = work_dir_from_session_dir(&session_dir)
+            .expect("resolve work dir")
+            .expect("work dir");
+        assert_eq!(resolved, PathBuf::from("/Users/example/project"));
+        assert_eq!(
+            work_dir_for_session_id(session_id)
+                .expect("resolve session work dir")
+                .expect("session work dir"),
+            PathBuf::from("/Users/example/project")
+        );
     }
 
     #[test]

@@ -160,6 +160,7 @@ export default function App() {
     renameSession,
     archiveSession,
     unarchiveSession,
+    archiveProjectSessions,
     bulkArchiveSessions,
     bulkUnarchiveSessions,
     bulkDeleteSessions,
@@ -578,6 +579,9 @@ export default function App() {
             onRename={(id, title) => void renameSession(id, title)}
             onArchive={(id) => void archiveSession(id)}
             onUnarchive={(id) => void unarchiveSession(id)}
+            onArchiveProject={async (ids, archived, workDir) => {
+              return archiveProjectSessions(ids, archived, workDir);
+            }}
             onBulkArchive={async (ids) => {
               await bulkArchiveSessions(ids);
             }}

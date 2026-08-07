@@ -1178,6 +1178,7 @@ max_context_size = 128000
         assert_eq!(repaired["default_model"].as_str(), Some("provider/model"));
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn update_fields_on_value(
         parsed: &toml::Value,
         default_model: Option<&str>,

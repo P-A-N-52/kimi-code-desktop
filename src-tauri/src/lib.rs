@@ -79,6 +79,8 @@ pub fn run() {
             commands::create_session,
             commands::delete_session,
             commands::update_session,
+            commands::update_sessions_archive,
+            commands::update_work_dir_archive,
             commands::fork_session,
             commands::generate_title,
             commands::upload_session_file,
