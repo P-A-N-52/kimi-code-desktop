@@ -23,9 +23,9 @@
 
 | 现有（ACP 时代） | 新（Source 时代） | 说明 |
 | --- | --- | --- |
-| `acp.rs`（`AcpProcessManager`，每会话 wire 流） | `runtime_supervisor.rs` | 单 Runtime 子进程生命周期：spawn/handshake/请求表/超时/重启/崩溃报告 |
-| `acp_desktop.rs`（`AcpDesktopClient`） | `runtime_client.rs`（可并入 supervisor 模块） | runtime-v1 方法调用：sessions/turn/config/models/providers |
-| `acp_translate.rs` | `runtime_translate.rs` | runtime-v1 event → 同一份 desktop wire；未知事件继续进 generic fallback |
+| `acp.rs`（`AcpProcessManager`，每会话 wire 流） | `runtime/supervisor.rs`（+ crate 私有 `runtime/pump.rs`） | 单 Runtime 子进程生命周期：spawn/handshake/请求表/超时/重启/崩溃报告 |
+| `acp_desktop.rs`（`AcpDesktopClient`） | `runtime/client.rs`（+ `client_types.rs`） | runtime-v1 方法调用：sessions/turn/config/models/providers |
+| `acp_translate.rs` | `runtime/translate.rs`（+ `translate/` 子模块） | runtime-v1 event → 同一份 desktop wire；未知事件继续进 generic fallback |
 | `acp_capabilities.rs` | handshake capability snapshot | 能力以 `runtime.hello` 返回为准，UI 按 snapshot 开关功能 |
 | `runtime_backend.rs` | 删除概念，单一后端 | 不再存在 backend 选择 |
 | `provider_cli.rs`（外部 `kimi provider` 桥接） | runtime 配置 API | provider/model/MCP 写操作全部走 runtime-v1 `config.update`/`providers.*` |
@@ -44,7 +44,7 @@
 
 - `runtime/kimi-code/apps/desktop-runtime/`：adapter + codec + protocol + server + stdio（自有代码，上游永不触碰）。
 - `runtime/PATCHES.md`：上游补丁登记表（已建）。
-- Rust：`runtime_supervisor.rs`、`runtime_protocol.rs`、`runtime_client.rs`、`runtime_translate.rs`。
+- Rust：`src-tauri/src/runtime/` 模块目录（`mod.rs` / `supervisor.rs` / `pump.rs` / `protocol.rs` / `codec.rs` / `client.rs` / `client_types.rs` / `translate.rs` / `translate/` / `readiness.rs`；M2 已落地）。
 - golden protocol fixtures 与协议 fuzz 测试。
 - 发布门禁：artifact source commit 校验、无 PATH `kimi` 依赖校验、无 ACP 入口校验、macOS 签名/公证与 Windows 签名覆盖 runtime sidecar。
 

@@ -29,8 +29,8 @@ Kimi Code Desktop 从“连接用户安装的 `kimi acp` 的桌面外壳”迁�
 ```text
 React/Tauri 桌面壳（现状保留，wire 语义不变）
   └─ Tauri IPC（现有命令外形作为迁移兼容面）
-      └─ Rust: runtime_supervisor.rs + runtime_protocol.rs + runtime_translate.rs
-         （新增三件套，最终替换 acp.rs / acp_desktop.rs / acp_translate.rs）
+      └─ Rust: src-tauri/src/runtime/（supervisor + protocol/codec + client + translate + readiness）
+         （新增模块目录，最终替换 acp.rs / acp_desktop.rs / acp_translate.rs）
           └─ stdio JSONL（runtime-v1 协议）
               └─ desktop-runtime（Node 子进程，发布时为 SEA 单文件 sidecar）
                   └─ adapter（全部上游调用的唯一收口）

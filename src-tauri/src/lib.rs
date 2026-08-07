@@ -14,6 +14,7 @@ pub mod notify;
 pub mod oauth_login;
 pub mod provider_cli;
 pub mod provider_config;
+pub mod runtime;
 pub mod runtime_backend;
 pub mod runtime_check;
 pub mod security;

@@ -244,9 +244,10 @@ Source Runtime 目标模块：
 | 模块 | 职责 |
 | --- | --- |
 | `runtime/kimi-code/apps/desktop-runtime` | Kimi source adapter、stdio router 与 Runtime lifecycle |
-| `runtime_supervisor.rs` | source-built 子进程生命周期、请求表、超时和重启 |
-| `runtime_protocol.rs` | `runtime-v1` envelope、codec 和版本协商 |
-| `runtime_translate.rs` | Runtime event 到 Desktop wire 语义的翻译 |
+| `src-tauri/src/runtime/supervisor.rs`（+ `pump.rs`） | source-built 子进程生命周期、请求表、超时和重启 |
+| `src-tauri/src/runtime/protocol.rs`（+ `codec.rs`） | `runtime-v1` envelope、codec 和版本协商 |
+| `src-tauri/src/runtime/translate.rs`（+ `translate/`） | Runtime event 到 Desktop wire 语义的翻译 |
+| `src-tauri/src/runtime/client.rs` / `readiness.rs` | 类型化方法调用 / artifact、manifest 与 handshake readiness |
 
 业务逻辑不得持续堆入 `commands.rs`。配置、登录、skills、usage、通知和 runtime readiness 应继续收口在各自模块。
 
