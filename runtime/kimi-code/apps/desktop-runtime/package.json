@@ -22,6 +22,7 @@
     "@moonshot-ai/agent-core-v2": "workspace:^",
     "@moonshot-ai/kimi-code-oauth": "workspace:^",
     "@moonshot-ai/klient": "workspace:^",
+    "@moonshot-ai/transcript": "workspace:^",
     "node-pty": "^1.1.0",
     "zod": "catalog:"
   },

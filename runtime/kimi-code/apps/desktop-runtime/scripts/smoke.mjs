@@ -32,8 +32,13 @@ assert(
   libraryFrames[0]?.result?.capabilities?.sessions === true &&
     libraryFrames[0]?.result?.capabilities?.turns === true &&
     libraryFrames[0]?.result?.capabilities?.config === true &&
-    libraryFrames[0]?.result?.capabilities?.methods?.length === 20,
-  'dist library did not report all three method families wired (20 methods)',
+    libraryFrames[0]?.result?.capabilities?.replay === true &&
+    libraryFrames[0]?.result?.capabilities?.auth === true &&
+    libraryFrames[0]?.result?.capabilities?.usage === true &&
+    libraryFrames[0]?.result?.capabilities?.fork === true &&
+    libraryFrames[0]?.result?.capabilities?.methods?.length === 28 &&
+    libraryFrames[0]?.result?.capabilities?.events?.length === 25,
+  'dist library did not report all families wired (28 methods, 25 events)',
 );
 assert(
   libraryFrames[1]?.type === 'event' &&
@@ -150,8 +155,13 @@ try {
     helloResult.capabilities?.sessions === true &&
       helloResult.capabilities?.turns === true &&
       helloResult.capabilities?.config === true &&
-      helloResult.capabilities?.methods?.length === 20,
-    'hello did not advertise all three families wired (20 methods)',
+      helloResult.capabilities?.replay === true &&
+      helloResult.capabilities?.auth === true &&
+      helloResult.capabilities?.usage === true &&
+      helloResult.capabilities?.fork === true &&
+      helloResult.capabilities?.methods?.length === 28 &&
+      helloResult.capabilities?.events?.length === 25,
+    'hello did not advertise all families wired (28 methods, 25 events)',
   );
   const ready = await waitForEvent(
     (frame) =>
@@ -232,11 +242,58 @@ try {
   );
   assert(closed.closed === true, 'session.close did not close the session');
 
+  // M3 parity families are wired for real; the probes below stay
+  // deterministic and offline-safe (no turn, no real login).
+  const forked = assertOk(
+    await call('fork-1', 'sessions.fork', {
+      sessionId: 'smoke-session-1',
+      newSessionId: 'smoke-session-fork-1',
+      title: 'Smoke Fork',
+    }),
+    'fork-1',
+  );
+  assert(forked.sessionId === 'smoke-session-fork-1', 'sessions.fork returned the wrong session');
+  const listedAfterFork = assertOk(await call('list-2', 'sessions.list'), 'list-2');
+  assert(
+    listedAfterFork.sessions?.some((session) => session.sessionId === 'smoke-session-fork-1'),
+    'sessions.list does not contain the forked session',
+  );
+
+  // A session that never ran a turn replays as an empty burst (0/0 counters).
+  const replayed = assertOk(
+    await call('replay-1', 'session.replay', { sessionId: 'smoke-session-fork-1' }),
+    'replay-1',
+  );
+  assert(
+    replayed.events === 0 &&
+      replayed.fromSeq === 0 &&
+      replayed.toSeq === 0 &&
+      replayed.truncated === false,
+    'session.replay on empty history did not answer zero counters',
+  );
+  const replayBadParams = await call('replay-bad', 'session.replay');
+  assert(
+    replayBadParams?.error?.code === 'invalid_params',
+    'session.replay did not validate params first',
+  );
+
+  // The throwaway KIMI_CODE_HOME has no credentials: auth.status is a
+  // structured loggedIn:false, fully offline.
+  const authStatus = assertOk(await call('auth-1', 'auth.status'), 'auth-1');
+  assert(
+    authStatus?.loggedIn === false,
+    'auth.status did not answer loggedIn:false in an empty home',
+  );
+
   const deleted = assertOk(
     await call('delete-1', 'sessions.delete', { sessionId: 'smoke-session-1' }),
     'delete-1',
   );
   assert(deleted.deleted === true, 'sessions.delete did not delete the session');
+  assertOk(
+    await call('delete-fork', 'sessions.delete', { sessionId: 'smoke-session-fork-1' }),
+    'delete-fork',
+  );
 
   const unknown = await call('unknown-1', 'runtime.unknown');
   assert(unknown?.error?.code === 'method_not_found', 'unknown method was not rejected');

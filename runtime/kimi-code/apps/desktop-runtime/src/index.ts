@@ -5,6 +5,8 @@ export * from './event-bridge';
 export * from './handler-context';
 export * from './kimi-runtime-adapter';
 export * from './protocol';
+export * from './protocol-parity';
+export * from './protocol-schemas';
 export * from './router';
 export * from './server';
 export * from './session-manager';

@@ -35,15 +35,17 @@ import {
 } from './handler-context';
 import {
   RuntimeRequestError,
-  approvalRespondParamsSchema,
-  questionRespondParamsSchema,
+  type JsonValue,
+  type RuntimeRequestFrame,
+} from './protocol';
+import {
   turnCancelParamsSchema,
   turnStartParamsSchema,
   turnSteerParamsSchema,
-  type JsonValue,
-  type RuntimeRequestFrame,
+  approvalRespondParamsSchema,
+  questionRespondParamsSchema,
   type TurnStartParams,
-} from './protocol';
+} from './protocol-schemas';
 
 /** A live turn started through `turn.start`, awaiting its terminal event. */
 export interface ActiveTurnRegistration {
@@ -111,6 +113,15 @@ export function getActiveTurn(
   sessionId: string,
 ): ActiveTurnRegistration | undefined {
   return sessionTurns(engine).get(sessionId);
+}
+
+/**
+ * Read-only busy probe for sibling families that must not interleave with a
+ * live turn (`session.replay` rejects its burst with `session_busy` while one
+ * is open). Pure query: never registers, settles, or clears anything.
+ */
+export function hasActiveTurn(engine: EngineContext, sessionId: string): boolean {
+  return sessionTurns(engine).has(sessionId);
 }
 
 /**

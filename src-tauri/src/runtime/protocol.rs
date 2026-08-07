@@ -20,8 +20,34 @@ pub const METHOD_HELLO: &str = "runtime.hello";
 pub const METHOD_GET_INFO: &str = "runtime.getInfo";
 pub const METHOD_SHUTDOWN: &str = "runtime.shutdown";
 
+// M3 wave-1 parity methods (`protocol-parity.ts`). Registered on the runtime
+// with the family capability gates off (`not_implemented` placeholders);
+// the wave-2 implementations flip the gates.
+pub const METHOD_SESSION_REPLAY: &str = "session.replay";
+pub const METHOD_SESSIONS_FORK: &str = "sessions.fork";
+pub const METHOD_AUTH_START_LOGIN: &str = "auth.startLogin";
+pub const METHOD_AUTH_GET_FLOW: &str = "auth.getFlow";
+pub const METHOD_AUTH_CANCEL_LOGIN: &str = "auth.cancelLogin";
+pub const METHOD_AUTH_LOGOUT: &str = "auth.logout";
+pub const METHOD_AUTH_STATUS: &str = "auth.status";
+pub const METHOD_USAGE_GET: &str = "usage.get";
+
 pub const EVENT_READY: &str = "runtime.ready";
 pub const EVENT_WARNING: &str = "runtime.warning";
+
+// M3 wave-1 fidelity session events (`PARITY_SESSION_EVENT_NAMES` in
+// protocol.ts). The translate layer maps them in the event-fidelity wave;
+// until then they fall through to the generic-notice fallback.
+pub const EVENT_STEP_BEGIN: &str = "step.begin";
+pub const EVENT_STEP_INTERRUPTED: &str = "step.interrupted";
+pub const EVENT_STEP_RETRY: &str = "step.retry";
+pub const EVENT_COMPACTION_BEGIN: &str = "compaction.begin";
+pub const EVENT_COMPACTION_END: &str = "compaction.end";
+pub const EVENT_MCP_LOADING_BEGIN: &str = "mcp.loading.begin";
+pub const EVENT_MCP_LOADING_END: &str = "mcp.loading.end";
+pub const EVENT_SLASH_COMMANDS_UPDATE: &str = "slash_commands.update";
+pub const EVENT_BACKGROUND_TASK_OBSERVED: &str = "background_task.observed";
+pub const EVENT_TURN_STEERED: &str = "turn.steered";
 
 /// Framing/envelope violation codes, mirroring the runtime-side fault codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,13 +227,26 @@ pub struct KimiSourceInfo {
     pub commit: String,
 }
 
-/// Capability snapshot returned by hello/getInfo.
+/// Capability snapshot returned by hello/getInfo. The M3 parity gates
+/// (`replay`/`auth`/`usage`/`fork`) default to false so a pre-M3 runtime
+/// still deserializes; `events` lists the session event names the wired
+/// bridge may emit (UI checklist §1 completeness gate).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct RuntimeCapabilities {
     pub methods: Vec<String>,
     pub sessions: bool,
     pub turns: bool,
     pub config: bool,
+    #[serde(default)]
+    pub replay: bool,
+    #[serde(default)]
+    pub auth: bool,
+    #[serde(default)]
+    pub usage: bool,
+    #[serde(default)]
+    pub fork: bool,
+    #[serde(default)]
+    pub events: Vec<String>,
 }
 
 /// Handshake/getInfo result.
@@ -266,6 +305,11 @@ mod tests {
                 sessions: true,
                 turns: true,
                 config: true,
+                replay: false,
+                auth: false,
+                usage: false,
+                fork: false,
+                events: vec![],
             },
             data_schema_version: 1,
         };
@@ -291,5 +335,37 @@ mod tests {
         assert_eq!(info.kimi_source.commit, "deadbeef");
         assert_eq!(info.data_schema_version, 1);
         assert!(!info.capabilities.sessions);
+        // Pre-M3 snapshots omit the parity gates; they default to off/empty.
+        assert!(!info.capabilities.replay);
+        assert!(!info.capabilities.auth);
+        assert!(!info.capabilities.usage);
+        assert!(!info.capabilities.fork);
+        assert!(info.capabilities.events.is_empty());
+    }
+
+    #[test]
+    fn deserialize_runtime_info_with_m3_parity_gates() {
+        let value = json!({
+            "selectedProtocol": "runtime-v1",
+            "runtimeVersion": "0.0.0",
+            "kimiSource": {"tag": "@moonshot-ai/kimi-code@0.33.0", "commit": "abc"},
+            "nodeVersion": "24.15.0",
+            "capabilities": {
+                "methods": ["runtime.hello", "session.replay"],
+                "sessions": true,
+                "turns": true,
+                "config": true,
+                "replay": true,
+                "auth": false,
+                "usage": false,
+                "fork": false,
+                "events": ["session.status", "step.begin"]
+            },
+            "dataSchemaVersion": 1
+        });
+        let info: RuntimeInfo = serde_json::from_value(value).unwrap();
+        assert!(info.capabilities.replay);
+        assert!(!info.capabilities.fork);
+        assert_eq!(info.capabilities.events.len(), 2);
     }
 }
