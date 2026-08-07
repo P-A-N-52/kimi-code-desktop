@@ -146,3 +146,32 @@ M4 交付：dev 环境（`npm run desktop`）纯 runtime 全功能；无 ACP 入
 - 正式 Developer ID 签名 + dmg 级 notarization（本机无证书；CI 需验证 tauri 对 sidecar 的 entitlements 应用，`finalize_bundle_signing` 为兜底；最终 DMG 为脚本打包产物，需对最终 DMG 跑公证/stapling）。
 - Windows SEA 变体（`desktop-release.ps1`/`release-msi.ps1` 尚无 SEA 处理；UPSTREAM.md 已记为 M5 follow-up）。
 - 真实 Tauri/WebView 桌面验收全流（含 auth 真机、swarm 卡片、桌面完成通知）未在本机复跑。
+
+## 11. M5 真实桌面验收记录（2026-08-08）
+
+> 三状态口径的第三状态证据。完整过程日志在 `tmp/m5-acceptance-log.md`（scratch，不入库）。
+
+### 11.1 dev 形态（`npm run desktop`，tauri dev debug 构建）
+
+- 应用启动后 RuntimeHost 经 dev 路径 spawn `dist/main.mjs`，handshake + commit 校验通过；真实 `~/.kimi-code` 数据下：会话列表（runtime `sessions.list` enrichment）、历史回放（用户气泡/思考/回答/session.config 快照/context 用量）、设置-通用（auth.status 真实凭据"已登录"）、设置-用量（`usage.get` 真实平台额度 59% left + 本地统计图表）、设置-关于（桌面版 1.1.3 + CLI 版本读 handshake `kimi_source.tag` = 0.33.0）、工作区四 tab（更改/文件/代理/任务）全部正常渲染。
+- 真实 prompt 全链路：新会话发只读 prompt（读 package.json 报 name）→ 用户 turn + 工具卡片（Search 完成态）+ 最终回答 `kimi-code-desktop` 全部正确。
+
+### 11.2 release 制品形态（release-macos.sh 产出的 DMG）
+
+- 挂载 DMG → bundle 封签通过；从包内启动 app：父进程（hardened runtime）成功 spawn 包内 sidecar（JIT entitlements 生效），readiness 通过后进入主 UI（真实会话数据正常）。
+- 观察（非 bug）：首启 readiness 约 1.5-2 分钟——真实大 home 迁移预检扫描 + V8 冷启动 + 引擎 bootstrap 的一次性成本，overlay 慢提示正常工作并自行通过；marker 幂等后二次启动应显著更快。
+- 迁移预检实证：真实 home 无 v1/legacy 形态（全部 v1.5），预检正确判定 NothingToMigrate——`migrations/` 无 marker、`backups/` 无备份，零误操作。
+
+### 11.3 真实验收逼出并已修复的 bug
+
+1. **R1**：新会话不继承全局默认模型（"Model not set"）——klient dispatcher 只物化不绑定；修复 `93aca12f`（create/open/turn.start 三处对齐 CLI 首用绑定语义）。
+2. **SEA hardened-runtime V8 崩溃**：无 JIT entitlement 时 Node 无法保留 CodeRange；修复 `b9235c12`（`entitlements.release.plist`）。
+3. **tauri dmg pass 清理中间 .app**：post-build 修复无从下手；release-macos.sh 改脚本自持 hdiutil 打包（同 commit）。
+4. **codec `usize::MAX` 溢出**（debug panic）：fuzz 发现；修复 `f8f75346`（saturating_add + 回归测试翻转）。
+
+### 11.4 本轮未覆盖（留后续真机/CI）
+
+- auth 真实登录全流程（startLogin → 设备码 → poll → 已认证）未在真机执行（M4 仅有 contract/单测覆盖）。
+- swarm 卡片完整性（`swarm_progress.rs` 删除后的展示投影）、桌面完成通知、托盘/快捷键在 release 制品上的行为。
+- `usage.get` 401 强制刷新重试路径（需真实过期凭据）。
+- Windows 全面（SEA 变体不存在，见 §10.6）。
