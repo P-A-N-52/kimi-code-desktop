@@ -90,3 +90,59 @@
 M4 交付：dev 环境（`npm run desktop`）纯 runtime 全功能；无 ACP 入口残留；`cargo test`/`npm test`/`smoke:runtime`/新 preflight 全绿；文档收口。
 
 留 M5：Node SEA sidecar 构建与 tauri externalBin 接线；macOS 签名公证/Windows 签名覆盖 sidecar；`release:msi`/`desktop:release` 语义恢复；真实 Tauri/WebView 验收全流（含 auth 真机、swarm 卡片、通知）；协议 fuzz；`~/.kimi-code` 首启迁移预检（备份+marker）；release manifest 产出。
+
+## 10. M5 release 流水线接入（2026-08-08）/ M5 Release Pipeline Wiring
+
+**状态**：M5 release 流水线接线已完成（本机验证，未推入上游）。发布门禁语义恢复与 SEA 打包已接入 `release-macos.sh`；正式签名公证与 Windows SEA 变体为环境阻塞项。
+
+### 10.1 build:sea 接入（`scripts/release-macos.sh`）
+
+- 新增 `package.json` 脚本 `runtime:sea`（= `pnpm --dir runtime/kimi-code --filter @moonshot-ai/desktop-runtime run build:sea`），与 `runtime:build` 同构，release 脚本不依赖 PATH 上的 pnpm。
+- `release-macos.sh` 在 DMG 构建段（`build_dmg`，第 62 行）之前插入 `build_runtime_sidecar()`（第 91–103 行）：`npm run runtime:install`（frozen）→ `npm run runtime:build` → `npm run runtime:sea` → 校验 `src-tauri/binaries/desktop-runtime-aarch64-apple-darwin` 存在且可执行；任一失败 `|| exit 1` 终止（与脚本无 `set -e`、显式失败处理的现状对齐，fail-fast）。
+- 调用点：attempt 链之前（第 224–225 行），一次构建、所有签名 attempt 复用。Tauri `bundle.externalBin: ["binaries/desktop-runtime"]` 自动把 SEA 打进 `Contents/MacOS/desktop-runtime`（M5 前两批已接）。
+
+### 10.2 release manifest 产出
+
+- 命名约定（readiness.rs 注释已对齐，`src-tauri/src/runtime/readiness.rs` 第 12–14/259–265 行）：`src-tauri/binaries/desktop-runtime-<target-triple>.manifest.json`，与 SEA artifact 同目录成对产出；build-tree release gate，不进 app bundle。
+- 形状（`write_runtime_manifest()`，第 105–127 行）：
+
+  ```json
+  {
+    "kimiSource": { "tag": "@moonshot-ai/kimi-code@0.33.0", "commit": "53c832dfdf9566afd59a8b3d54ebd36d3cb03d72" },
+    "builtAt": "<iso>",
+    "builder": "release-macos.sh"
+  }
+  ```
+
+- tag/commit 从 `runtime/UPSTREAM.md` 读取（`read_kimi_source_identity()`，第 71–89 行），并与 `apps/desktop-runtime/src/protocol.ts` 的 `KIMI_SOURCE_COMMIT` 交叉校验，不一致即终止；不手抄。
+- readiness.rs 新增受控测试 `real_release_manifest_parses_and_matches_the_pinned_commit`：manifest 存在时用 `check_manifest` 实测（不存在则自跳过，dev-only/非 macOS 不受影响）。
+
+### 10.3 sidecar 签名覆盖
+
+- build-sea.mjs 的 ad-hoc 重签是开发兜底；release 流程在每个签名 attempt 内以与 app 相同的 identity 显式重签 SEA artifact（`sign_runtime_artifact()`，第 129–143 行）：notarized 用 `$APPLE_SIGNING_IDENTITY`，ad-hoc/unsigned 用 `-`（arm64 无签名不可执行）。
+- 覆盖点：`attempt_notarized_build`（第 198 行）、`attempt_adhoc_build`（第 208 行）、`attempt_unsigned_build`（第 217 行），均在 `clean_bundle_outputs`/`build_dmg` 之前。
+- **发现并修复的 M5 bug（hardened runtime + V8 + tauri dmg pass 清理）**：
+  1. **hardened runtime + V8**：tauri 会对 `Contents/MacOS/desktop-runtime` 以 hardened runtime 重签；若无 JIT entitlement，Node/V8 无法保留 CodeRange 虚拟内存，SEA 启动即崩溃（`Fatal process out of memory`）。修复：`src-tauri/entitlements.release.plist`（`allow-jit` + `allow-unsigned-executable-memory`）+ `tauri.macos.conf.json` 的 `bundle.macOS.entitlements` 引用——实测（identity + entitlements 配置）tauri 对 sidecar 的签名变为 `runtime` + 上述 entitlements，V8 正常。
+  2. **tauri dmg pass 会清理中间 `.app`**：`tauri build --bundles dmg` 成功后 tauri 删除 `bundle/macos/Kimi Code.app`（`Cleaning …`），post-build 修复无从下手。修复：`build_dmg()` 改为 `tauri build --bundles app`（保留 `.app`）→ `finalize_bundle_signing` 修复/校验 → `create_dmg()`（脚本自持 hdiutil 打包：UDRW → 挂载 → `/Applications` 链接 + 卷图标 → UDZO 压缩；`build_headless_dmg` 及 tauri `bundle_dmg.sh` 依赖随之移除，finder-layout flakiness 一并消失）。
+- `finalize_bundle_signing()`（脚本内）：检测 bundled sidecar——已有 JIT entitlement 且 app seal 有效则 no-op；否则以同一 identity + entitlements 重签 sidecar 与主二进制、重封 bundle（`codesign --verify --deep --strict` 校验）并置 `DMG_REPACKAGED=true`。修复在 DMG 打包前完成。
+- `DMG_REPACKAGED=true` 时 notarization 状态如实记录为 `stale-after-repackage`；最终 DMG 为脚本打包产物，dmg 级公证是 M5 follow-up。
+- 正式证书不在本机；真实 Developer ID 签名 + notarization 走 CI secrets（脚本参数化保持现状）。
+
+### 10.4 preflight 对齐（`scripts/release-preflight.ps1`）
+
+- `Assert-SourceRuntime` 新增第 (e) 断言：`src-tauri/binaries/desktop-runtime-*`（非 manifest）存在时，要求兄弟 `*.manifest.json` 存在、可解析、`kimiSource.commit` == UPSTREAM.md 冻结 commit；无 sidecar 时自跳过。W4 四断言 (a)–(d) 未改动。
+
+### 10.5 验证结果
+
+- 静态：`bash -n scripts/release-macos.sh` 通过；PowerShell 脚本本机无 pwsh，静态核查（变量作用域、`$frozenCommit` 复用自 (b) 段、括号平衡）。
+- 真实（本机 arm64，最终运行 EXIT=0）：`release-macos.sh` 全链路实际执行 —— `runtime:install`（frozen）→ `runtime:build` → `runtime:sea`（含 SEA boot smoke 与 commit 断言）→ manifest 产出 → ad-hoc attempt（`tauri build --bundles app`，tauri 以 `-` 签名、sidecar 获得 hardened runtime + JIT entitlements）→ `finalize_bundle_signing` 判定 healthy（no-op）→ `create_dmg` 脚本打包 DMG。
+- **最终 DMG 验收**：`Kimi Code_1.1.3_aarch64.dmg`（74,086,148 bytes）挂载后 `Kimi Code.app/Contents/MacOS/desktop-runtime` 签名 `flags=adhoc,runtime` + `allow-jit`/`allow-unsigned-executable-memory`；`codesign --verify --deep --strict` APP SEAL OK；sidecar 从挂载 DMG 启动完成完整 runtime-v1 握手（tag/commit 断言通过）。
+- `check_manifest` 实测通过（`cargo test` readiness 模块，含新加受控测试 `real_release_manifest_parses_and_matches_the_pinned_commit`）；`cargo test`（253 单元 + 18/9/6 集成）/ `npm run runtime:test`（121）/ `check:quick` 全绿，不破坏。
+- 调试过程记录：首轮发现 hardened-runtime V8 崩溃与 tauri dmg pass 清理 `.app` 两个坑；tauri 2.11.2 实测在 identity + `bundle.macOS.entitlements` 配置下对 sidecar 应用 JIT entitlements（无需修复分支）；无 identity 时 tauri 跳过签名（`finalize_bundle_signing` 兜底覆盖）。修复后 `--bundles app` + 脚本自持 hdiutil 打包，finder-layout flakiness 与中间产物清理问题一并消除。
+- 公证：本机无 secrets，tauri 内建 notarization 未运行（`not-attempted`）；Developer ID + 公证需 CI 验证（遗留）。
+
+### 10.6 遗留
+
+- 正式 Developer ID 签名 + dmg 级 notarization（本机无证书；CI 需验证 tauri 对 sidecar 的 entitlements 应用，`finalize_bundle_signing` 为兜底；最终 DMG 为脚本打包产物，需对最终 DMG 跑公证/stapling）。
+- Windows SEA 变体（`desktop-release.ps1`/`release-msi.ps1` 尚无 SEA 处理；UPSTREAM.md 已记为 M5 follow-up）。
+- 真实 Tauri/WebView 桌面验收全流（含 auth 真机、swarm 卡片、桌面完成通知）未在本机复跑。

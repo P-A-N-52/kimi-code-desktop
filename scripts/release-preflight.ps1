@@ -205,6 +205,36 @@ function Assert-SourceRuntime {
         throw "Stale ACP smoke script still exists: scripts\acp-smoke.mjs"
     }
     Write-Host "No ACP entries remain (AcpProcessManager / AcpDesktopClient / acp_translate / acp_desktop / acp_capabilities; acp-smoke.mjs absent)."
+
+    # (e) SEA sidecar release pair: whenever a built sidecar exists under
+    # src-tauri\binaries, its sibling release manifest must exist, parse as
+    # JSON, and carry the frozen commit (release-macos.sh emits both together).
+    # Dev-only checkpoints build no sidecar, so the check self-skips then.
+    $binariesDir = Join-Path $ProjectRoot "src-tauri\binaries"
+    $sidecars = @()
+    if (Test-Path $binariesDir) {
+        $sidecars = @(Get-ChildItem -Path $binariesDir -File |
+            Where-Object { $_.Name -like "desktop-runtime-*" -and $_.Name -notlike "*.manifest.json" })
+    }
+    foreach ($sidecar in $sidecars) {
+        $manifestPath = "$($sidecar.FullName).manifest.json"
+        if (!(Test-Path $manifestPath)) {
+            throw "Source Runtime sidecar is missing its release manifest: $($sidecar.FullName). Expected $manifestPath (run 'npm run release:macos' or build the SEA sidecar + manifest together)."
+        }
+        try {
+            $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+        } catch {
+            throw "Source Runtime release manifest is not valid JSON: $manifestPath ($($_.Exception.Message))"
+        }
+        $manifestCommit = [string]$manifest.kimiSource.commit
+        if ($manifestCommit -ne $frozenCommit) {
+            throw "Source Runtime release manifest commit mismatch: $manifestCommit (manifest) vs $frozenCommit (UPSTREAM.md): $manifestPath"
+        }
+        Write-Host "Source Runtime release manifest present and pinned: $manifestPath ($manifestCommit)"
+    }
+    if (-not $sidecars) {
+        Write-Host "No SEA sidecar built; skipping the release-manifest pairing check."
+    }
     Write-Host "Source Runtime release checks passed."
 }
 

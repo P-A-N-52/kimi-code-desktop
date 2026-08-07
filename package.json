@@ -24,6 +24,7 @@
     "runtime:typecheck": "pnpm --dir runtime/kimi-code --filter @moonshot-ai/desktop-runtime run typecheck",
     "runtime:test": "pnpm --dir runtime/kimi-code --filter @moonshot-ai/desktop-runtime run test",
     "runtime:build": "pnpm --dir runtime/kimi-code --filter @moonshot-ai/desktop-runtime... run build",
+    "runtime:sea": "pnpm --dir runtime/kimi-code --filter @moonshot-ai/desktop-runtime run build:sea",
     "smoke:runtime": "npm run runtime:build && pnpm --dir runtime/kimi-code --filter @moonshot-ai/desktop-runtime run smoke",
     "rust:check": "cargo check --manifest-path src-tauri/Cargo.toml",
     "rust:clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
