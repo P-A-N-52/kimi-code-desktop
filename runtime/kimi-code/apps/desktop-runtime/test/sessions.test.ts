@@ -2,6 +2,12 @@ import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import {
+  getLiveSessionById,
+  IAgentLifecycleService,
+  IAgentProfileService,
+  MAIN_AGENT_ID,
+} from '@moonshot-ai/agent-core-v2';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { EngineContext } from '../src/engine';
@@ -153,8 +159,8 @@ describe('sessions method family', () => {
       cwd: workDir,
       title: 'Chain session',
       archived: false,
-      // No model param → no main-agent binding → reported as unknown.
-      model: null,
+      // No model param → the create inherits the configured default model.
+      model: 'test-model-a',
     });
     expect(created.workspaceId).toEqual(expect.any(String));
     expect(created.createdAt).toEqual(expect.any(Number));
@@ -256,6 +262,36 @@ describe('sessions method family', () => {
       }),
     );
     expect(created.model).toBe('test-model-a');
+  }, 60_000);
+
+  it('inherits the configured default model when create params carry no model', async () => {
+    const created = asDescriptor(
+      await call('sessions.create', {
+        sessionId: 'session_default_model',
+        cwd: await makeWorkDir(),
+        title: 'Default model session',
+      }),
+    );
+    expect(created.model).toBe('test-model-a');
+    // Engine state: the live main agent's profile is bound to the default.
+    const engine = adapter.engineContext;
+    if (engine === undefined) throw new Error('engine did not start');
+    const live = getLiveSessionById(engine.app.accessor, 'session_default_model');
+    const main = live?.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
+    const profile = main?.accessor.get(IAgentProfileService);
+    expect(profile?.data().profileName).toBe('agent');
+    expect(profile?.data().modelAlias).toBe('test-model-a');
+  }, 60_000);
+
+  it('binds the default model on open when the resumed session has no binding', async () => {
+    // Klient-facade create leaves the main agent unbound — the lazy state a pre-default-bind journal resumes into.
+    const engine = adapter.engineContext;
+    if (engine === undefined) throw new Error('engine did not start');
+    const meta = await engine.klient.global.sessions.create({
+      workDir: await makeWorkDir(),
+    });
+    const opened = asDescriptor(await call('session.open', { sessionId: meta.id }));
+    expect(opened.model).toBe('test-model-a');
   }, 60_000);
 
   it('rolls create failures with an unknown model alias into internal_error', async () => {
@@ -468,4 +504,96 @@ describe('sessions method family', () => {
       'engine_not_available',
     );
   });
+});
+
+describe('sessions without a configured default model', () => {
+  let adapter: KimiRuntimeAdapter;
+  let router: MethodRouter;
+  let homeDir: string;
+  let requestSeq = 0;
+  const workDirs: string[] = [];
+
+  // Same stub provider + static models as the suite config, minus
+  // `default_model` — the "no configured default" CLI state.
+  const NO_DEFAULT_CONFIG_TOML = `[providers.testprov]
+type = "kimi"
+api_key = "sk-test"
+base_url = "https://api.example.test/v1"
+
+[models.test-model-a]
+provider = "testprov"
+model = "test-model-a-v1"
+max_context_size = 1000000
+`;
+
+  async function makeWorkDir(): Promise<string> {
+    const dir = await realpath(await mkdtemp(join(tmpdir(), 'kimi-runtime-sessions-work-')));
+    workDirs.push(dir);
+    return dir;
+  }
+
+  function call(method: string, params: JsonObject = {}): Promise<unknown> {
+    requestSeq += 1;
+    return router.dispatch({
+      protocol: RUNTIME_PROTOCOL,
+      type: 'request' as const,
+      id: `req-${requestSeq}`,
+      method,
+      params,
+    });
+  }
+
+  beforeAll(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), 'kimi-runtime-sessions-home-'));
+    await writeFile(join(homeDir, 'config.toml'), NO_DEFAULT_CONFIG_TOML, 'utf8');
+    adapter = new KimiRuntimeAdapter();
+    await adapter.start({ homeDir });
+    const ctx: RuntimeHandlerContext = {
+      adapter,
+      emitSessionEvent: () => Promise.resolve(),
+      emitRuntimeEvent: () => Promise.resolve(),
+    };
+    router = new MethodRouter();
+    for (const [method, handler] of createSessionHandlers(ctx)) {
+      router.register(method, handler);
+    }
+  }, 120_000);
+
+  afterAll(async () => {
+    await adapter.close();
+    // The engine's query-store cache writer can still flush at teardown; rm
+    // retries absorb the ENOTEMPTY/EBUSY race.
+    const rmOptions = { recursive: true, force: true, maxRetries: 5, retryDelay: 200 } as const;
+    await rm(homeDir, rmOptions);
+    for (const dir of workDirs) {
+      await rm(dir, rmOptions);
+    }
+  }, 60_000);
+
+  it('creates without a model unbound when no default model is configured', async () => {
+    const created = asDescriptor(
+      await call('sessions.create', {
+        sessionId: 'session_no_default',
+        cwd: await makeWorkDir(),
+      }),
+    );
+    // CLI parity: a model-less create stays valid and unbound when no default
+    // is configured (the CLI resolves the default at first use, not at create).
+    expect(created.model).toBeNull();
+  }, 60_000);
+
+  it('leaves a binding-less session unbound across open and close', async () => {
+    const engine = adapter.engineContext;
+    if (engine === undefined) throw new Error('engine did not start');
+    const meta = await engine.klient.global.sessions.create({
+      workDir: await makeWorkDir(),
+    });
+    const opened = asDescriptor(await call('session.open', { sessionId: meta.id }));
+    expect(opened.model).toBeNull();
+    await expect(call('session.close', { sessionId: meta.id })).resolves.toEqual({
+      closed: true,
+    });
+    const reopened = asDescriptor(await call('session.open', { sessionId: meta.id }));
+    expect(reopened.model).toBeNull();
+  }, 60_000);
 });

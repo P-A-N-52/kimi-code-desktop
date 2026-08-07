@@ -1,10 +1,13 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  IAgentLifecycleService,
+  IAgentProfileService,
   ISessionApprovalService,
   ISessionQuestionService,
+  MAIN_AGENT_ID,
   getLiveSessionById,
 } from '@moonshot-ai/agent-core-v2';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -45,11 +48,14 @@ interface RuntimeFixture {
 
 let fixtureCounter = 0;
 
-async function makeRuntime(): Promise<RuntimeFixture> {
+async function makeRuntime(configToml?: string): Promise<RuntimeFixture> {
   const homeDir = await mkdtemp(join(tmpdir(), 'desktop-runtime-turns-home-'));
   const workDir = await mkdtemp(join(tmpdir(), 'desktop-runtime-turns-work-'));
   const adapter = new KimiRuntimeAdapter();
   try {
+    if (configToml !== undefined) {
+      await writeFile(join(homeDir, 'config.toml'), configToml, 'utf8');
+    }
     await adapter.start({ homeDir });
   } catch (error) {
     await rm(homeDir, { recursive: true, force: true });
@@ -97,8 +103,11 @@ async function makeRuntime(): Promise<RuntimeFixture> {
 
 async function disposeRuntime(fixture: RuntimeFixture): Promise<void> {
   await fixture.adapter.close();
-  await rm(fixture.homeDir, { recursive: true, force: true });
-  await rm(fixture.workDir, { recursive: true, force: true });
+  // The engine's query-store cache writer can still flush at teardown; rm
+  // retries absorb the ENOTEMPTY/EBUSY race (same convention as sessions.test.ts).
+  const rmOptions = { recursive: true, force: true, maxRetries: 5, retryDelay: 200 } as const;
+  await rm(fixture.homeDir, rmOptions);
+  await rm(fixture.workDir, rmOptions);
 }
 
 async function createSession(fixture: RuntimeFixture): Promise<string> {
@@ -467,5 +476,68 @@ describe('turn family handlers (real engine, temp home)', () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(fixture.events.length).toBe(count);
+  }, 60_000);
+});
+
+describe('turn family with a configured default model', () => {
+  let fixture: RuntimeFixture;
+
+  // Stub provider + static model plus `default_model`, so the engine can
+  // resolve a binding locally (offline) while the prompt-time fallback is the
+  // code path under test.
+  const DEFAULT_MODEL_CONFIG_TOML = `default_model = "test-model-a"
+
+[providers.testprov]
+type = "kimi"
+api_key = "sk-test"
+base_url = "https://api.example.test/v1"
+
+[models.test-model-a]
+provider = "testprov"
+model = "test-model-a-v1"
+max_context_size = 1000000
+`;
+
+  beforeAll(async () => {
+    fixture = await makeRuntime(DEFAULT_MODEL_CONFIG_TOML);
+  }, 60_000);
+
+  afterAll(async () => {
+    await disposeRuntime(fixture);
+  });
+
+  it('binds the default model at prompt time when the agent reached turn.start unbound', async () => {
+    // Created through the klient facade → unbound main agent and no open
+    // step: the prompt-time fallback (CLI `materializeMainAgent` parity) is
+    // the only bind that can save this turn.
+    const sessionId = await createSession(fixture);
+    const detach = await attachSessionEvents(
+      fixture.engine,
+      sessionId,
+      fixture.ctx.emitSessionEvent,
+    );
+    try {
+      const started = await fixture.call('turn.start', {
+        sessionId,
+        requestId: 'req-default-bind',
+        input: 'hi',
+      });
+      // Accepted: the prompt-time fallback bound the default before launch —
+      // without it this turn would fail "Model not set" instead.
+      expect(started).toMatchObject({ requestId: 'req-default-bind' });
+      const session = getLiveSessionById(fixture.engine.app.accessor, sessionId);
+      const main = session?.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
+      const profile = main?.accessor.get(IAgentProfileService);
+      expect(profile?.data().profileName).toBe('agent');
+      expect(profile?.data().modelAlias).toBe('test-model-a');
+    } finally {
+      // The stub provider is unreachable, so the launched turn would retry
+      // forever instead of reaching a terminal event; cancel it so the
+      // fixture teardown has no live turn to drain.
+      await fixture
+        .call('turn.cancel', { sessionId, requestId: 'req-default-bind' })
+        .catch(() => undefined);
+      await detach();
+    }
   }, 60_000);
 });
