@@ -27,7 +27,8 @@ import { AppSidebar } from "@/modules/sessions/app-sidebar";
 import { SettingsDialog, type SettingsTab } from "@/modules/settings/settings-dialog";
 import { type SessionModeDraft, shouldAutoApprove } from "@/modules/statusbar/permission-mode";
 import { Topbar } from "@/modules/topbar/topbar";
-import { ChangesPanel, type WorkspaceTab } from "@/modules/workspace/changes-panel";
+import type { WorkspaceTab } from "@/modules/workspace/changes-panel";
+import { ContextSidebar } from "@/modules/workspace/context-sidebar";
 import {
   deriveChanges,
   derivePendingApprovals,
@@ -528,22 +529,21 @@ export default function App() {
             title={currentSession?.title ?? "Kimi Code"}
             shortId={selectedSessionId ? selectedSessionId.slice(0, 6) : undefined}
             sessionId={selectedSessionId || undefined}
-            workDir={currentSession?.workDir}
+            workDir={currentSession?.workDir ?? undefined}
             panelOpen={panelOpen}
             onTogglePanel={() => setPanelOpen((v) => !v)}
             onOpenSettings={() => openSettings()}
           />
         }
         panel={
-          <ChangesPanel
+          <ContextSidebar
             sessionId={selectedSessionId}
+            workDir={currentSession?.workDir ?? undefined}
+            messages={stream.messages}
             activeTab={workspaceTab}
             onTabChange={setWorkspaceTab}
             changes={changes}
             pendingApprovals={pendingApprovals}
-            changesLoading={gitDiff.isLoading}
-            changesError={gitDiff.error}
-            onRefreshChanges={() => void gitDiff.refresh()}
             listDirectory={listSessionDirectory}
             getFile={getSessionFile}
             onApproveAll={handleApproveAll}

@@ -97,6 +97,17 @@ npm run check:quick       # 日常快速门禁
 npm run smoke:acp         # 验证本机 kimi acp
 ```
 
+## 参与贡献 / Contributing
+
+欢迎提交 Bug 报告、功能建议、代码、测试和文档改进。开始前请阅读
+[贡献指南 / Contributing Guide](CONTRIBUTING.md)，其中包含开发环境、架构边界、
+验证矩阵以及 Pull Request 要求。
+
+Bug reports, feature proposals, code, tests, and documentation improvements are
+welcome. Before starting, read the
+[Contributing Guide / 贡献指南](CONTRIBUTING.md) for development setup,
+architecture boundaries, verification requirements, and pull request guidance.
+
 ## 构建与发布
 
 ```powershell

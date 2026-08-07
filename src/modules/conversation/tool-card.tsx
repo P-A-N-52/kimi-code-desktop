@@ -162,7 +162,12 @@ function GenericToolCard({
               <Attachments
                 parts={toolCall.mediaParts.map((part) => ({
                   type: "file" as const,
-                  mediaType: part.type === "image_url" ? "image/*" : "video/*",
+                  mediaType:
+                    part.type === "image_url"
+                      ? "image/*"
+                      : part.type === "video_url"
+                        ? "video/*"
+                        : "audio/*",
                   filename: (() => {
                     try {
                       return new URL(part.url).pathname.split("/").pop() || "media";

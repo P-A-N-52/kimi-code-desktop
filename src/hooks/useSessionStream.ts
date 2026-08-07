@@ -463,11 +463,12 @@ const discardSubagentRetryAttempt = (steps: SubagentStep[]): SubagentStep[] => {
   return next;
 };
 
-/** Extract the URL from a media output part (image_url or video_url) */
+/** Extract the URL from a media output part. */
 const extractMediaUrl = (part: Record<string, unknown>): string => {
   const imgUrl = (part.image_url as { url?: string })?.url;
   const vidUrl = (part.video_url as { url?: string })?.url;
-  return imgUrl ?? vidUrl ?? "";
+  const audioUrl = (part.audio_url as { url?: string })?.url;
+  return imgUrl ?? vidUrl ?? audioUrl ?? "";
 };
 
 /** Check if a URL can be rendered in the browser (http/https/data/blob) */
@@ -2378,16 +2379,21 @@ export function useSessionStream(options: UseSessionStreamOptions): UseSessionSt
                 .join("\n")
             : return_value.output;
 
-          // Extract media parts (image_url/video_url) from output array
-          let mediaParts: Array<{ type: "image_url" | "video_url"; url: string }> = [];
+          // Extract media parts from the tool output array.
+          let mediaParts: Array<{
+            type: "image_url" | "video_url" | "audio_url";
+            url: string;
+          }> = [];
           if (Array.isArray(return_value.output)) {
             mediaParts = return_value.output
               .filter(
                 (part: Record<string, unknown>) =>
-                  part.type === "image_url" || part.type === "video_url",
+                  part.type === "image_url" ||
+                  part.type === "video_url" ||
+                  part.type === "audio_url",
               )
               .map((part: Record<string, unknown>) => ({
-                type: part.type as "image_url" | "video_url",
+                type: part.type as "image_url" | "video_url" | "audio_url",
                 url: extractMediaUrl(part),
               }))
               .filter((p) => p.url);

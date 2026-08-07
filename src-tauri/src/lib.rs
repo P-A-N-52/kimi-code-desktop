@@ -3,6 +3,7 @@ pub mod acp_desktop;
 pub mod acp_translate;
 pub mod commands;
 pub mod git_diff;
+pub mod git_workspace;
 pub mod global_config;
 pub mod goal_queue;
 pub mod goal_store;
@@ -15,6 +16,7 @@ pub mod runtime_backend;
 pub mod runtime_check;
 pub mod security;
 pub mod session_files;
+pub mod session_plans;
 pub mod session_store;
 pub mod skills;
 #[cfg(test)]
@@ -86,6 +88,15 @@ pub fn run() {
             commands::update_mcp_config,
             commands::update_global_config,
             commands::get_git_diff_stats,
+            commands::get_git_environment,
+            commands::compare_git_branches,
+            commands::get_git_comparison_file_diff,
+            commands::switch_git_branch,
+            commands::commit_git_changes,
+            commands::push_git_branch,
+            commands::create_github_pull_request,
+            commands::list_session_plans,
+            commands::get_session_plan,
             commands::show_window,
             commands::hide_window,
             commands::get_app_version,
