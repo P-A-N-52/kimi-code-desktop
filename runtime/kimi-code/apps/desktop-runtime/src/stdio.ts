@@ -1,15 +1,14 @@
 import type { Readable, Writable } from 'node:stream';
 
 import { decodeJsonLines, writeJsonLine } from './codec';
-import type { RuntimeLifecycleAdapter } from './kimi-runtime-adapter';
 import { RuntimeProtocolFault } from './protocol';
-import { RuntimeProtocolServer } from './server';
+import { RuntimeProtocolServer, type RuntimeServerAdapter } from './server';
 
 export interface RunStdioRuntimeOptions {
   readonly input: Readable;
   readonly output: Writable;
   readonly diagnostics: Writable;
-  readonly adapter: RuntimeLifecycleAdapter;
+  readonly adapter: RuntimeServerAdapter;
   readonly shutdownDrainMs?: number;
 }
 

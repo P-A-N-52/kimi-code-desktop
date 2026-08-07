@@ -1,5 +1,10 @@
+import { createConfigHandlers } from './config-router';
+import { attachSessionEvents } from './event-bridge';
+import type { RuntimeEngineAdapter, RuntimeHandlerContext } from './handler-context';
 import type { RuntimeLifecycleAdapter } from './kimi-runtime-adapter';
 import {
+  DESKTOP_RUNTIME_VERSION,
+  RUNTIME_EVENT_PREFIX,
   RUNTIME_PROTOCOL,
   RuntimeProtocolFault,
   RuntimeRequestError,
@@ -9,25 +14,43 @@ import {
   parseRequestFrame,
   runtimeInfo,
   type JsonValue,
-  type RuntimeEventFrame,
   type RuntimeOutputFrame,
+  type RuntimeRequestFrame,
+  type RuntimeScopedEventFrame,
+  type RuntimeSessionEventFrame,
 } from './protocol';
+import { DEFERRED_RESPONSE, MethodRouter } from './router';
+import { createSessionHandlers } from './session-manager';
+import { clearActiveTurns, createTurnHandlers } from './turn-router';
 
 type RuntimeState = 'awaiting-hello' | 'ready' | 'shutting-down' | 'stopped';
 
 const RECENT_REQUEST_ID_LIMIT = 4096;
 
+/**
+ * The adapter the protocol server runs on: lifecycle (start/close) plus the
+ * engine surface the method families consume. `KimiRuntimeAdapter` is the
+ * production implementation.
+ */
+export type RuntimeServerAdapter = RuntimeLifecycleAdapter & RuntimeEngineAdapter;
+
+/** All three M1 families are wired by this server, so hello/getInfo report them. */
+const WIRED_FAMILIES = { sessions: true, turns: true, config: true } as const;
+
 export interface RuntimeProtocolServerOptions {
-  readonly adapter: RuntimeLifecycleAdapter;
+  readonly adapter: RuntimeServerAdapter;
   readonly emitFrame: (frame: RuntimeOutputFrame) => void | Promise<void>;
 }
 
 export class RuntimeProtocolServer {
-  private readonly adapter: RuntimeLifecycleAdapter;
+  private readonly adapter: RuntimeServerAdapter;
   private readonly emitFrame: RuntimeProtocolServerOptions['emitFrame'];
+  private readonly router = new MethodRouter();
   private readonly recentRequestIds = new Set<string>();
   private readonly requestIdOrder: string[] = [];
   private readonly sessionSequences = new Map<string, number>();
+  /** Live event-bridge detach functions, one per opened session. */
+  private readonly sessionBridges = new Map<string, () => Promise<void>>();
   private state: RuntimeState = 'awaiting-hello';
   private shutdownRequestId: string | undefined;
   private outputTail: Promise<void> = Promise.resolve();
@@ -36,6 +59,49 @@ export class RuntimeProtocolServer {
   constructor(options: RuntimeProtocolServerOptions) {
     this.adapter = options.adapter;
     this.emitFrame = options.emitFrame;
+    this.router.register('runtime.hello', (request) => this.handleHello(request));
+    this.router.register('runtime.getInfo', () =>
+      Promise.resolve(runtimeInfo(this.router.methods, WIRED_FAMILIES)),
+    );
+    this.router.register('runtime.shutdown', (request) => {
+      this.state = 'shutting-down';
+      this.shutdownRequestId = request.id;
+      return Promise.resolve(DEFERRED_RESPONSE);
+    });
+
+    // M1 wave 3: the sessions / turns / config families share one handler
+    // context. Session hooks bridge the families without cross-imports:
+    // opening a session attaches its event bridge, closing one detaches the
+    // bridge (a session that was never attached is a no-op) and drops its
+    // active-turn registration.
+    const ctx: RuntimeHandlerContext = {
+      adapter: this.adapter,
+      emitSessionEvent: (sessionId, event, payload) =>
+        this.emitSessionEvent(sessionId, event, payload),
+      emitRuntimeEvent: (event, payload) => this.emitRuntimeEvent(event, payload),
+      sessionHooks: {
+        onSessionOpened: async (sessionId, engine) => {
+          const detach = await attachSessionEvents(engine, sessionId, (id, event, payload) =>
+            this.emitSessionEvent(id, event, payload),
+          );
+          this.sessionBridges.set(sessionId, detach);
+        },
+        onSessionClosed: async (sessionId) => {
+          const detach = this.sessionBridges.get(sessionId);
+          this.sessionBridges.delete(sessionId);
+          if (detach !== undefined) await detach();
+          const engine = this.adapter.engineContext;
+          if (engine !== undefined) clearActiveTurns(engine, sessionId);
+        },
+      },
+    };
+    for (const [method, handler] of [
+      ...createSessionHandlers(ctx),
+      ...createTurnHandlers(ctx),
+      ...createConfigHandlers(ctx),
+    ]) {
+      this.router.register(method, handler);
+    }
   }
 
   get shutdownRequested(): boolean {
@@ -71,35 +137,21 @@ export class RuntimeProtocolServer {
     }
 
     try {
-      switch (request.method) {
-        case 'runtime.hello': {
-          if (this.state !== 'awaiting-hello') {
-            throw new RuntimeRequestError(
-              'handshake_already_completed',
-              'runtime.hello has already completed.',
-            );
-          }
-          parseHelloParams(request.params);
-          this.state = 'ready';
-          await this.write(okResponse(request.id, runtimeInfo()));
-          return;
-        }
-        case 'runtime.getInfo': {
-          await this.write(okResponse(request.id, runtimeInfo()));
-          return;
-        }
-        case 'runtime.shutdown': {
-          this.state = 'shutting-down';
-          this.shutdownRequestId = request.id;
-          return;
-        }
-        default: {
-          throw new RuntimeRequestError(
-            'method_not_found',
-            `Unknown runtime method: ${request.method}`,
-          );
-        }
+      const result = await this.router.dispatch(request);
+      if (result === DEFERRED_RESPONSE) return;
+      if (request.method === 'runtime.hello') {
+        // The handshake response and the runtime.ready event are enqueued as
+        // an adjacent pair: both chain onto outputTail in this synchronous
+        // window, so concurrently accepted requests cannot interleave their
+        // own writes between them. The handshake response goes first.
+        const responseWrite = this.write(okResponse(request.id, result));
+        const readyWrite = this.emitRuntimeEvent('runtime.ready', {
+          runtimeVersion: DESKTOP_RUNTIME_VERSION,
+        });
+        await Promise.all([responseWrite, readyWrite]);
+        return;
       }
+      await this.write(okResponse(request.id, result));
     } catch (error) {
       const requestError =
         error instanceof RuntimeRequestError
@@ -113,23 +165,53 @@ export class RuntimeProtocolServer {
     sessionId: string,
     event: string,
     payload: JsonValue = {},
-  ): Promise<RuntimeEventFrame> {
-    if (this.state !== 'ready') {
-      throw new RuntimeRequestError('runtime_not_ready', 'Runtime handshake is not ready.');
-    }
+  ): Promise<RuntimeSessionEventFrame> {
+    this.assertEventsFlowing();
     if (sessionId.length === 0 || event.length === 0) {
       throw new RuntimeRequestError(
         'invalid_event',
         'Session events require a non-empty sessionId and event name.',
       );
     }
+    if (event.startsWith(RUNTIME_EVENT_PREFIX)) {
+      throw new RuntimeRequestError(
+        'invalid_event',
+        `Session events must not use the "${RUNTIME_EVENT_PREFIX}" prefix; use emitRuntimeEvent.`,
+      );
+    }
     const seq = (this.sessionSequences.get(sessionId) ?? 0) + 1;
     this.sessionSequences.set(sessionId, seq);
-    const frame: RuntimeEventFrame = {
+    const frame: RuntimeSessionEventFrame = {
       protocol: RUNTIME_PROTOCOL,
       type: 'event',
       sessionId,
       seq,
+      event,
+      payload,
+    };
+    await this.write(frame);
+    return frame;
+  }
+
+  /**
+   * Emit a runtime-scoped event (`runtime.ready` / `runtime.warning`). These
+   * belong to no session: no sessionId, no seq, and the event name must carry
+   * the `runtime.` prefix.
+   */
+  async emitRuntimeEvent(
+    event: string,
+    payload: JsonValue = {},
+  ): Promise<RuntimeScopedEventFrame> {
+    this.assertEventsFlowing();
+    if (!event.startsWith(RUNTIME_EVENT_PREFIX) || event.length === RUNTIME_EVENT_PREFIX.length) {
+      throw new RuntimeRequestError(
+        'invalid_event',
+        `Runtime events must use the "${RUNTIME_EVENT_PREFIX}" prefix.`,
+      );
+    }
+    const frame: RuntimeScopedEventFrame = {
+      protocol: RUNTIME_PROTOCOL,
+      type: 'event',
       event,
       payload,
     };
@@ -145,14 +227,59 @@ export class RuntimeProtocolServer {
       );
     }
     const requestId = this.shutdownRequestId;
+    // Session hooks only fire on the explicit session.close/delete paths, so
+    // sessions the adapter tears down directly would leak their event bridge.
+    // Detach any survivors here — server-side, because the bridge registry
+    // lives here — before the adapter disposes the engine scope the bridges
+    // subscribed to. Detach is idempotent and best-effort.
+    for (const detach of this.sessionBridges.values()) {
+      await detach().catch(() => undefined);
+    }
+    this.sessionBridges.clear();
     await waitAtMost(this.adapter.close(), closeTimeoutMs);
     this.outputClosed = true;
     this.state = 'stopped';
     await this.enqueue(okResponse(requestId, { shuttingDown: true }));
   }
 
+  private async handleHello(request: RuntimeRequestFrame): Promise<JsonValue> {
+    if (this.state !== 'awaiting-hello') {
+      throw new RuntimeRequestError(
+        'handshake_already_completed',
+        'runtime.hello has already completed.',
+      );
+    }
+    parseHelloParams(request.params);
+    // M1: the handshake boots the real engine. `dataRoot` is the Desktop data
+    // root, not the Kimi home — the engine resolves its home itself
+    // (explicit option → KIMI_CODE_HOME → ~/.kimi-code).
+    try {
+      await this.adapter.start({});
+    } catch (error) {
+      throw new RuntimeRequestError(
+        'engine_start_failed',
+        `Kimi engine failed to start: ${error instanceof Error ? error.message : String(error)}`,
+        false,
+      );
+    }
+    this.state = 'ready';
+    return runtimeInfo(this.router.methods, WIRED_FAMILIES);
+  }
+
   private reject(id: string, error: RuntimeRequestError): Promise<void> {
     return this.write(errorResponse(id, error));
+  }
+
+  /**
+   * Events flow once the handshake completed and keep flowing during the
+   * shutdown drain — in-flight turns still deliver terminal events there,
+   * and hello's own runtime.ready emission can interleave with a
+   * concurrently accepted runtime.shutdown.
+   */
+  private assertEventsFlowing(): void {
+    if (this.state !== 'ready' && this.state !== 'shutting-down') {
+      throw new RuntimeRequestError('runtime_not_ready', 'Runtime handshake is not ready.');
+    }
   }
 
   private write(frame: RuntimeOutputFrame): Promise<void> {

@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { access } from 'node:fs/promises';
+import { access, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const appRoot = join(import.meta.dirname, '..');
@@ -13,7 +14,14 @@ await Promise.all([access(libraryPath), access(mainPath)]).catch(() => {
 const runtime = await import(libraryPath);
 const libraryFrames = [];
 const libraryServer = new runtime.RuntimeProtocolServer({
-  adapter: { isStarted: false, async start() {}, async close() {} },
+  adapter: {
+    isStarted: false,
+    engineContext: undefined,
+    trackLiveSession() {},
+    untrackLiveSession() {},
+    async start() {},
+    async close() {},
+  },
   emitFrame: (frame) => libraryFrames.push(frame),
 });
 await libraryServer.accept(hello('library-hello'));
@@ -21,7 +29,21 @@ await libraryServer.emitSessionEvent('session-a', 'content.delta', {});
 await libraryServer.emitSessionEvent('session-b', 'content.delta', {});
 await libraryServer.emitSessionEvent('session-a', 'turn.completed', {});
 assert(
-  JSON.stringify(libraryFrames.slice(1).map(({ sessionId, seq }) => [sessionId, seq])) ===
+  libraryFrames[0]?.result?.capabilities?.sessions === true &&
+    libraryFrames[0]?.result?.capabilities?.turns === true &&
+    libraryFrames[0]?.result?.capabilities?.config === true &&
+    libraryFrames[0]?.result?.capabilities?.methods?.length === 20,
+  'dist library did not report all three method families wired (20 methods)',
+);
+assert(
+  libraryFrames[1]?.type === 'event' &&
+    libraryFrames[1]?.event === 'runtime.ready' &&
+    libraryFrames[1]?.sessionId === undefined &&
+    libraryFrames[1]?.seq === undefined,
+  'dist library did not emit a runtime-scoped runtime.ready after hello',
+);
+assert(
+  JSON.stringify(libraryFrames.slice(2).map(({ sessionId, seq }) => [sessionId, seq])) ===
     JSON.stringify([
       ['session-a', 1],
       ['session-b', 1],
@@ -30,58 +52,215 @@ assert(
   'dist library did not isolate per-session event sequences',
 );
 
-const child = spawn(process.execPath, [mainPath], { stdio: ['pipe', 'pipe', 'pipe'] });
-let stdout = '';
-let stderr = '';
-child.stdout.setEncoding('utf8');
-child.stderr.setEncoding('utf8');
-child.stdout.on('data', (chunk) => {
-  stdout += chunk;
+// The child boots the real engine on hello; confine it to a throwaway
+// KIMI_CODE_HOME so smoke never touches the user's real ~/.kimi-code. The
+// method chain below is offline-safe: no provider is configured and no turn
+// is started (turn terminal-state timing is a vitest concern, not a
+// deterministic gate).
+const kimiHome = await mkdtemp(join(tmpdir(), 'desktop-runtime-smoke-'));
+const workDir = await mkdtemp(join(tmpdir(), 'desktop-runtime-smoke-work-'));
+const child = spawn(process.execPath, [mainPath], {
+  stdio: ['pipe', 'pipe', 'pipe'],
+  env: { ...process.env, KIMI_CODE_HOME: kimiHome },
 });
+let stderr = '';
+child.stderr.setEncoding('utf8');
 child.stderr.on('data', (chunk) => {
   stderr += chunk;
 });
 
-const requests = [
-  hello('hello-1'),
-  request('info-1', 'runtime.getInfo'),
-  request('unknown-1', 'runtime.unknown'),
-  request('shutdown-1', 'runtime.shutdown'),
-  request('after-shutdown', 'runtime.getInfo'),
-];
-child.stdin.end(`${requests.map((frame) => JSON.stringify(frame)).join('\n')}\n`);
-
-const exitCode = await new Promise((resolve, reject) => {
-  const timeout = setTimeout(() => {
-    child.kill();
-    reject(new Error('Desktop runtime smoke timed out.'));
-  }, 10_000);
-  child.once('error', (error) => {
-    clearTimeout(timeout);
-    reject(error);
-  });
-  child.once('exit', (code) => {
-    clearTimeout(timeout);
-    resolve(code);
-  });
+// Responses are matched by id; event frames are collected on the side.
+const events = [];
+const eventWaiters = [];
+const pending = new Map();
+let buffer = '';
+child.stdout.setEncoding('utf8');
+child.stdout.on('data', (chunk) => {
+  buffer += chunk;
+  let newline = buffer.indexOf('\n');
+  while (newline >= 0) {
+    const line = buffer.slice(0, newline);
+    buffer = buffer.slice(newline + 1);
+    newline = buffer.indexOf('\n');
+    if (line.length === 0) continue;
+    const frame = JSON.parse(line);
+    assert(frame.protocol === 'runtime-v1', 'stdout contains non-protocol output');
+    if (frame.type === 'response') {
+      const entry = pending.get(frame.id);
+      if (entry !== undefined) {
+        pending.delete(frame.id);
+        entry(frame);
+      }
+    } else {
+      events.push(frame);
+      for (let i = eventWaiters.length - 1; i >= 0; i -= 1) {
+        if (eventWaiters[i].predicate(frame)) {
+          eventWaiters.splice(i, 1)[0].resolve(frame);
+        }
+      }
+    }
+  }
 });
 
-assert(exitCode === 0, `runtime exited with ${exitCode}; stderr=${stderr}`);
-const lines = stdout.split('\n').filter((line) => line.length > 0);
-assert(lines.length === 5, `expected five protocol frames, received ${lines.length}`);
-const frames = lines.map((line) => JSON.parse(line));
-assert(frames.every((frame) => frame.protocol === 'runtime-v1'), 'stdout contains non-protocol output');
-assert(frames[0]?.id === 'hello-1' && frames[0]?.ok === true, 'hello failed');
-assert(frames[1]?.id === 'info-1' && frames[1]?.ok === true, 'getInfo failed');
-assert(frames[2]?.error?.code === 'method_not_found', 'unknown method was not rejected');
-assert(
-  frames[3]?.id === 'after-shutdown' &&
-    frames[3]?.error?.code === 'runtime_shutting_down',
-  'request buffered after shutdown was not rejected',
-);
-assert(frames[4]?.id === 'shutdown-1' && frames[4]?.ok === true, 'shutdown was not final');
+function call(id, method, params = {}) {
+  const response = new Promise((resolve) => {
+    pending.set(id, resolve);
+  });
+  child.stdin.write(
+    `${JSON.stringify({ protocol: 'runtime-v1', type: 'request', id, method, params })}\n`,
+  );
+  return response;
+}
 
-process.stdout.write('Desktop runtime smoke passed.\n');
+// Events can land in a later stdout chunk than the triggering response, so
+// awaiting a response is not proof its companion event was already parsed.
+function waitForEvent(predicate) {
+  const found = events.find(predicate);
+  if (found !== undefined) return Promise.resolve(found);
+  return new Promise((resolve) => {
+    eventWaiters.push({ predicate, resolve });
+  });
+}
+
+function assertOk(frame, id) {
+  assert(frame?.id === id && frame?.ok === true, `${frame?.error?.code ?? 'missing'}: ${id} failed`);
+  return frame.result;
+}
+
+try {
+  // Watchdog: kill the child on timeout; the exit handler below then settles
+  // every pending call so the chain fails instead of hanging.
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    child.kill();
+  }, 60_000);
+  const exited = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (code) => {
+      for (const resolvePending of pending.values()) resolvePending(undefined);
+      pending.clear();
+      for (const waiter of eventWaiters.splice(0)) waiter.resolve(undefined);
+      resolve(code);
+    });
+  });
+
+  const helloResult = assertOk(await call('hello-1', 'runtime.hello', helloParams()), 'hello-1');
+  assert(
+    helloResult.capabilities?.sessions === true &&
+      helloResult.capabilities?.turns === true &&
+      helloResult.capabilities?.config === true &&
+      helloResult.capabilities?.methods?.length === 20,
+    'hello did not advertise all three families wired (20 methods)',
+  );
+  const ready = await waitForEvent(
+    (frame) =>
+      frame.event === 'runtime.ready' && frame.sessionId === undefined && frame.seq === undefined,
+  );
+  assert(ready !== undefined, 'runtime.ready was not emitted as a runtime-scoped event');
+
+  const infoResult = assertOk(await call('info-1', 'runtime.getInfo'), 'info-1');
+  assert(
+    infoResult.capabilities?.sessions === true &&
+      infoResult.capabilities?.turns === true &&
+      infoResult.capabilities?.config === true,
+    'getInfo did not report the wired families',
+  );
+
+  const created = assertOk(
+    await call('create-1', 'sessions.create', {
+      sessionId: 'smoke-session-1',
+      cwd: workDir,
+      title: 'Smoke Session',
+    }),
+    'create-1',
+  );
+  assert(created.sessionId === 'smoke-session-1', 'sessions.create returned the wrong session');
+
+  const fetched = assertOk(
+    await call('get-1', 'sessions.get', { sessionId: 'smoke-session-1' }),
+    'get-1',
+  );
+  assert(fetched.sessionId === 'smoke-session-1', 'sessions.get returned the wrong session');
+
+  const listed = assertOk(await call('list-1', 'sessions.list'), 'list-1');
+  assert(
+    listed.sessions?.some((session) => session.sessionId === 'smoke-session-1'),
+    'sessions.list does not contain the created session',
+  );
+
+  const updated = assertOk(
+    await call('update-1', 'sessions.update', { sessionId: 'smoke-session-1', cwd: workDir }),
+    'update-1',
+  );
+  assert(updated.sessionId === 'smoke-session-1', 'sessions.update returned the wrong session');
+
+  assertOk(await call('config-get-1', 'config.get'), 'config-get-1');
+  const configUpdated = assertOk(
+    await call('config-update-1', 'config.update', {
+      domain: 'desktopSmokeProbe',
+      patch: { enabled: true },
+      target: 'memory',
+    }),
+    'config-update-1',
+  );
+  assert(
+    configUpdated.value?.enabled === true,
+    'config.update did not return the refreshed value',
+  );
+  const configReadBack = assertOk(
+    await call('config-get-2', 'config.get', { domain: 'desktopSmokeProbe' }),
+    'config-get-2',
+  );
+  assert(configReadBack?.enabled === true, 'config.get did not read the update back');
+
+  const models = assertOk(await call('models-1', 'models.list'), 'models-1');
+  assert(Array.isArray(models.models), 'models.list did not return a models array');
+  const providers = assertOk(await call('providers-1', 'providers.list'), 'providers-1');
+  assert(Array.isArray(providers.providers), 'providers.list did not return a providers array');
+
+  assertOk(await call('open-1', 'session.open', { sessionId: 'smoke-session-1' }), 'open-1');
+  // Attaching the event bridge emits the initial session.status snapshot.
+  const status = await waitForEvent(
+    (frame) => frame.sessionId === 'smoke-session-1' && frame.event === 'session.status',
+  );
+  assert(status !== undefined, 'session.open did not bridge the initial session.status event');
+
+  const closed = assertOk(
+    await call('close-1', 'session.close', { sessionId: 'smoke-session-1' }),
+    'close-1',
+  );
+  assert(closed.closed === true, 'session.close did not close the session');
+
+  const deleted = assertOk(
+    await call('delete-1', 'sessions.delete', { sessionId: 'smoke-session-1' }),
+    'delete-1',
+  );
+  assert(deleted.deleted === true, 'sessions.delete did not delete the session');
+
+  const unknown = await call('unknown-1', 'runtime.unknown');
+  assert(unknown?.error?.code === 'method_not_found', 'unknown method was not rejected');
+
+  const shutdownResponse = call('shutdown-1', 'runtime.shutdown');
+  const afterShutdown = await call('after-shutdown', 'runtime.getInfo');
+  assert(
+    afterShutdown?.error?.code === 'runtime_shutting_down',
+    'request accepted after shutdown was not rejected',
+  );
+  child.stdin.end();
+  const shutdown = await shutdownResponse;
+  assert(shutdown?.id === 'shutdown-1' && shutdown?.ok === true, 'shutdown was not final');
+
+  const exitCode = await exited;
+  clearTimeout(timeout);
+  assert(!timedOut, 'Desktop runtime smoke timed out.');
+  assert(exitCode === 0, `runtime exited with ${exitCode}; stderr=${stderr}`);
+
+  process.stdout.write('Desktop runtime smoke passed.\n');
+} finally {
+  await rm(kimiHome, { recursive: true, force: true });
+  await rm(workDir, { recursive: true, force: true });
+}
 
 function hello(id) {
   return {
@@ -89,19 +268,19 @@ function hello(id) {
     type: 'request',
     id,
     method: 'runtime.hello',
-    params: {
-      desktopVersion: '1.0.0-smoke',
-      supportedProtocols: ['runtime-v1'],
-      dataRoot: process.cwd(),
-      platform: process.platform,
-      arch: process.arch,
-      locale: 'en-US',
-    },
+    params: helloParams(),
   };
 }
 
-function request(id, method) {
-  return { protocol: 'runtime-v1', type: 'request', id, method, params: {} };
+function helloParams() {
+  return {
+    desktopVersion: '1.0.0-smoke',
+    supportedProtocols: ['runtime-v1'],
+    dataRoot: process.cwd(),
+    platform: process.platform,
+    arch: process.arch,
+    locale: 'en-US',
+  };
 }
 
 function assert(condition, message) {
