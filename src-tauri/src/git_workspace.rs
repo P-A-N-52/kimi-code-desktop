@@ -51,6 +51,7 @@ impl Drop for MutationGuard {
 struct Executables {
     git: PathBuf,
     gh: Option<PathBuf>,
+    gh_error: Option<String>,
 }
 
 fn executable_candidates(name: &str) -> Vec<String> {
@@ -85,9 +86,22 @@ fn resolve_executable(name: &str) -> Result<PathBuf, String> {
 }
 
 fn resolve_executables() -> Result<Executables, String> {
+    let (gh, gh_error) = match resolve_executable("gh") {
+        Ok(path) => (Some(path), None),
+        Err(error) => (None, Some(error)),
+    };
     Ok(Executables {
         git: resolve_executable("git")?,
-        gh: resolve_executable("gh").ok(),
+        gh,
+        gh_error,
+    })
+}
+
+fn resolve_git_executable() -> Result<Executables, String> {
+    Ok(Executables {
+        git: resolve_executable("git")?,
+        gh: None,
+        gh_error: None,
     })
 }
 
@@ -325,7 +339,11 @@ fn github_hostname(url: Option<&str>) -> String {
 
 fn gh_auth_status(executables: &Executables, work_dir: &Path, hostname: &str) -> (bool, String) {
     let Some(gh) = executables.gh.as_ref() else {
-        return (false, "Github CLI未登录".to_string());
+        let detail = executables
+            .gh_error
+            .as_deref()
+            .unwrap_or("gh was not found on PATH");
+        return (false, format!("GitHub CLI未安装: {detail}"));
     };
     let args = vec![
         "auth".to_string(),
@@ -336,7 +354,8 @@ fn gh_auth_status(executables: &Executables, work_dir: &Path, hostname: &str) ->
     ];
     match command_output(gh, &args, work_dir, READ_TIMEOUT, None) {
         Ok(output) if output.status.success() => (true, String::new()),
-        _ => (false, "Github CLI未登录".to_string()),
+        Ok(output) => (false, command_error("GitHub CLI认证检查", &output)),
+        Err(error) => (false, format!("GitHub CLI检查失败: {error}")),
     }
 }
 
@@ -349,10 +368,7 @@ fn require_gh_auth<'a>(
     if !authenticated {
         return Err(message);
     }
-    executables
-        .gh
-        .as_deref()
-        .ok_or_else(|| "Github CLI未登录".to_string())
+    executables.gh.as_deref().ok_or_else(|| message)
 }
 
 fn parse_numstat(output: &Output) -> Result<(Vec<Value>, u64, u64), String> {
@@ -428,23 +444,23 @@ fn parse_porcelain_status(stdout: &[u8]) -> Vec<Value> {
     result
 }
 
-fn default_branch_and_repo(work_dir: &Path, gh: &Path) -> (Option<String>, Option<String>) {
+fn default_branch_and_repo(
+    work_dir: &Path,
+    gh: &Path,
+) -> Result<(Option<String>, Option<String>), String> {
     let args = vec![
         "repo".to_string(),
         "view".to_string(),
         "--json".to_string(),
         "defaultBranchRef,nameWithOwner".to_string(),
     ];
-    let Ok(output) = command_output(gh, &args, work_dir, READ_TIMEOUT, None) else {
-        return (None, None);
-    };
+    let output = command_output(gh, &args, work_dir, READ_TIMEOUT, None)?;
     if !output.status.success() {
-        return (None, None);
+        return Err(command_error("gh repo view", &output));
     }
-    let Ok(value) = serde_json::from_slice::<Value>(&output.stdout) else {
-        return (None, None);
-    };
-    (
+    let value = serde_json::from_slice::<Value>(&output.stdout)
+        .map_err(|error| format!("Failed to parse gh repo view output: {error}"))?;
+    Ok((
         value
             .pointer("/defaultBranchRef/name")
             .and_then(Value::as_str)
@@ -453,7 +469,40 @@ fn default_branch_and_repo(work_dir: &Path, gh: &Path) -> (Option<String>, Optio
             .get("nameWithOwner")
             .and_then(Value::as_str)
             .map(str::to_string),
-    )
+    ))
+}
+
+fn local_default_branch(
+    executables: &Executables,
+    work_dir: &Path,
+    preferred_remote: Option<&String>,
+    local_branches: &[String],
+    current_branch: &str,
+) -> String {
+    let remote_default = preferred_remote.and_then(|remote| {
+        let reference = format!("refs/remotes/{remote}/HEAD");
+        let output = git(
+            executables,
+            work_dir,
+            &["symbolic-ref", "--quiet", "--short", &reference],
+        )
+        .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        text(&output.stdout)
+            .strip_prefix(&format!("{remote}/"))
+            .map(str::to_string)
+    });
+    remote_default
+        .filter(|branch| local_branches.contains(branch))
+        .or_else(|| {
+            local_branches
+                .iter()
+                .find(|branch| *branch == "main" || *branch == "master")
+                .cloned()
+        })
+        .unwrap_or_else(|| current_branch.to_string())
 }
 
 fn upstream_counts(executables: &Executables, work_dir: &Path) -> (u64, u64, Option<String>) {
@@ -499,12 +548,10 @@ fn upstream_counts(executables: &Executables, work_dir: &Path) -> (u64, u64, Opt
 }
 
 pub fn environment(work_dir: &Path, requested_base: Option<&str>) -> Result<Value, String> {
-    let executables = resolve_executables()?;
+    let executables = resolve_git_executable()?;
     if require_git_repo(&executables, work_dir).is_err() {
         return Ok(json!({
             "is_git_repo": false,
-            "gh_authenticated": false,
-            "auth_message": "当前目录不是 Git 仓库",
             "local_branches": [],
             "remote_branches": [],
             "remotes": [],
@@ -512,31 +559,53 @@ pub fn environment(work_dir: &Path, requested_base: Option<&str>) -> Result<Valu
         }));
     }
 
-    let (mut local_branches, remote_branches) = branches(&executables, work_dir)?;
-    let remotes = remotes(&executables, work_dir)?;
+    let (
+        branches_result,
+        remotes_result,
+        current_branch_result,
+        head_sha_result,
+        status_result,
+        upstream_result,
+    ) = std::thread::scope(|scope| {
+        let branches_task = scope.spawn(|| branches(&executables, work_dir));
+        let remotes_task = scope.spawn(|| remotes(&executables, work_dir));
+        let current_branch_task = scope.spawn(|| current_branch(&executables, work_dir));
+        let head_sha_task = scope.spawn(|| current_head(&executables, work_dir));
+        let status_task = scope.spawn(|| status_paths(&executables, work_dir));
+        let upstream_task = scope.spawn(|| upstream_counts(&executables, work_dir));
+        (
+            branches_task.join(),
+            remotes_task.join(),
+            current_branch_task.join(),
+            head_sha_task.join(),
+            status_task.join(),
+            upstream_task.join(),
+        )
+    });
+    let (mut local_branches, remote_branches) =
+        branches_result.map_err(|_| "git branch reader panicked".to_string())??;
+    let remotes = remotes_result.map_err(|_| "git remote reader panicked".to_string())??;
+    let current_branch =
+        current_branch_result.map_err(|_| "git current branch reader panicked".to_string())??;
+    let head_sha = head_sha_result.map_err(|_| "git HEAD reader panicked".to_string())??;
+    let status = status_result.map_err(|_| "git status reader panicked".to_string())??;
+    let (ahead, behind, upstream) =
+        upstream_result.map_err(|_| "git upstream reader panicked".to_string())?;
     let preferred_remote = remotes
         .iter()
         .find(|remote| *remote == "origin")
         .or_else(|| remotes.first());
-    let remote_url = preferred_remote.and_then(|remote| remote_url(&executables, work_dir, remote));
-    let hostname = github_hostname(remote_url.as_deref());
-    let (gh_authenticated, auth_message) = gh_auth_status(&executables, work_dir, &hostname);
-    let (default_branch, repository) = if gh_authenticated {
-        executables
-            .gh
-            .as_deref()
-            .map(|gh| default_branch_and_repo(work_dir, gh))
-            .unwrap_or((None, None))
-    } else {
-        (None, None)
-    };
-    let current_branch = current_branch(&executables, work_dir)?;
-    let head_sha = current_head(&executables, work_dir)?;
     if !current_branch.is_empty() && !local_branches.contains(&current_branch) {
         local_branches.push(current_branch.clone());
     }
-    let fallback_base = default_branch
-        .as_ref()
+    let default_branch = local_default_branch(
+        &executables,
+        work_dir,
+        preferred_remote,
+        &local_branches,
+        &current_branch,
+    );
+    let fallback_base = Some(&default_branch)
         .and_then(|branch| {
             preferred_remote
                 .map(|remote| format!("{remote}/{branch}"))
@@ -559,18 +628,27 @@ pub fn environment(work_dir: &Path, requested_base: Option<&str>) -> Result<Valu
         .filter(|candidate| allowed_refs.contains(*candidate))
         .unwrap_or(&fallback_base)
         .to_string();
-    let diff = if head_sha.is_empty() {
-        git(&executables, work_dir, &["diff", "--cached", "--numstat"])?
-    } else {
-        git(&executables, work_dir, &["diff", "--numstat", &base_ref])?
-    };
+    let (diff_result, untracked_result) = std::thread::scope(|scope| {
+        let diff_task = scope.spawn(|| {
+            if head_sha.is_empty() {
+                git(&executables, work_dir, &["diff", "--cached", "--numstat"])
+            } else {
+                git(&executables, work_dir, &["diff", "--numstat", &base_ref])
+            }
+        });
+        let untracked_task = scope.spawn(|| {
+            git(
+                &executables,
+                work_dir,
+                &["ls-files", "--others", "--exclude-standard"],
+            )
+        });
+        (diff_task.join(), untracked_task.join())
+    });
+    let diff = diff_result.map_err(|_| "git diff reader panicked".to_string())??;
     let (mut changes, mut additions, mut deletions) = parse_numstat(&diff)?;
     let untracked = list_lines(
-        git(
-            &executables,
-            work_dir,
-            &["ls-files", "--others", "--exclude-standard"],
-        )?,
+        untracked_result.map_err(|_| "git untracked reader panicked".to_string())??,
         "git ls-files",
     )?;
     let known = changes
@@ -584,19 +662,12 @@ pub fn environment(work_dir: &Path, requested_base: Option<&str>) -> Result<Valu
                 .push(json!({ "path": path, "additions": 0, "deletions": 0, "status": "added" }));
         }
     }
-    let status = status_paths(&executables, work_dir)?;
-    let (ahead, behind, upstream) = upstream_counts(&executables, work_dir);
     if changes.is_empty() {
         additions = 0;
         deletions = 0;
     }
     Ok(json!({
         "is_git_repo": true,
-        "gh_installed": executables.gh.is_some(),
-        "gh_authenticated": gh_authenticated,
-        "auth_message": auth_message,
-        "hostname": hostname,
-        "repository": repository,
         "work_dir": work_dir.to_string_lossy(),
         "current_branch": current_branch,
         "head_sha": head_sha,
@@ -616,15 +687,57 @@ pub fn environment(work_dir: &Path, requested_base: Option<&str>) -> Result<Valu
     }))
 }
 
+pub fn github_environment(work_dir: &Path) -> Result<Value, String> {
+    let executables = resolve_executables()?;
+    if require_git_repo(&executables, work_dir).is_err() {
+        return Ok(json!({
+            "gh_installed": executables.gh.is_some(),
+            "gh_authenticated": false,
+            "auth_message": "当前目录不是 Git 仓库",
+        }));
+    }
+    let remote_names = remotes(&executables, work_dir)?;
+    let preferred_remote = remote_names
+        .iter()
+        .find(|remote| *remote == "origin")
+        .or_else(|| remote_names.first());
+    let remote_url = preferred_remote.and_then(|remote| remote_url(&executables, work_dir, remote));
+    let hostname = github_hostname(remote_url.as_deref());
+    let (gh_authenticated, mut auth_message) = gh_auth_status(&executables, work_dir, &hostname);
+    let (default_branch, repository) = if gh_authenticated {
+        match executables
+            .gh
+            .as_deref()
+            .ok_or_else(|| "GitHub CLI executable is unavailable".to_string())
+            .and_then(|gh| default_branch_and_repo(work_dir, gh))
+        {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                auth_message = error;
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+    Ok(json!({
+        "gh_installed": executables.gh.is_some(),
+        "gh_authenticated": gh_authenticated,
+        "auth_message": auth_message,
+        "hostname": hostname,
+        "repository": repository,
+        "default_branch": default_branch,
+    }))
+}
+
 fn allowed_refs(executables: &Executables, work_dir: &Path) -> Result<HashSet<String>, String> {
     let (local, remote) = branches(executables, work_dir)?;
     Ok(local.into_iter().chain(remote).collect())
 }
 
 pub fn compare(work_dir: &Path, left: &str, right: &str) -> Result<Value, String> {
-    let executables = resolve_executables()?;
+    let executables = resolve_git_executable()?;
     require_git_repo(&executables, work_dir)?;
-    auth_context(&executables, work_dir)?;
     let allowed = allowed_refs(&executables, work_dir)?;
     if !allowed.contains(left) || !allowed.contains(right) {
         return Err("Branch comparison must use a listed local or remote branch".to_string());
@@ -659,7 +772,7 @@ pub fn compare(work_dir: &Path, left: &str, right: &str) -> Result<Value, String
 }
 
 pub fn file_diff(work_dir: &Path, left: &str, right: &str, path: &str) -> Result<String, String> {
-    let executables = resolve_executables()?;
+    let executables = resolve_git_executable()?;
     require_git_repo(&executables, work_dir)?;
     let allowed = allowed_refs(&executables, work_dir)?;
     if !allowed.contains(left) || !allowed.contains(right) {
@@ -702,7 +815,7 @@ fn check_expected_head(
     Ok(())
 }
 
-fn auth_context(
+fn github_context(
     executables: &Executables,
     work_dir: &Path,
 ) -> Result<(String, Vec<String>), String> {
@@ -716,7 +829,6 @@ fn auth_context(
             .and_then(|remote| remote_url(executables, work_dir, remote))
             .as_deref(),
     );
-    require_gh_auth(executables, work_dir, &hostname)?;
     Ok((hostname, remotes))
 }
 
@@ -727,9 +839,8 @@ pub fn switch_branch(
     confirm_dirty: bool,
 ) -> Result<Value, String> {
     let _guard = MutationGuard::acquire(work_dir)?;
-    let executables = resolve_executables()?;
+    let executables = resolve_git_executable()?;
     require_git_repo(&executables, work_dir)?;
-    auth_context(&executables, work_dir)?;
     check_expected_head(&executables, work_dir, expected_head)?;
     let status = status_paths(&executables, work_dir)?;
     if !status.is_empty() && !confirm_dirty {
@@ -771,9 +882,8 @@ pub fn commit(
     expected_head: &str,
 ) -> Result<Value, String> {
     let _guard = MutationGuard::acquire(work_dir)?;
-    let executables = resolve_executables()?;
+    let executables = resolve_git_executable()?;
     require_git_repo(&executables, work_dir)?;
-    auth_context(&executables, work_dir)?;
     check_expected_head(&executables, work_dir, expected_head)?;
     let message = message.trim();
     if message.is_empty() || message.len() > MAX_COMMIT_MESSAGE {
@@ -821,9 +931,9 @@ pub fn push(
     expected_head: &str,
 ) -> Result<Value, String> {
     let _guard = MutationGuard::acquire(work_dir)?;
-    let executables = resolve_executables()?;
+    let executables = resolve_git_executable()?;
     require_git_repo(&executables, work_dir)?;
-    let (_, allowed_remotes) = auth_context(&executables, work_dir)?;
+    let allowed_remotes = remotes(&executables, work_dir)?;
     check_expected_head(&executables, work_dir, expected_head)?;
     if !allowed_remotes.iter().any(|candidate| candidate == remote) {
         return Err("Push remote is not in the current remote list".to_string());
@@ -870,7 +980,7 @@ pub fn create_pull_request(
     let _guard = MutationGuard::acquire(work_dir)?;
     let executables = resolve_executables()?;
     require_git_repo(&executables, work_dir)?;
-    let (hostname, _) = auth_context(&executables, work_dir)?;
+    let (hostname, _) = github_context(&executables, work_dir)?;
     check_expected_head(&executables, work_dir, expected_head)?;
     let gh = require_gh_auth(&executables, work_dir, &hostname)?;
     let allowed = allowed_refs(&executables, work_dir)?;
@@ -963,5 +1073,57 @@ mod tests {
         assert_eq!(entries[0]["untracked"], true);
         assert_eq!(entries[1]["path"], "new name.txt");
         assert_eq!(entries[1]["original_path"], "old name.txt");
+    }
+
+    #[test]
+    fn reports_missing_gh_without_claiming_auth_failed() {
+        let executables = Executables {
+            git: PathBuf::from("git"),
+            gh: None,
+            gh_error: Some("gh was not found on PATH".to_string()),
+        };
+        let (authenticated, message) = gh_auth_status(&executables, Path::new("."), "github.com");
+        assert!(!authenticated);
+        assert!(message.contains("未安装"));
+        assert!(message.contains("not found on PATH"));
+    }
+
+    #[test]
+    fn reads_a_temporary_git_repository_without_github_enrichment() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let executables = resolve_git_executable().expect("git executable");
+        let run = |args: Vec<String>| {
+            let output = git_owned(&executables, temp.path(), args, READ_TIMEOUT)
+                .expect("git command should launch");
+            assert!(output.status.success(), "{}", text(&output.stderr));
+        };
+        run(vec![
+            "init".to_string(),
+            "-b".to_string(),
+            "main".to_string(),
+        ]);
+        run(vec![
+            "config".to_string(),
+            "user.email".to_string(),
+            "test@example.com".to_string(),
+        ]);
+        run(vec![
+            "config".to_string(),
+            "user.name".to_string(),
+            "Test User".to_string(),
+        ]);
+        std::fs::write(temp.path().join("README.md"), "fixture\n").expect("write fixture");
+        run(vec!["add".to_string(), "README.md".to_string()]);
+        run(vec![
+            "commit".to_string(),
+            "-m".to_string(),
+            "fixture".to_string(),
+        ]);
+
+        let value = environment(temp.path(), None).expect("local Git environment");
+        assert_eq!(value["is_git_repo"], true);
+        assert_eq!(value["current_branch"], "main");
+        assert_eq!(value["default_branch"], "main");
+        assert!(value.get("gh_authenticated").is_none());
     }
 }

@@ -12,7 +12,7 @@ vi.mock("@/hooks/useSessionPlans", () => ({ useSessionPlans: plansHook }));
 vi.mock("@/lib/agent-monitor/store", () => ({ useAgentMonitorStore: () => 0 }));
 vi.mock("@/lib/tool-events/store", () => ({
   useToolEventsStore: (selector: (state: object) => unknown) =>
-    selector({ todoItems: [], currentGoal: null }),
+    selector({ sessions: {} }),
 }));
 vi.mock("./files-tab", () => ({ FilesTab: () => <div>Files detail</div> }));
 vi.mock("./agents-tab", () => ({ AgentsTab: () => <div>Agents detail</div> }));
@@ -20,9 +20,6 @@ vi.mock("./tasks-tab", () => ({ TasksTab: () => <div>Tasks detail</div> }));
 
 const environment: GitEnvironment = {
   isGitRepo: true,
-  ghInstalled: true,
-  ghAuthenticated: false,
-  authMessage: "Github CLI未登录",
   workDir: "C:\\repo",
   currentBranch: "topic",
   headSha: "abc",
@@ -64,6 +61,15 @@ describe("ContextSidebar", () => {
   beforeEach(() => {
     gitHook.mockReturnValue({
       environment,
+      githubEnvironment: {
+        ghInstalled: true,
+        ghAuthenticated: false,
+        authMessage: "GitHub CLI认证检查 failed",
+      },
+      gitLoading: false,
+      githubLoading: false,
+      gitError: null,
+      githubError: null,
       loading: false,
       error: null,
       refresh: vi.fn(),
@@ -86,15 +92,18 @@ describe("ContextSidebar", () => {
     });
   });
 
-  it("locks every Git control when GitHub CLI is not authenticated", () => {
+  it("keeps local Git controls enabled when GitHub CLI is not authenticated", () => {
     renderSidebar();
 
-    expect(screen.getByText("Github CLI未登录")).toBeTruthy();
-    expect(screen.getByRole<HTMLButtonElement>("button", { name: "变更" }).disabled).toBe(true);
+    expect(screen.getByText("GitHub CLI认证检查 failed")).toBeTruthy();
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "变更" }).disabled).toBe(false);
     expect(screen.getByRole<HTMLSelectElement>("combobox", { name: "切换分支" }).disabled).toBe(
-      true,
+      false,
     );
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "提交或推送" }).disabled).toBe(
+      false,
+    );
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "创建拉取请求" }).disabled).toBe(
       true,
     );
     expect(screen.getByText("修复 PR")).toBeTruthy();
@@ -103,7 +112,7 @@ describe("ContextSidebar", () => {
   it("returns to the home page when the session changes", async () => {
     gitHook.mockReturnValue({
       ...gitHook(),
-      environment: { ...environment, ghAuthenticated: true },
+      githubEnvironment: { ghInstalled: true, ghAuthenticated: true, authMessage: "" },
     });
     const user = userEvent.setup();
     const view = renderSidebar();
@@ -145,7 +154,6 @@ describe("ContextSidebar", () => {
     const getFileDiff = vi.fn().mockResolvedValue("@@ -1 +1 @@");
     gitHook.mockReturnValue({
       ...gitHook(),
-      environment: { ...environment, ghAuthenticated: true },
       compare,
       getFileDiff,
     });
@@ -165,7 +173,6 @@ describe("ContextSidebar", () => {
     const commit = vi.fn().mockResolvedValue({ success: true });
     gitHook.mockReturnValue({
       ...gitHook(),
-      environment: { ...environment, ghAuthenticated: true },
       commit,
     });
     vi.spyOn(window, "confirm").mockReturnValue(true);

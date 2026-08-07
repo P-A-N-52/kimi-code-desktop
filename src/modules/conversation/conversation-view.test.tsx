@@ -331,7 +331,7 @@ describe("ConversationView Goal start confirmation", () => {
     tauriApi.isTauri.mockReturnValue(false);
     tauriApi.getSessionGoalQueue.mockResolvedValue({ goals: [] });
     tauriApi.appendSessionGoalQueue.mockResolvedValue({ goals: [] });
-    useToolEventsStore.getState().clearCurrentGoal();
+    useToolEventsStore.setState({ sessions: {} });
   });
 
   it("restores the draft and consumes the one-shot switch when start is declined", async () => {
@@ -391,7 +391,7 @@ describe("ConversationView Goal start confirmation", () => {
   });
 
   it("pauses a running Goal before sending a confirmed replacement", async () => {
-    useToolEventsStore.getState().setCurrentGoal({
+    useToolEventsStore.getState().setCurrentGoal("goal-replace-running", {
       goalId: "active-replace",
       objective: "Old objective",
       status: "active",
@@ -493,11 +493,11 @@ describe("ConversationView upcoming Goal queue", () => {
     tauriApi.isTauri.mockReturnValue(true);
     tauriApi.getSessionGoalQueue.mockResolvedValue({ goals: [] });
     tauriApi.appendSessionGoalQueue.mockResolvedValue({ goals: [upcomingGoal] });
-    useToolEventsStore.getState().clearCurrentGoal();
+    useToolEventsStore.setState({ sessions: {} });
   });
 
   it("persists /goal next beside an active Goal instead of using the Composer queue", async () => {
-    useToolEventsStore.getState().setCurrentGoal({
+    useToolEventsStore.getState().setCurrentGoal("goal-queue-active", {
       goalId: "active-1",
       objective: "Ship the desktop",
       status: "active",

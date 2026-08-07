@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useToolEventsStore } from "@/lib/tool-events/store";
+import { getToolEventsSnapshot, useToolEventsStore } from "@/lib/tool-events/store";
 import { SessionStreamOrchestratorProvider } from "@/lib/session-stream/provider";
 import { mergeSlashCommandsByName, useSessionStream } from "./useSessionStream";
 
@@ -124,7 +124,7 @@ describe("useSessionStream Tauri watchdog", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		window.localStorage.clear();
-    useToolEventsStore.getState().clearCurrentGoal();
+    useToolEventsStore.setState({ sessions: {} });
 		mocks.isTauri.mockReturnValue(true);
 		mocks.onWireMessage.mockImplementation(
 			(_sessionId: string, handler: (message: string) => void) => {
@@ -391,7 +391,7 @@ describe("useSessionStream Tauri watchdog", () => {
     await flushPromises();
 
     expect(mocks.getSessionGoalSnapshot).toHaveBeenCalledTimes(2);
-    expect(useToolEventsStore.getState().currentGoal).toBeNull();
+    expect(getToolEventsSnapshot("session-1").currentGoal).toBeNull();
 
     await act(async () => {
       resolveStaleActive?.({
@@ -404,7 +404,7 @@ describe("useSessionStream Tauri watchdog", () => {
       await flushPromises();
     });
 
-    expect(useToolEventsStore.getState().currentGoal).toBeNull();
+    expect(getToolEventsSnapshot("session-1").currentGoal).toBeNull();
   });
   it("keeps cancel authoritative over an older in-flight Goal refresh", async () => {
     const { result } = renderHook(() =>
@@ -444,7 +444,7 @@ describe("useSessionStream Tauri watchdog", () => {
     await act(async () => {
       await result.current.sendMessage("/goal cancel");
     });
-    expect(useToolEventsStore.getState().currentGoal).toBeNull();
+    expect(getToolEventsSnapshot("session-1").currentGoal).toBeNull();
 
     await act(async () => {
       resolveStaleActive?.({
@@ -457,7 +457,7 @@ describe("useSessionStream Tauri watchdog", () => {
       await flushPromises();
     });
 
-    expect(useToolEventsStore.getState().currentGoal).toBeNull();
+    expect(getToolEventsSnapshot("session-1").currentGoal).toBeNull();
   });
   it("does not let a stale status acknowledgement flicker the Goal switch off", async () => {
     const { result } = renderHook(() =>
@@ -2546,7 +2546,7 @@ describe("useSessionStream session config options", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		window.localStorage.clear();
-		useToolEventsStore.getState().clearCurrentGoal();
+		useToolEventsStore.setState({ sessions: {} });
 		mocks.isTauri.mockReturnValue(true);
 		mocks.onWireMessage.mockImplementation(
 			(_sessionId: string, handler: (message: string) => void) => {
@@ -2762,7 +2762,7 @@ describe("G5 Phase 0 baseline: single-stream session switch", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		window.localStorage.clear();
-		useToolEventsStore.getState().clearCurrentGoal();
+		useToolEventsStore.setState({ sessions: {} });
 		mocks.isTauri.mockReturnValue(true);
 		mocks.onWireMessage.mockImplementation(
 			(_sessionId: string, handler: (message: string) => void) => {
@@ -2899,7 +2899,7 @@ describe("G5 multi-active-session mode (flag on)", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		window.localStorage.clear();
-		useToolEventsStore.getState().clearCurrentGoal();
+		useToolEventsStore.setState({ sessions: {} });
 		mocks.isTauri.mockReturnValue(true);
 		mocks.isMultiActiveSessionsEnabled.mockReturnValue(true);
 		mocks.listenEvent.mockImplementation(

@@ -19,8 +19,8 @@ pub mod runtime_backend;
 pub mod runtime_check;
 pub mod security;
 pub mod session_files;
-pub mod session_plans;
 pub mod session_influence;
+pub mod session_plans;
 pub mod session_store;
 pub mod skills;
 pub mod swarm_progress;
@@ -109,6 +109,7 @@ pub fn run() {
             commands::update_global_config,
             commands::get_git_diff_stats,
             commands::get_git_environment,
+            commands::get_github_environment,
             commands::compare_git_branches,
             commands::get_git_comparison_file_diff,
             commands::switch_git_branch,

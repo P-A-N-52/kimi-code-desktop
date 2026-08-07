@@ -16,8 +16,8 @@ use crate::security::{
     validate_mcp_config_json,
 };
 use crate::session_files;
-use crate::session_plans;
 use crate::session_influence;
+use crate::session_plans;
 use crate::session_store;
 use crate::skills;
 use crate::wire_events::{RestartWorkersSummary, RuntimeStatus, WorkerStatusView};
@@ -919,6 +919,18 @@ pub async fn get_git_environment(
     })
     .await
     .map_err(|error| format!("Failed to join Git environment lookup: {error}"))?
+}
+
+#[tauri::command]
+pub async fn get_github_environment(
+    app: tauri::AppHandle,
+    acp_desktop: tauri::State<'_, AcpDesktopClient>,
+    session_id: String,
+) -> Result<Value, String> {
+    let work_dir = session_git_work_dir(&app, &acp_desktop, &session_id).await?;
+    tauri::async_runtime::spawn_blocking(move || git_workspace::github_environment(&work_dir))
+        .await
+        .map_err(|error| format!("Failed to join GitHub environment lookup: {error}"))?
 }
 
 #[tauri::command]

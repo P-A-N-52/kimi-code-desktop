@@ -14,11 +14,6 @@ export type GitStatusEntry = {
 
 export type GitEnvironment = {
   isGitRepo: boolean;
-  ghInstalled: boolean;
-  ghAuthenticated: boolean;
-  authMessage: string;
-  hostname?: string;
-  repository?: string;
   workDir?: string;
   currentBranch: string;
   headSha: string;
@@ -35,6 +30,15 @@ export type GitEnvironment = {
   changes: GitChange[];
   totalAdditions: number;
   totalDeletions: number;
+};
+
+export type GitHubEnvironment = {
+  ghInstalled: boolean;
+  ghAuthenticated: boolean;
+  authMessage: string;
+  hostname?: string;
+  repository?: string;
+  defaultBranch?: string;
 };
 
 export type GitComparison = {
@@ -79,11 +83,6 @@ export function normalizeGitEnvironment(raw: Record<string, unknown>): GitEnviro
     typeof value === "string" && value ? value : undefined;
   return {
     isGitRepo: Boolean(raw.is_git_repo),
-    ghInstalled: Boolean(raw.gh_installed),
-    ghAuthenticated: Boolean(raw.gh_authenticated),
-    authMessage: String(raw.auth_message ?? ""),
-    hostname: optionalString(raw.hostname),
-    repository: optionalString(raw.repository),
     workDir: optionalString(raw.work_dir),
     currentBranch: String(raw.current_branch ?? ""),
     headSha: String(raw.head_sha ?? ""),
@@ -112,6 +111,19 @@ export function normalizeGitEnvironment(raw: Record<string, unknown>): GitEnviro
       : [],
     totalAdditions: Number(raw.total_additions ?? 0),
     totalDeletions: Number(raw.total_deletions ?? 0),
+  };
+}
+
+export function normalizeGitHubEnvironment(raw: Record<string, unknown>): GitHubEnvironment {
+  const optionalString = (value: unknown) =>
+    typeof value === "string" && value ? value : undefined;
+  return {
+    ghInstalled: Boolean(raw.gh_installed),
+    ghAuthenticated: Boolean(raw.gh_authenticated),
+    authMessage: String(raw.auth_message ?? ""),
+    hostname: optionalString(raw.hostname),
+    repository: optionalString(raw.repository),
+    defaultBranch: optionalString(raw.default_branch),
   };
 }
 

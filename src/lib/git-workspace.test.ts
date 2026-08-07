@@ -3,14 +3,13 @@ import {
   normalizeGitAction,
   normalizeGitComparison,
   normalizeGitEnvironment,
+  normalizeGitHubEnvironment,
 } from "./git-workspace";
 
 describe("git workspace normalizers", () => {
   it("normalizes backend snake_case without trusting missing values", () => {
     const environment = normalizeGitEnvironment({
       is_git_repo: true,
-      gh_authenticated: false,
-      auth_message: "Github CLI未登录",
       current_branch: "feature/sidebar",
       head_sha: "abc123",
       local_branches: ["main", "feature/sidebar"],
@@ -20,12 +19,26 @@ describe("git workspace normalizers", () => {
 
     expect(environment).toMatchObject({
       isGitRepo: true,
-      ghAuthenticated: false,
-      authMessage: "Github CLI未登录",
       currentBranch: "feature/sidebar",
       dirty: false,
     });
     expect(environment.status[0]).toMatchObject({ path: "-odd name.txt", untracked: true });
+
+    expect(
+      normalizeGitHubEnvironment({
+        gh_installed: true,
+        gh_authenticated: false,
+        auth_message: "GitHub CLI认证检查 failed",
+        hostname: "github.com",
+      }),
+    ).toEqual({
+      ghInstalled: true,
+      ghAuthenticated: false,
+      authMessage: "GitHub CLI认证检查 failed",
+      hostname: "github.com",
+      repository: undefined,
+      defaultBranch: undefined,
+    });
   });
 
   it("normalizes comparisons and mutation results", () => {

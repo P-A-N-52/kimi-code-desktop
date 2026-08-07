@@ -160,7 +160,12 @@ import {
   wireSend,
   wireStatus,
 } from "@/lib/tauri-api";
-import { handleToolResult, type TodoItem, useToolEventsStore } from "@/lib/tool-events/store";
+import {
+  getToolEventsSnapshot,
+  handleToolResult,
+  type TodoItem,
+  useToolEventsStore,
+} from "@/lib/tool-events/store";
 import { isBackgroundOrCronObservationTool } from "@/lib/tool-events/tool-registry";
 import { resolveKimiCliVersion } from "@/lib/version";
 import { formatMentionToken } from "@/modules/composer/file-mentions";
@@ -1515,11 +1520,11 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
   type ParsedUserInput = { text: string; attachments: MessageAttachmentPart[] };
 
   const parseMediaTypeFromDataUrl = (url: string): string | null => {
-    if (!url.startsWith("data:")) {
-      return null;
+    if (url.startsWith("data:")) {
+      const match = DATA_URL_MEDIA_TYPE_REGEX.exec(url);
+      return match?.[1] ?? null;
     }
-    const match = DATA_URL_MEDIA_TYPE_REGEX.exec(url);
-    return match?.[1] ?? null;
+    return /^blobref:([^;]+);/i.exec(url)?.[1] ?? null;
   };
 
   const getSessionUploadUrl = (filename?: string): string | undefined => {
@@ -1568,6 +1573,16 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
     let documentFilename: string | undefined;
     let documentMediaType: string | undefined;
     let documentContent: string[] = [];
+
+    const inlineMediaUrl = (
+      data: unknown,
+      mediaType: string | undefined,
+      fallbackMediaType: string,
+    ): string | undefined => {
+      if (typeof data !== "string" || !data) return undefined;
+      if (data.startsWith("data:")) return data;
+      return `data:${mediaType ?? fallbackMediaType};base64,${data}`;
+    };
 
     for (const part of input) {
       if (part.type === "text" || part.type === "input_text") {
@@ -1701,25 +1716,82 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
       }
 
       if (part.type === "image_url") {
-        const inferredMediaType = parseMediaTypeFromDataUrl(part.image_url.url);
-        attachments.push({
-          type: "file",
-          mediaType: pendingMediaType ?? inferredMediaType ?? "image/*",
-          filename: pendingFilename,
-          url: part.image_url.url,
-        });
+        const url = part.image_url?.url ?? part.imageUrl?.url;
+        if (url) {
+          const inferredMediaType = parseMediaTypeFromDataUrl(url);
+          attachments.push({
+            type: "file",
+            mediaType: pendingMediaType ?? inferredMediaType ?? "image/*",
+            filename: pendingFilename,
+            url,
+          });
+        }
+        pendingFilename = undefined;
+        pendingMediaType = undefined;
+      }
+
+      if (part.type === "image" || part.type === "input_image") {
+        const mediaType = part.mimeType ?? part.mime_type ?? pendingMediaType ?? "image/*";
+        const url =
+          part.image_url ??
+          part.url ??
+          inlineMediaUrl(part.data, mediaType, "image/*");
+        if (url) {
+          attachments.push({
+            type: "file",
+            mediaType,
+            filename: part.alt ?? pendingFilename,
+            url,
+          });
+        }
+        pendingFilename = undefined;
+        pendingMediaType = undefined;
+      }
+
+      if (part.type === "audio_url") {
+        const url = part.audio_url?.url ?? part.audioUrl?.url;
+        if (url) {
+          const inferredMediaType = parseMediaTypeFromDataUrl(url);
+          attachments.push({
+            type: "file",
+            mediaType: pendingMediaType ?? inferredMediaType ?? "audio/*",
+            filename: pendingFilename,
+            url,
+          });
+        }
+        pendingFilename = undefined;
+        pendingMediaType = undefined;
+      }
+
+      if (part.type === "audio" || part.type === "input_audio") {
+        const mediaType = part.mimeType ?? part.mime_type ?? pendingMediaType ?? "audio/*";
+        const url =
+          part.audio_url ??
+          part.url ??
+          inlineMediaUrl(part.data, mediaType, "audio/*");
+        if (url) {
+          attachments.push({
+            type: "file",
+            mediaType,
+            filename: part.alt ?? pendingFilename,
+            url,
+          });
+        }
         pendingFilename = undefined;
         pendingMediaType = undefined;
       }
 
       if (part.type === "video_url") {
-        const inferredMediaType = parseMediaTypeFromDataUrl(part.video_url.url);
-        attachments.push({
-          type: "file",
-          mediaType: pendingMediaType ?? inferredMediaType ?? "video/*",
-          filename: pendingFilename,
-          url: part.video_url.url,
-        });
+        const url = part.video_url?.url ?? part.videoUrl?.url;
+        if (url) {
+          const inferredMediaType = parseMediaTypeFromDataUrl(url);
+          attachments.push({
+            type: "file",
+            mediaType: pendingMediaType ?? inferredMediaType ?? "video/*",
+            filename: pendingFilename,
+            url,
+          });
+        }
         pendingFilename = undefined;
         pendingMediaType = undefined;
       }
@@ -2435,7 +2507,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
       requestSeq === goalSnapshotRequestSeqRef.current &&
       targetSessionId === activeSessionIdRef.current
     ) {
-      useToolEventsStore.getState().setCurrentGoal(snapshot);
+      useToolEventsStore.getState().setCurrentGoal(targetSessionId, snapshot);
     }
     return snapshot;
   };
@@ -2886,7 +2958,9 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
 
         // Handle tool-specific events (e.g., WriteFile → new files notification)
         if (tc && !toolStillInProgress) {
-          handleToolResult(tc.name, tc.arguments, return_value.is_error, isReplay);
+          if (sessionId) {
+            handleToolResult(sessionId, tc.name, tc.arguments, return_value.is_error, isReplay);
+          }
         }
 
         const resolvedToolName =
@@ -2957,9 +3031,14 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
         if (!isReplay && Array.isArray(return_value.display)) {
           const todoBlock = return_value.display.find((d: { type: string }) => d.type === "todo");
           if (todoBlock) {
-            useToolEventsStore
-              .getState()
-              .setTodoItems((todoBlock as unknown as { type: string; items: TodoItem[] }).items);
+            if (sessionId) {
+              useToolEventsStore
+                .getState()
+                .setTodoItems(
+                  sessionId,
+                  (todoBlock as unknown as { type: string; items: TodoItem[] }).items,
+                );
+            }
           }
         }
         break;
@@ -4019,7 +4098,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
       pendingMessageRef.current = null;
       promptRequestIdsRef.current.delete(messageId);
       optimisticUserMessagesRef.current.shift();
-      if (pendingMessage.goalSwitchWasArmed && useToolEventsStore.getState().currentGoal === null) {
+      if (pendingMessage.goalSwitchWasArmed && getToolEventsSnapshot(sessionId ?? "").currentGoal === null) {
         rearmFailedGoalStart();
       }
       const error = err instanceof Error ? err : new Error(String(err));
@@ -4838,7 +4917,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
         pendingMessageRef.current = null;
         if (
           failedPendingMessage?.goalSwitchWasArmed &&
-          useToolEventsStore.getState().currentGoal === null
+          getToolEventsSnapshot(sessionId ?? "").currentGoal === null
         ) {
           rearmFailedGoalStart();
         }
@@ -5615,7 +5694,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
           const snapshot = await controlSessionGoal(sessionId, goalCommand.kind);
           goalSnapshotRequestSeqRef.current += 1;
           if (activeSessionIdRef.current === sessionId) {
-            useToolEventsStore.getState().setCurrentGoal(snapshot);
+            useToolEventsStore.getState().setCurrentGoal(sessionId, snapshot);
           }
           if (goalCommand.kind !== "resume") {
             return {
@@ -5731,7 +5810,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
       !goalAction &&
       !compactSlash &&
       goalModeRef.current &&
-      useToolEventsStore.getState().currentGoal === null
+      getToolEventsSnapshot(sessionId ?? "").currentGoal === null
     ) {
       goalAction = "create";
     }
@@ -5879,7 +5958,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
           } else {
             optimisticUserMessagesRef.current.shift();
           }
-          if (goalSwitchWasArmed && useToolEventsStore.getState().currentGoal === null) {
+          if (goalSwitchWasArmed && getToolEventsSnapshot(sessionId ?? "").currentGoal === null) {
             rearmFailedGoalStart();
           }
           const error = err instanceof Error ? err : new Error(String(err));
@@ -5900,7 +5979,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
       } else {
         optimisticUserMessagesRef.current.shift();
       }
-      if (goalSwitchWasArmed && useToolEventsStore.getState().currentGoal === null) {
+      if (goalSwitchWasArmed && getToolEventsSnapshot(sessionId ?? "").currentGoal === null) {
         rearmFailedGoalStart();
       }
       const error = err instanceof Error ? err : new Error(String(err));
@@ -5949,14 +6028,14 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
     setGoalMode(false);
     goalModeRef.current = false;
     setMessages([]);
-    resetBackgroundTaskNotifications();
-    useToolEventsStore.getState().clearNewFiles();
-    useToolEventsStore.getState().clearTodoItems();
-    useToolEventsStore.getState().clearCurrentGoal();
-    syncRefsFromState();
-
     // Capture the target session id for this start run.
     const targetSessionId = sessionId;
+    resetBackgroundTaskNotifications();
+    if (targetSessionId) {
+      useToolEventsStore.getState().clearSession(targetSessionId);
+    }
+    syncRefsFromState();
+
     const isCurrent = () => generation === startGeneration;
 
     const startSession = async () => {
@@ -6134,9 +6213,9 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
     goalModeRef.current = false;
     setMessages([]);
     resetBackgroundTaskNotifications();
-    useToolEventsStore.getState().clearNewFiles();
-    useToolEventsStore.getState().clearTodoItems();
-    useToolEventsStore.getState().clearCurrentGoal();
+    if (sessionId) {
+      useToolEventsStore.getState().clearSession(sessionId);
+    }
     syncRefsFromState();
   };
 

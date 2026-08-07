@@ -12,6 +12,7 @@ export type SessionSource = {
 
 function attachmentSource(
   part: MessageAttachmentPart,
+  id: string,
   origin: SessionSource["origin"],
   turnIndex?: number,
 ): SessionSource {
@@ -19,7 +20,7 @@ function attachmentSource(
     const label = part.filename || "attachment";
     const url = part.url && isSafeBrowserUrl(part.url) ? part.url : undefined;
     return {
-      id: url || label,
+      id,
       label,
       mediaType: part.mediaType,
       url,
@@ -29,7 +30,7 @@ function attachmentSource(
   }
   const label = part.filename || "attachment";
   return {
-    id: label,
+    id,
     label,
     mediaType: "mediaType" in part ? part.mediaType : "application/octet-stream",
     origin,
@@ -39,19 +40,20 @@ function attachmentSource(
 
 export function deriveSessionSources(messages: LiveMessage[]): SessionSource[] {
   const result: SessionSource[] = [];
-  const seen = new Set<string>();
-  const add = (source: SessionSource) => {
-    if (seen.has(source.id)) return;
-    seen.add(source.id);
-    result.push(source);
-  };
 
   for (const message of messages) {
     const origin = message.role === "user" ? "user-input" : "model-output";
-    for (const part of message.attachments ?? []) {
-      add(attachmentSource(part, origin, message.turnIndex));
+    for (const [index, part] of (message.attachments ?? []).entries()) {
+      result.push(
+        attachmentSource(
+          part,
+          `${message.id}:attachment:${index}`,
+          origin,
+          message.turnIndex,
+        ),
+      );
     }
-    for (const media of message.toolCall?.mediaParts ?? []) {
+    for (const [index, media] of (message.toolCall?.mediaParts ?? []).entries()) {
       if (!isSafeBrowserUrl(media.url)) continue;
       let label =
         media.type === "image_url"
@@ -64,8 +66,8 @@ export function deriveSessionSources(messages: LiveMessage[]): SessionSource[] {
       } catch {
         // Keep the semantic fallback label for data/blob URLs or malformed input.
       }
-      add({
-        id: media.url,
+      result.push({
+        id: `${message.id}:tool-media:${index}`,
         label,
         mediaType:
           media.type === "image_url"

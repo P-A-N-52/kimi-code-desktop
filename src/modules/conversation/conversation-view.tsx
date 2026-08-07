@@ -143,7 +143,9 @@ export function ConversationView({
   );
   const sessionConfig = stream.sessionConfigState;
   const busy = stream.status === "submitted" || stream.status === "streaming";
-  const currentGoal = useToolEventsStore((state) => state.currentGoal);
+  const currentGoal = useToolEventsStore(
+    (state) => state.sessions[sessionId]?.currentGoal ?? null,
+  );
   const skillCommands = useSkillSlashCommands();
   const slashCommands = useMemo(
     () => mergeSlashCommands(stream.slashCommands, skillCommands),

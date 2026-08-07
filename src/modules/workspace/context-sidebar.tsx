@@ -303,14 +303,20 @@ export function ContextSidebar({
   const agentCount = useAgentMonitorStore(
     (state) => state.tasks.filter((task) => task.sessionId === sessionId).length,
   );
-  const todoCount = useToolEventsStore((state) => state.todoItems.length);
-  const goalCount = useToolEventsStore((state) => (state.currentGoal ? 1 : 0));
+  const todoCount = useToolEventsStore(
+    (state) => state.sessions[sessionId]?.todoItems.length ?? 0,
+  );
+  const goalCount = useToolEventsStore(
+    (state) => (state.sessions[sessionId]?.currentGoal ? 1 : 0),
+  );
   const environment = git.environment;
+  const githubEnvironment = git.githubEnvironment;
   const allRefs = useMemo(
     () => [...(environment?.localBranches ?? []), ...(environment?.remoteBranches ?? [])],
     [environment?.localBranches, environment?.remoteBranches],
   );
-  const gitLocked = !environment?.isGitRepo || !environment.ghAuthenticated;
+  const gitUnavailable = !environment?.isGitRepo;
+  const pullRequestUnavailable = gitUnavailable || !githubEnvironment?.ghAuthenticated;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: session identity must reset transient detail state
   useEffect(() => {
@@ -326,13 +332,14 @@ export function ContextSidebar({
     setBranchTarget(environment.currentBranch);
     setLeftRef(environment.baseRef || allRefs[0] || "");
     setRightRef(environment.currentBranch || allRefs[1] || "");
+    const preferredDefaultBranch = githubEnvironment?.defaultBranch ?? environment.defaultBranch;
     setPrBase(
-      environment.defaultBranch && environment.localBranches.includes(environment.defaultBranch)
-        ? environment.defaultBranch
+      preferredDefaultBranch && environment.localBranches.includes(preferredDefaultBranch)
+        ? preferredDefaultBranch
         : environment.localBranches.find((branch) => branch !== environment.currentBranch) || "",
     );
     setSelectedPaths(new Set(environment.status.map((entry) => entry.path)));
-  }, [allRefs, environment]);
+  }, [allRefs, environment, githubEnvironment?.defaultBranch]);
 
   useEffect(() => {
     if (activeTab !== "changes") setDetail(activeTab);
@@ -437,18 +444,22 @@ export function ContextSidebar({
     setDetail("home");
   };
 
-  if (
+  const blockedGitDetail =
     detail !== "home" &&
-    gitLocked &&
-    (["changes", "compare", "commit", "pr"] as Detail[]).includes(detail)
-  ) {
+    (["changes", "compare", "commit", "pr"] as Detail[]).includes(detail) &&
+    (gitUnavailable || (detail === "pr" && pullRequestUnavailable));
+  if (blockedGitDetail) {
     return (
       <div className="flex h-full min-h-0 flex-col">
         <DetailHeader title="Git" onBack={back} onClose={onClose} />
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
-          <Github size={24} className="text-muted" />
-          <output className="text-[12px] text-danger">Github CLI未登录</output>
-          <p className="text-[10.5px] text-faint">gh auth login</p>
+          {gitUnavailable ? <GitBranch size={24} className="text-muted" /> : <Github size={24} className="text-muted" />}
+          <output className="text-[12px] text-danger">
+            {gitUnavailable
+              ? "当前目录不是 Git 仓库"
+              : githubEnvironment?.authMessage || git.githubError || "GitHub 信息尚未就绪"}
+          </output>
+          {!gitUnavailable ? <p className="text-[10.5px] text-faint">gh auth login</p> : null}
           <Button variant="ghost" disabled={git.loading} onClick={() => void git.refresh()}>
             <RefreshCw size={13} className={cn(git.loading && "animate-spin")} />
             重新检测
@@ -483,7 +494,7 @@ export function ContextSidebar({
                 <select
                   id="base-ref"
                   value={environment?.baseRef || ""}
-                  disabled={gitLocked || git.loading}
+                  disabled={git.gitLoading}
                   onChange={(event) => void git.setBaseRef(event.target.value)}
                   className={cn(fieldClass, "min-w-0 flex-1")}
                 >
@@ -543,7 +554,7 @@ export function ContextSidebar({
               </div>
               <Button
                 className="mt-3 w-full"
-                disabled={git.loading || leftRef === rightRef}
+                disabled={git.gitLoading || leftRef === rightRef}
                 onClick={() => void runCompare()}
               >
                 比较
@@ -621,7 +632,7 @@ export function ContextSidebar({
               />
               <Button
                 className="mt-3 w-full"
-                disabled={git.loading || selectedPaths.size === 0 || !commitMessage.trim()}
+                disabled={git.gitLoading || selectedPaths.size === 0 || !commitMessage.trim()}
                 onClick={() => void runCommit()}
               >
                 提交 {selectedPaths.size} 个文件
@@ -636,7 +647,7 @@ export function ContextSidebar({
                 variant="ghost"
                 className="mt-2 w-full"
                 disabled={
-                  git.loading || !environment?.currentBranch || environment.remotes.length === 0
+                  git.gitLoading || !environment?.currentBranch || environment.remotes.length === 0
                 }
                 onClick={() => void runPush()}
               >
@@ -691,7 +702,9 @@ export function ContextSidebar({
               <Button
                 className="w-full"
                 disabled={
-                  git.loading ||
+                  git.gitLoading ||
+                  git.githubLoading ||
+                  !githubEnvironment?.ghAuthenticated ||
                   !prBase ||
                   !prTitle.trim() ||
                   !environment?.upstream ||
@@ -756,14 +769,19 @@ export function ContextSidebar({
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
         <section aria-labelledby="environment-heading">
           <SectionTitle id="environment-heading">环境信息</SectionTitle>
-          {!environment && git.loading ? (
+          {!environment && git.gitLoading ? (
             <div className="flex h-24 items-center justify-center">
               <LoaderCircle size={18} className="animate-spin text-muted" />
             </div>
           ) : null}
-          {git.error ? (
+          {git.gitError ? (
             <p className="mb-2 rounded-r1 bg-danger-bg p-2 text-[10.5px] text-danger">
-              {git.error}
+              {git.gitError}
+            </p>
+          ) : null}
+          {git.githubError ? (
+            <p className="mb-2 rounded-r1 bg-danger-bg p-2 text-[10.5px] text-danger">
+              {git.githubError}
             </p>
           ) : null}
           {environment && !environment.isGitRepo ? (
@@ -772,17 +790,13 @@ export function ContextSidebar({
             </p>
           ) : null}
           {environment?.isGitRepo ? (
-            <fieldset
-              disabled={gitLocked}
-              aria-describedby={gitLocked ? "github-lock-message" : undefined}
-              className="space-y-0.5 disabled:opacity-60"
-            >
-              {gitLocked ? (
+            <fieldset className="space-y-0.5">
+              {githubEnvironment?.authMessage && !git.githubLoading ? (
                 <output
                   id="github-lock-message"
-                  className="mb-2 block rounded-r2 border border-danger/30 bg-danger-bg px-3 py-2 text-[11px] text-danger"
+                  className="mb-2 block rounded-r2 border border-line bg-secondary px-3 py-2 text-[11px] text-muted"
                 >
-                  Github CLI未登录
+                  {githubEnvironment.authMessage}
                 </output>
               ) : null}
               <NavigationRow
@@ -794,20 +808,19 @@ export function ContextSidebar({
                     <span className="text-danger">−{environment.totalDeletions}</span>
                   </>
                 }
-                disabled={gitLocked}
                 onClick={() => showWorkspace("changes")}
               />
               <NavigationRow
                 icon={<Monitor size={16} />}
                 label="本地"
-                value={environment.repository || workDir?.split(/[\\/]/).pop() || "工作区"}
+                value={githubEnvironment?.repository || workDir?.split(/[\\/]/).pop() || "工作区"}
               />
               <div className="flex items-center gap-2 rounded-r2 px-2.5 py-1.5">
                 <GitBranch size={16} className="ml-0.5 shrink-0 text-muted" />
                 <select
                   aria-label="切换分支"
                   value={branchTarget}
-                  disabled={gitLocked || git.loading}
+                  disabled={git.gitLoading}
                   onChange={(event) => setBranchTarget(event.target.value)}
                   className={cn(fieldClass, "min-w-0 flex-1 border-0 bg-transparent")}
                 >
@@ -824,7 +837,7 @@ export function ContextSidebar({
                 </select>
                 <Button
                   variant="ghost"
-                  disabled={gitLocked || git.loading || branchTarget === environment.currentBranch}
+                  disabled={git.gitLoading || branchTarget === environment.currentBranch}
                   onClick={() => void runBranchSwitch()}
                 >
                   切换
@@ -834,19 +847,17 @@ export function ContextSidebar({
                 icon={<GitCommitHorizontal size={16} />}
                 label="提交或推送"
                 value={environment.ahead ? `${environment.ahead} 待推送` : undefined}
-                disabled={gitLocked}
                 onClick={() => setDetail("commit")}
               />
               <NavigationRow
                 icon={<Github size={16} />}
                 label="创建拉取请求"
-                disabled={gitLocked}
+                disabled={pullRequestUnavailable || git.githubLoading}
                 onClick={() => setDetail("pr")}
               />
               <NavigationRow
                 icon={<ArrowRightLeft size={16} />}
                 label="比较分支"
-                disabled={gitLocked}
                 onClick={() => setDetail("compare")}
               />
             </fieldset>

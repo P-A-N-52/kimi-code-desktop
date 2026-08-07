@@ -10,41 +10,86 @@ export type TodoItem = {
 export type { GoalItem } from "@/lib/goal";
 
 type ToolEventsState = {
-  /** Files written during the current session/turn */
-  newFiles: string[];
-
-  /** Add a file path when WriteFile completes successfully */
-  addNewFile: (path: string) => void;
-  /** Clear all new files (e.g., when opening files panel or starting new turn) */
-  clearNewFiles: () => void;
-
-  /** Current todo list from SetTodoList tool */
-  todoItems: TodoItem[];
-  setTodoItems: (items: TodoItem[]) => void;
-  clearTodoItems: () => void;
-
-  /** Current goal managed by CreateGoal/UpdateGoal */
-  currentGoal: GoalItem | null;
-  setCurrentGoal: (goal: GoalItem | null) => void;
-  clearCurrentGoal: () => void;
+  sessions: Record<string, ToolEventsSnapshot>;
+  addNewFile: (sessionId: string, path: string) => void;
+  clearNewFiles: (sessionId: string) => void;
+  setTodoItems: (sessionId: string, items: TodoItem[]) => void;
+  clearTodoItems: (sessionId: string) => void;
+  setCurrentGoal: (sessionId: string, goal: GoalItem | null) => void;
+  clearCurrentGoal: (sessionId: string) => void;
+  clearSession: (sessionId: string) => void;
 };
 
-export const useToolEventsStore = create<ToolEventsState>((set) => ({
+export type ToolEventsSnapshot = {
+  newFiles: string[];
+  todoItems: TodoItem[];
+  currentGoal: GoalItem | null;
+};
+
+export const EMPTY_TOOL_EVENTS: ToolEventsSnapshot = Object.freeze({
   newFiles: [],
-  addNewFile: (path) =>
-    set((state) => ({
-      newFiles: [...state.newFiles, path],
-    })),
-  clearNewFiles: () => set({ newFiles: [] }),
-
   todoItems: [],
-  setTodoItems: (items) => set({ todoItems: items }),
-  clearTodoItems: () => set({ todoItems: [] }),
-
   currentGoal: null,
-  setCurrentGoal: (goal) => set({ currentGoal: goal }),
-  clearCurrentGoal: () => set({ currentGoal: null }),
+});
+
+function sessionSnapshot(state: ToolEventsState, sessionId: string): ToolEventsSnapshot {
+  return state.sessions[sessionId] ?? EMPTY_TOOL_EVENTS;
+}
+
+function updateSession(
+  state: ToolEventsState,
+  sessionId: string,
+  update: (current: ToolEventsSnapshot) => ToolEventsSnapshot,
+): Pick<ToolEventsState, "sessions"> {
+  return {
+    sessions: {
+      ...state.sessions,
+      [sessionId]: update(sessionSnapshot(state, sessionId)),
+    },
+  };
+}
+
+export const useToolEventsStore = create<ToolEventsState>((set) => ({
+  sessions: {},
+  addNewFile: (sessionId, path) =>
+    set((state) =>
+      updateSession(state, sessionId, (current) => ({
+        ...current,
+        newFiles: [...current.newFiles, path],
+      })),
+    ),
+  clearNewFiles: (sessionId) =>
+    set((state) =>
+      updateSession(state, sessionId, (current) => ({ ...current, newFiles: [] })),
+    ),
+  setTodoItems: (sessionId, items) =>
+    set((state) =>
+      updateSession(state, sessionId, (current) => ({ ...current, todoItems: items })),
+    ),
+  clearTodoItems: (sessionId) =>
+    set((state) =>
+      updateSession(state, sessionId, (current) => ({ ...current, todoItems: [] })),
+    ),
+  setCurrentGoal: (sessionId, goal) =>
+    set((state) =>
+      updateSession(state, sessionId, (current) => ({ ...current, currentGoal: goal })),
+    ),
+  clearCurrentGoal: (sessionId) =>
+    set((state) =>
+      updateSession(state, sessionId, (current) => ({ ...current, currentGoal: null })),
+    ),
+  clearSession: (sessionId) =>
+    set((state) => {
+      if (!(sessionId in state.sessions)) return state;
+      const sessions = { ...state.sessions };
+      delete sessions[sessionId];
+      return { sessions };
+    }),
 }));
+
+export function getToolEventsSnapshot(sessionId: string): ToolEventsSnapshot {
+  return useToolEventsStore.getState().sessions[sessionId] ?? EMPTY_TOOL_EVENTS;
+}
 
 /**
  * Handle tool result events and update store accordingly.
@@ -53,6 +98,7 @@ export const useToolEventsStore = create<ToolEventsState>((set) => ({
  * @param isReplay - If true, this is a replay of history, skip notifications
  */
 export function handleToolResult(
+  sessionId: string,
   toolName: string,
   toolArguments: string,
   isError: boolean,
@@ -78,7 +124,7 @@ export function handleToolResult(
               : "pending";
         return [{ title: value.title, status }];
       });
-      setTodoItems(todoItems);
+      setTodoItems(sessionId, todoItems);
     }
 
     const presentation = toolName.toLowerCase();
@@ -87,7 +133,7 @@ export function handleToolResult(
       typeof args.objective === "string" &&
       args.objective.trim()
     ) {
-      setCurrentGoal({
+      setCurrentGoal(sessionId, {
         objective: args.objective,
         ...(typeof args.completionCriterion === "string"
           ? { completionCriterion: args.completionCriterion }
@@ -107,7 +153,7 @@ export function handleToolResult(
       presentation === "updategoal" &&
       typeof args.status === "string"
     ) {
-      const currentGoal = useToolEventsStore.getState().currentGoal;
+      const currentGoal = getToolEventsSnapshot(sessionId).currentGoal;
       if (currentGoal) {
         const nextStatus =
           args.status === "paused" ||
@@ -115,7 +161,7 @@ export function handleToolResult(
           args.status === "complete"
             ? args.status
             : "active";
-        setCurrentGoal({
+        setCurrentGoal(sessionId, {
           ...currentGoal,
           status: nextStatus,
           ...(typeof args.reason === "string" && nextStatus !== "active"
@@ -126,7 +172,7 @@ export function handleToolResult(
         });
       }
     } else if (presentation === "setgoalbudget") {
-      const currentGoal = useToolEventsStore.getState().currentGoal;
+      const currentGoal = getToolEventsSnapshot(sessionId).currentGoal;
       if (currentGoal) {
         const tokenBudget =
           typeof args.tokenBudget === "number"
@@ -140,7 +186,7 @@ export function handleToolResult(
           typeof args.wallClockBudgetMs === "number"
             ? args.wallClockBudgetMs
             : args.wall_clock_budget_ms;
-        setCurrentGoal({
+        setCurrentGoal(sessionId, {
           ...currentGoal,
           budget: {
             ...currentGoal.budget,
@@ -161,14 +207,14 @@ export function handleToolResult(
     if (isWriteTool(toolName)) {
       const filePath = args.path || args.file_path;
       if (typeof filePath === "string" && filePath) {
-        addNewFile(filePath);
+        addNewFile(sessionId, filePath);
       }
     }
 
     // Generic output parameters - these always indicate file creation
-    if (typeof args.output_file === "string") addNewFile(args.output_file);
-    if (typeof args.output_path === "string") addNewFile(args.output_path);
-    if (typeof args.download_dir === "string") addNewFile(args.download_dir);
+    if (typeof args.output_file === "string") addNewFile(sessionId, args.output_file);
+    if (typeof args.output_path === "string") addNewFile(sessionId, args.output_path);
+    if (typeof args.download_dir === "string") addNewFile(sessionId, args.download_dir);
   } catch {
     // Ignore parse errors
   }

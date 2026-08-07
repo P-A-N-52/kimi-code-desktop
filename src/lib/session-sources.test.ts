@@ -3,7 +3,7 @@ import type { LiveMessage } from "@/hooks/types";
 import { deriveSessionSources } from "./session-sources";
 
 describe("deriveSessionSources", () => {
-  it("keeps first occurrence order, labels origins, and deduplicates media", () => {
+  it("keeps occurrence order and preserves same-name attachments with stable ids", () => {
     const messages: LiveMessage[] = [
       {
         id: "user-1",
@@ -31,7 +31,8 @@ describe("deriveSessionSources", () => {
     ];
 
     expect(deriveSessionSources(messages)).toMatchObject([
-      { label: "input.png", origin: "user-input", turnIndex: 0 },
+      { id: "user-1:attachment:0", label: "input.png", origin: "user-input", turnIndex: 0 },
+      { id: "user-1:attachment:1", label: "input.png", origin: "user-input", turnIndex: 0 },
       { label: "result.png", origin: "model-output", mediaType: "image/*" },
       { label: "result.mp3", origin: "model-output", mediaType: "audio/*" },
     ]);

@@ -9,9 +9,11 @@ import {
   type GitActionResult,
   type GitComparison,
   type GitEnvironment,
+  type GitHubEnvironment,
   normalizeGitAction,
   normalizeGitComparison,
   normalizeGitEnvironment,
+  normalizeGitHubEnvironment,
   type SessionPlan,
 } from "@/lib/git-workspace";
 import { normalizeProvidersOverview, type ProvidersOverview } from "@/lib/provider-overview-api";
@@ -968,6 +970,12 @@ export async function getGitEnvironment(
 		baseRef,
 	});
 	return normalizeGitEnvironment(raw);
+}
+
+export async function getGithubEnvironment(sessionId: string): Promise<GitHubEnvironment> {
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+	const raw = await invoke<Record<string, unknown>>("get_github_environment", { sessionId });
+	return normalizeGitHubEnvironment(raw);
 }
 
 export async function compareGitBranches(

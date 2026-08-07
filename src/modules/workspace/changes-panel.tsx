@@ -160,9 +160,15 @@ export function ChangesPanel({
   const cronCount = useBackgroundTasksStore(
     (state) => state.cronSchedules.filter((schedule) => schedule.sessionId === sessionId).length,
   );
-  const todoCount = useToolEventsStore((state) => state.todoItems.length);
-  const goalCount = useToolEventsStore((state) => (state.currentGoal ? 1 : 0));
-  const newFileCount = useToolEventsStore((state) => state.newFiles.length);
+  const todoCount = useToolEventsStore(
+    (state) => state.sessions[sessionId]?.todoItems.length ?? 0,
+  );
+  const goalCount = useToolEventsStore(
+    (state) => (state.sessions[sessionId]?.currentGoal ? 1 : 0),
+  );
+  const newFileCount = useToolEventsStore(
+    (state) => state.sessions[sessionId]?.newFiles.length ?? 0,
+  );
   const counts = useMemo<Record<WorkspaceTab, number>>(
     () => ({
       changes: changes.length,

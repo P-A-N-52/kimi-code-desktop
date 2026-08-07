@@ -1,13 +1,16 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { handleToolResult, useToolEventsStore } from "./store";
+import { getToolEventsSnapshot, handleToolResult, useToolEventsStore } from "./store";
+
+const SESSION_ID = "session-a";
 
 describe("tool event store", () => {
   beforeEach(() => {
-    useToolEventsStore.setState({ newFiles: [], todoItems: [], currentGoal: null });
+    useToolEventsStore.setState({ sessions: {} });
   });
 
   it("restores goal lifecycle state during replay", () => {
     handleToolResult(
+      SESSION_ID,
       "CreateGoal",
       JSON.stringify({
         objective: "Ship event UI coverage",
@@ -17,13 +20,14 @@ describe("tool event store", () => {
       true,
     );
     handleToolResult(
+      SESSION_ID,
       "UpdateGoal",
       JSON.stringify({ status: "complete" }),
       false,
       true,
     );
 
-    expect(useToolEventsStore.getState().currentGoal).toEqual({
+    expect(getToolEventsSnapshot(SESSION_ID).currentGoal).toEqual({
       objective: "Ship event UI coverage",
       completionCriterion: "All focused tests pass",
       status: "complete",
@@ -40,12 +44,13 @@ describe("tool event store", () => {
   });
 
   it("tracks files written by the current Write tool", () => {
-    handleToolResult("Write", JSON.stringify({ path: "src/new.ts" }), false, false);
-    expect(useToolEventsStore.getState().newFiles).toEqual(["src/new.ts"]);
+    handleToolResult(SESSION_ID, "Write", JSON.stringify({ path: "src/new.ts" }), false, false);
+    expect(getToolEventsSnapshot(SESSION_ID).newFiles).toEqual(["src/new.ts"]);
   });
 
   it("restores TodoList state during replay", () => {
     handleToolResult(
+      SESSION_ID,
       "TodoList",
       JSON.stringify({
         todos: [
@@ -56,10 +61,47 @@ describe("tool event store", () => {
       false,
       true,
     );
-    expect(useToolEventsStore.getState().todoItems).toEqual([
+    expect(getToolEventsSnapshot(SESSION_ID).todoItems).toEqual([
       { title: "Inspect", status: "done" },
       { title: "Implement", status: "in_progress" },
     ]);
-    expect(useToolEventsStore.getState().newFiles).toEqual([]);
+    expect(getToolEventsSnapshot(SESSION_ID).newFiles).toEqual([]);
+  });
+
+  it("isolates background and replayed events by session", () => {
+    handleToolResult(
+      "foreground",
+      "TodoList",
+      JSON.stringify({ todos: [{ title: "Front", status: "in_progress" }] }),
+      false,
+      false,
+    );
+    handleToolResult(
+      "background",
+      "TodoList",
+      JSON.stringify({ todos: [{ title: "Back", status: "done" }] }),
+      false,
+      true,
+    );
+    handleToolResult(
+      "background",
+      "Write",
+      JSON.stringify({ path: "background.txt" }),
+      false,
+      false,
+    );
+
+    expect(getToolEventsSnapshot("foreground")).toMatchObject({
+      todoItems: [{ title: "Front", status: "in_progress" }],
+      newFiles: [],
+    });
+    expect(getToolEventsSnapshot("background")).toMatchObject({
+      todoItems: [{ title: "Back", status: "done" }],
+      newFiles: ["background.txt"],
+    });
+
+    useToolEventsStore.getState().clearSession("foreground");
+    expect(getToolEventsSnapshot("foreground").todoItems).toEqual([]);
+    expect(getToolEventsSnapshot("background").todoItems).toHaveLength(1);
   });
 });

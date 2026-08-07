@@ -21,7 +21,7 @@ import {
   setNativeUiLanguage,
   showWindow,
 } from "@/lib/tauri-api";
-import { useToolEventsStore } from "@/lib/tool-events/store";
+import { getToolEventsSnapshot, useToolEventsStore } from "@/lib/tool-events/store";
 import { ConversationView } from "@/modules/conversation/conversation-view";
 import { GoalCancelConfirmation } from "@/modules/conversation/goal-cancel-confirmation";
 import { ReadinessOverlay } from "@/modules/readiness/readiness-overlay";
@@ -84,7 +84,6 @@ export default function App() {
   const [goalCancelOpen, setGoalCancelOpen] = useState(false);
   const [goalCancelPending, setGoalCancelPending] = useState(false);
   const [goalCancelTarget, setGoalCancelTarget] = useState<GoalCancelTarget | null>(null);
-  const currentGoal = useToolEventsStore((state) => state.currentGoal);
 
   const runRuntimeReadinessCheck = useCallback(async () => {
     if (!isTauri()) {
@@ -198,6 +197,9 @@ export default function App() {
     () => sessions.find((s) => s.sessionId === selectedSessionId),
     [sessions, selectedSessionId],
   );
+  const currentGoal = useToolEventsStore(
+    (state) => state.sessions[selectedSessionId]?.currentGoal ?? null,
+  );
 
   const handleSessionStatus = useCallback(
     (status: SessionStatus) => {
@@ -280,7 +282,7 @@ export default function App() {
   const confirmGoalCancel = useCallback(async () => {
     const target = goalCancelTarget;
     if (!target) return;
-    const liveGoal = useToolEventsStore.getState().currentGoal;
+    const liveGoal = getToolEventsSnapshot(target.sessionId).currentGoal;
     const sameGoal = target.goalId
       ? liveGoal?.goalId === target.goalId
       : liveGoal?.objective === target.objective;

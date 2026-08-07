@@ -1,78 +1,124 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { GitComparison, GitEnvironment } from "@/lib/git-workspace";
+import type { GitComparison, GitEnvironment, GitHubEnvironment } from "@/lib/git-workspace";
 import {
   commitGitChanges,
   compareGitBranches,
   createGithubPullRequest,
   getGitComparisonFileDiff,
   getGitEnvironment,
+  getGithubEnvironment,
   pushGitBranch,
   switchGitBranch,
 } from "@/lib/tauri-api";
 
 export function useGitWorkspace(sessionId: string) {
   const [environment, setEnvironment] = useState<GitEnvironment | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const requestRef = useRef(0);
+  const [githubEnvironment, setGithubEnvironment] = useState<GitHubEnvironment | null>(null);
+  const [gitLoading, setGitLoading] = useState(false);
+  const [githubLoading, setGithubLoading] = useState(false);
+  const [gitError, setGitError] = useState<string | null>(null);
+  const [githubError, setGithubError] = useState<string | null>(null);
+  const gitRequestRef = useRef(0);
+  const githubRequestRef = useRef(0);
 
-  const refresh = useCallback(
+  const refreshGit = useCallback(
     async (baseRef?: string) => {
       if (!sessionId) {
         setEnvironment(null);
         return null;
       }
-      const request = ++requestRef.current;
-      setLoading(true);
-      setError(null);
+      const request = ++gitRequestRef.current;
+      setGitLoading(true);
+      setGitError(null);
       try {
         const next = await getGitEnvironment(sessionId, baseRef);
-        if (request === requestRef.current) setEnvironment(next);
+        if (request === gitRequestRef.current) setEnvironment(next);
         return next;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        if (request === requestRef.current) setError(message);
+        if (request === gitRequestRef.current) setGitError(message);
         return null;
       } finally {
-        if (request === requestRef.current) setLoading(false);
+        if (request === gitRequestRef.current) setGitLoading(false);
       }
     },
     [sessionId],
   );
 
+  const refreshGithub = useCallback(async () => {
+    if (!sessionId) {
+      setGithubEnvironment(null);
+      return null;
+    }
+    const request = ++githubRequestRef.current;
+    setGithubLoading(true);
+    setGithubError(null);
+    try {
+      const next = await getGithubEnvironment(sessionId);
+      if (request === githubRequestRef.current) setGithubEnvironment(next);
+      return next;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (request === githubRequestRef.current) setGithubError(message);
+      return null;
+    } finally {
+      if (request === githubRequestRef.current) setGithubLoading(false);
+    }
+  }, [sessionId]);
+
+  const refresh = useCallback(
+    (baseRef?: string) => {
+      void refreshGithub();
+      return refreshGit(baseRef);
+    },
+    [refreshGit, refreshGithub],
+  );
+
   useEffect(() => {
     setEnvironment(null);
-    setError(null);
-    void refresh();
+    setGithubEnvironment(null);
+    setGitError(null);
+    setGithubError(null);
+    void refreshGit();
+    void refreshGithub();
     return () => {
-      requestRef.current += 1;
+      gitRequestRef.current += 1;
+      githubRequestRef.current += 1;
     };
-  }, [refresh]);
+  }, [refreshGit, refreshGithub]);
 
   const mutate = useCallback(
     async <T>(operation: () => Promise<T>): Promise<T> => {
-      setLoading(true);
-      setError(null);
+      setGitLoading(true);
+      setGitError(null);
       try {
         const result = await operation();
-        await refresh(environment?.baseRef);
+        await refreshGit(environment?.baseRef);
+        void refreshGithub();
         return result;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        setError(message);
+        setGitError(message);
         throw err;
       } finally {
-        setLoading(false);
+        setGitLoading(false);
       }
     },
-    [environment?.baseRef, refresh],
+    [environment?.baseRef, refreshGit, refreshGithub],
   );
 
   return {
     environment,
-    loading,
-    error,
+    githubEnvironment,
+    gitLoading,
+    githubLoading,
+    gitError,
+    githubError,
+    loading: gitLoading || githubLoading,
+    error: gitError || githubError,
     refresh,
+    refreshGit,
+    refreshGithub,
     setBaseRef: (baseRef: string) => refresh(baseRef),
     compare: (leftRef: string, rightRef: string): Promise<GitComparison> =>
       compareGitBranches(sessionId, leftRef, rightRef),
