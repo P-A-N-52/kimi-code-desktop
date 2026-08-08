@@ -130,21 +130,112 @@ function Test-CargoClippy {
     return $exitCode -eq 0
 }
 
-function Assert-KimiCodeCli {
-    $program = $env:KIMI_CODE_BIN
-    if ([string]::IsNullOrWhiteSpace($program)) {
-        $command = Get-Command kimi -ErrorAction SilentlyContinue
-        if ($command -and $command.Source) {
-            $program = $command.Source
-        } else {
-            $program = "kimi"
+function Assert-SourceRuntime {
+    # (a) Built artifact must exist and be non-empty. smoke:runtime rebuilds it,
+    # but preflight may run on a machine that skipped the build.
+    $runtimeDir = Join-Path $ProjectRoot "runtime\kimi-code\apps\desktop-runtime"
+    $distEntry = Join-Path $runtimeDir "dist\main.mjs"
+    if (!(Test-Path $distEntry)) {
+        throw "Source Runtime artifact missing: $distEntry. Run 'npm run runtime:install' then 'npm run runtime:build' (or 'npm run smoke:runtime') first."
+    }
+    $distInfo = Get-Item $distEntry
+    if ($distInfo.Length -le 0) {
+        throw "Source Runtime artifact is empty: $distEntry. Re-run 'npm run runtime:build'."
+    }
+    Write-Host "Source Runtime artifact present: $distEntry ($($distInfo.Length) bytes)"
+
+    # (b) Frozen source commit: runtime/UPSTREAM.md's Commit row must equal
+    # KIMI_SOURCE_COMMIT in apps/desktop-runtime/src/protocol.ts. smoke:runtime
+    # also covers the handshake commit; this is the offline static twin.
+    $upstreamFile = Join-Path $ProjectRoot "runtime\UPSTREAM.md"
+    if (!(Test-Path $upstreamFile)) {
+        throw "Missing runtime\UPSTREAM.md; cannot verify the frozen source commit."
+    }
+    $upstreamLine = Get-Content $upstreamFile | Where-Object { $_ -match "^\| Commit \|" } | Select-Object -First 1
+    if (-not $upstreamLine -or $upstreamLine -notmatch "[0-9a-f]{40}") {
+        throw "runtime\UPSTREAM.md has no valid frozen Commit row."
+    }
+    $frozenCommit = [regex]::Match($upstreamLine, "[0-9a-f]{40}").Value
+
+    $protocolFile = Join-Path $runtimeDir "src\protocol.ts"
+    if (!(Test-Path $protocolFile)) {
+        throw "Missing $protocolFile; cannot verify the artifact source commit."
+    }
+    $constantLine = Get-Content $protocolFile | Where-Object { $_ -match "KIMI_SOURCE_COMMIT\s*=" } | Select-Object -First 1
+    if (-not $constantLine -or $constantLine -notmatch "[0-9a-f]{40}") {
+        throw "protocol.ts has no KIMI_SOURCE_COMMIT constant."
+    }
+    $sourceCommit = [regex]::Match($constantLine, "[0-9a-f]{40}").Value
+    if ($frozenCommit -ne $sourceCommit) {
+        throw "Source commit mismatch: UPSTREAM.md=$frozenCommit, protocol.ts=$sourceCommit. Re-sync the freeze and rebuild."
+    }
+    Write-Host "Source commit verified: $frozenCommit (UPSTREAM.md == KIMI_SOURCE_COMMIT)."
+
+    # (c) No PATH 'kimi' dependency in production paths. The needle list lives
+    # in this file, so exclude this script from its own scan.
+    foreach ($needle in @("KIMI_CODE_BIN", "resolve_acp_command", "kimi acp")) {
+        $hits = & rg -n --fixed-strings $needle -g "!release-preflight.ps1" `
+            (Join-Path $ProjectRoot "src-tauri\src") `
+            (Join-Path $ProjectRoot "package.json") `
+            (Join-Path $ProjectRoot "scripts") 2>$null
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -eq 0) {
+            $hits | ForEach-Object { Write-Host $_ }
+            throw "PATH 'kimi' dependency '$needle' found in production paths. The product must not depend on an installed CLI."
+        }
+        if ($exitCode -gt 1) {
+            throw "rg scan for '$needle' failed with exit code $exitCode."
         }
     }
+    Write-Host "No PATH 'kimi' dependency markers found (KIMI_CODE_BIN / resolve_acp_command / kimi acp)."
 
-    Write-Host "Checking Kimi Code CLI: $program"
-    Invoke-Native $program @("--version")
-    Invoke-Native $program @("acp", "--help")
-    Write-Host "Kimi Code CLI checks passed."
+    # (d) No ACP entry points left, and the old ACP smoke script is gone.
+    foreach ($needle in @("AcpProcessManager", "AcpDesktopClient", "acp_translate", "acp_desktop", "acp_capabilities")) {
+        $hits = & rg -n --fixed-strings $needle (Join-Path $ProjectRoot "src-tauri\src") 2>$null
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -eq 0) {
+            $hits | ForEach-Object { Write-Host $_ }
+            throw "ACP entry '$needle' still present in src-tauri/src."
+        }
+        if ($exitCode -gt 1) {
+            throw "rg scan for '$needle' failed with exit code $exitCode."
+        }
+    }
+    if (Test-Path (Join-Path $ProjectRoot "scripts\acp-smoke.mjs")) {
+        throw "Stale ACP smoke script still exists: scripts\acp-smoke.mjs"
+    }
+    Write-Host "No ACP entries remain (AcpProcessManager / AcpDesktopClient / acp_translate / acp_desktop / acp_capabilities; acp-smoke.mjs absent)."
+
+    # (e) SEA sidecar release pair: whenever a built sidecar exists under
+    # src-tauri\binaries, its sibling release manifest must exist, parse as
+    # JSON, and carry the frozen commit (release-macos.sh emits both together).
+    # Dev-only checkpoints build no sidecar, so the check self-skips then.
+    $binariesDir = Join-Path $ProjectRoot "src-tauri\binaries"
+    $sidecars = @()
+    if (Test-Path $binariesDir) {
+        $sidecars = @(Get-ChildItem -Path $binariesDir -File |
+            Where-Object { $_.Name -like "desktop-runtime-*" -and $_.Name -notlike "*.manifest.json" })
+    }
+    foreach ($sidecar in $sidecars) {
+        $manifestPath = "$($sidecar.FullName).manifest.json"
+        if (!(Test-Path $manifestPath)) {
+            throw "Source Runtime sidecar is missing its release manifest: $($sidecar.FullName). Expected $manifestPath (run 'npm run release:macos' or build the SEA sidecar + manifest together)."
+        }
+        try {
+            $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+        } catch {
+            throw "Source Runtime release manifest is not valid JSON: $manifestPath ($($_.Exception.Message))"
+        }
+        $manifestCommit = [string]$manifest.kimiSource.commit
+        if ($manifestCommit -ne $frozenCommit) {
+            throw "Source Runtime release manifest commit mismatch: $manifestCommit (manifest) vs $frozenCommit (UPSTREAM.md): $manifestPath"
+        }
+        Write-Host "Source Runtime release manifest present and pinned: $manifestPath ($manifestCommit)"
+    }
+    if (-not $sidecars) {
+        Write-Host "No SEA sidecar built; skipping the release-manifest pairing check."
+    }
+    Write-Host "Source Runtime release checks passed."
 }
 
 function Assert-TauriWindowUrls {
@@ -239,8 +330,8 @@ The release manifest will record dirty=true until the tree is clean.
 
 Push-Location $ProjectRoot
 try {
-    Invoke-Step "Checking Kimi Code CLI prerequisite" {
-        Assert-KimiCodeCli
+    Invoke-Step "Checking Source Runtime prerequisite" {
+        Assert-SourceRuntime
     }
 
     Invoke-Step "Checking Tauri packaged window entry" {

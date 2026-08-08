@@ -387,10 +387,10 @@ npx biome lint src/hooks/wireTypes.ts src/hooks/useSessionStream.ts
 npm run rust:test
 npm run rust:check
 npm run build
-npm run smoke:acp
+npm run smoke:runtime
 ```
 
-`npm run smoke:acp` 需要本机 CLI 与登录；若条件不具备，交付时写明“自动化检查通过，真实 ACP 验收未执行”。
+`npm run smoke:runtime` 离线安全（临时 `KIMI_CODE_HOME`，不依赖本机 CLI 与登录）；真实桌面验收（M5）未执行时要写明，不能把自动化绿当作已验收。
 
 ### E5. 事件来源与回放的分流卡
 
@@ -490,7 +490,7 @@ Rust domain function/test
 | Hook 或共享 TypeScript | 相关 Vitest + lint + `npx tsc -b` |
 | Shell 页签/跨模块前端 | `npm test` + `npm run build` |
 | Tauri/Rust | 前端相关测试 + `npm run rust:check` + `npm run rust:test` + `npm run rust:clippy` + `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` |
-| ACP/wire | 上述 Rust/前端检查 + `npm run smoke:acp`（条件具备时） |
+| Runtime/wire | 上述 Rust/前端检查 + `npm run smoke:runtime` |
 | 仅文档 | `git diff --check` |
 
 交付时使用这个模板，避免把不同验证状态混为一谈：

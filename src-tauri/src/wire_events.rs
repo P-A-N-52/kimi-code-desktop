@@ -52,26 +52,3 @@ pub(crate) fn emit_wire_message(app: &AppHandle, session_id: &str, message: Stri
         },
     );
 }
-
-pub(crate) fn emit_wire_messages_batch(
-    app: &AppHandle,
-    session_id: &str,
-    mut messages: Vec<String>,
-) {
-    if messages.is_empty() {
-        return;
-    }
-    if messages.len() == 1 {
-        emit_wire_message(app, session_id, messages.pop().unwrap());
-        return;
-    }
-
-    let _ = app.emit(
-        WIRE_EVENT_NAME,
-        WireMessagePayload {
-            session_id: session_id.to_string(),
-            message: None,
-            messages: Some(messages),
-        },
-    );
-}

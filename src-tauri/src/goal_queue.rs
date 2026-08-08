@@ -90,6 +90,14 @@ pub fn remove(session_id: &str, goal_id: &str) -> Result<GoalQueueSnapshot, Stri
 /// Remove a queued item after the native Goal journal confirms `goal.create`.
 /// Missing items are harmless: the user may have removed the entry while the
 /// start confirmation was open.
+///
+/// Legacy note (M4 W2): the only consumer was the ACP goal bridge (`acp.rs`
+/// start-handoff), which no longer exists on the runtime path — runtime-v1
+/// emits no `goal.*` events, so the desktop has no trigger point to consume a
+/// queue item after the engine creates the Goal. The queue itself stays fully
+/// functional (the six desktop commands are pure local file ops); consumption
+/// is a known M5 hook once a runtime `goal.create` trigger or journal-based
+/// hook lands. Do not invent a fake consumer here.
 pub fn consume_started(session_id: &str, goal_id: &str) -> Result<bool, String> {
     let _guard = queue_lock();
     let path = queue_path(session_id)?;

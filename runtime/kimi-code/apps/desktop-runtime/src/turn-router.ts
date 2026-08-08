@@ -27,6 +27,7 @@ import { MAIN_AGENT_ID, type ContentPart } from '@moonshot-ai/agent-core-v2';
 import { KlientValidationError, RPCError } from '@moonshot-ai/klient';
 import { z } from 'zod';
 
+import { ensureLiveDefaultModelBinding } from './default-model';
 import type { EngineContext } from './engine';
 import {
   requireEngineContext,
@@ -35,15 +36,17 @@ import {
 } from './handler-context';
 import {
   RuntimeRequestError,
-  approvalRespondParamsSchema,
-  questionRespondParamsSchema,
+  type JsonValue,
+  type RuntimeRequestFrame,
+} from './protocol';
+import {
   turnCancelParamsSchema,
   turnStartParamsSchema,
   turnSteerParamsSchema,
-  type JsonValue,
-  type RuntimeRequestFrame,
+  approvalRespondParamsSchema,
+  questionRespondParamsSchema,
   type TurnStartParams,
-} from './protocol';
+} from './protocol-schemas';
 
 /** A live turn started through `turn.start`, awaiting its terminal event. */
 export interface ActiveTurnRegistration {
@@ -114,6 +117,15 @@ export function getActiveTurn(
 }
 
 /**
+ * Read-only busy probe for sibling families that must not interleave with a
+ * live turn (`session.replay` rejects its burst with `session_busy` while one
+ * is open). Pure query: never registers, settles, or clears anything.
+ */
+export function hasActiveTurn(engine: EngineContext, sessionId: string): boolean {
+  return sessionTurns(engine).has(sessionId);
+}
+
+/**
  * Settle the registration for an engine turn that reached a terminal state:
  * remove it and hand it back for terminal-event synthesis. Undefined when no
  * registered turn owns the engine turn id (subagent or engine-internal turn).
@@ -146,6 +158,15 @@ export function createTurnHandlers(ctx: RuntimeHandlerContext): RuntimeHandlerEn
     registerActiveTurn(engine, params.sessionId, params.requestId);
     try {
       const agent = engine.klient.session(params.sessionId).agent(MAIN_AGENT_ID);
+      if (params.model === undefined) {
+        // CLI prompt parity: the node-sdk binds the default model on first
+        // use before interacting with an unbound main agent (`agentScope` →
+        // `materializeMainAgent`). Mirror it so a session that reaches prompt
+        // without a binding — a journal that predates the create/open default
+        // bind, or a `default_model` configured mid-run — inherits the
+        // default instead of failing the turn with "Model not set".
+        await ensureLiveDefaultModelBinding(engine, params.sessionId);
+      }
       if (params.model !== undefined) {
         try {
           await agent.setModel(params.model);
@@ -162,7 +183,13 @@ export function createTurnHandlers(ctx: RuntimeHandlerContext): RuntimeHandlerEn
         }
       }
       if (params.planMode === true) {
-        await agent.enterPlan();
+        // Idempotent: the Desktop may have already entered plan mode through
+        // session.setMode (M4) — the ACP-era wire always re-sent the mode
+        // state with the prompt, and re-entering an active plan mode throws
+        // `session.plan_mode_invalid` engine-side.
+        if ((await agent.getPlan()) === null) {
+          await agent.enterPlan();
+        }
       }
       const launched = await agent.prompt({
         input: toPromptParts(params.input, request.method),

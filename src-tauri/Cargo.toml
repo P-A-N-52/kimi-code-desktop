@@ -46,10 +46,6 @@ features = [ "shellexecute-on-windows" ]
 [dependencies.rfd]
 version = "0.15"
 
-[dependencies.ureq]
-version = "2"
-features = [ "json" ]
-
 [dependencies.chrono]
 version = "0.4"
 default-features = false

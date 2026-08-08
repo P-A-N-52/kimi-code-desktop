@@ -1,5 +1,6 @@
 //! Local Kimi Code session storage helpers (delete, update metadata, replay history).
 
+use crate::runtime::supervisor::RuntimeError;
 use crate::runtime_check::kimi_code_home_dir;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -813,7 +814,7 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
         // Lazy-connect path never starts ACP, so still surface persisted modes.
         clear_latest_turn_usage_cache(session_id);
         let modes = resolved_runtime_modes(session_id)?;
-        let session_config = crate::acp_capabilities::resolve_session_config(session_id);
+        let session_config = crate::session_config::resolve_session_config(session_id);
         let mut messages = Vec::new();
         push_runtime_mode_status(&mut messages, &modes)?;
         push_session_config_snapshot_from_state(
@@ -920,7 +921,7 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
     // Emit after usage so lazy-connect UIs restore permission / plan / swarm
     // without waiting for an ACP worker (which may never start until a prompt).
     let modes = resolved_runtime_modes_from_persisted(session_id, persisted_modes)?;
-    let session_config = crate::acp_capabilities::resolve_session_config(session_id);
+    let session_config = crate::session_config::resolve_session_config(session_id);
     push_runtime_mode_status(&mut messages, &modes)?;
     push_session_config_snapshot_from_state(&mut messages, session_id, session_config.as_ref())?;
 
@@ -930,17 +931,16 @@ pub fn replay_session_history(session_id: &str) -> Result<Vec<String>, String> {
 fn push_session_config_snapshot_from_state(
     messages: &mut Vec<String>,
     session_id: &str,
-    state: Option<&crate::acp_capabilities::SessionConfigState>,
+    state: Option<&crate::session_config::SessionConfigState>,
 ) -> Result<(), String> {
     let Some(state) = state else {
         return Ok(());
     };
-    if state.status != crate::acp_capabilities::SessionConfigStatus::Known
-        || state.options.is_empty()
+    if state.status != crate::session_config::SessionConfigStatus::Known || state.options.is_empty()
     {
         return Ok(());
     }
-    messages.push(crate::acp_translate::translate_session_config_snapshot(
+    messages.push(crate::session_compat::translate_session_config_snapshot(
         session_id, state,
     ));
     Ok(())
@@ -951,7 +951,7 @@ fn push_session_config_snapshot(
     messages: &mut Vec<String>,
     session_id: &str,
 ) -> Result<(), String> {
-    let state = crate::acp_capabilities::resolve_session_config(session_id);
+    let state = crate::session_config::resolve_session_config(session_id);
     push_session_config_snapshot_from_state(messages, session_id, state.as_ref())
 }
 
@@ -960,10 +960,10 @@ const PERSISTED_SESSION_CONFIG_KEY: &str = "session_config";
 /// Persist the last known session config snapshot for lazy-connect replay after restart.
 pub fn persist_session_config(
     session_id: &str,
-    state: &crate::acp_capabilities::SessionConfigState,
+    state: &crate::session_config::SessionConfigState,
 ) -> Result<(), String> {
     let session_dir = find_session_dir_by_id_or_err(session_id)?;
-    let serialized = crate::acp_capabilities::session_config_state_to_value(state);
+    let serialized = crate::session_config::session_config_state_to_value(state);
     mutate_session_state(&session_dir, |root| {
         let root = root
             .as_object_mut()
@@ -986,7 +986,7 @@ pub fn persist_session_config(
 /// Read persisted session config for lazy replay when the in-memory store is empty.
 pub fn read_persisted_session_config(
     session_id: &str,
-) -> Result<Option<crate::acp_capabilities::SessionConfigState>, String> {
+) -> Result<Option<crate::session_config::SessionConfigState>, String> {
     let session_dir = match find_session_dir_by_id(session_id)? {
         Some(dir) => dir,
         None => return Ok(None),
@@ -1006,9 +1006,8 @@ pub fn read_persisted_session_config(
     let Some(raw) = raw else {
         return Ok(None);
     };
-    let mut parsed: crate::acp_capabilities::SessionConfigState =
-        serde_json::from_value(raw.clone())
-            .map_err(|e| format!("Invalid persisted session config: {e}"))?;
+    let mut parsed: crate::session_config::SessionConfigState = serde_json::from_value(raw.clone())
+        .map_err(|e| format!("Invalid persisted session config: {e}"))?;
     if parsed.session_id.is_empty() {
         parsed.session_id = session_id.to_string();
     }
@@ -1184,7 +1183,7 @@ fn turn_prompt_content(record: &Value) -> Vec<Value> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    crate::acp_translate::user_content_from_acp_prompt(&content)
+    crate::session_compat::user_content_from_acp_prompt(&content)
 }
 
 fn replay_turn_prompt(
@@ -1306,7 +1305,7 @@ fn message_content(message: &Value) -> Vec<Value> {
 }
 
 fn visible_user_message_content(message: &Value) -> Vec<Value> {
-    crate::acp_translate::user_content_from_acp_prompt(&message_content(message))
+    crate::session_compat::user_content_from_acp_prompt(&message_content(message))
 }
 
 fn is_visible_user_source(value: &Value) -> bool {
@@ -1459,22 +1458,15 @@ fn text_from_content_parts(content: &[Value]) -> String {
         .join("\n")
 }
 
-pub fn is_method_not_found(response: &crate::acp::JsonRpcResponse) -> bool {
-    let Some(error) = &response.error else {
-        return false;
-    };
-    if error
-        .message
-        .as_deref()
-        .map(|message| {
-            let lowered = message.to_ascii_lowercase();
-            lowered.contains("method not found") || lowered.contains("methodnotfound")
-        })
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    matches!(error.code.as_ref(), Some(code) if code == &json!(-32601))
+/// Whether a runtime rejection means the session is already gone. The desktop
+/// tolerates `session_not_found` on `sessions.delete` and still cleans up its
+/// local state (the runtime-version successor of the ACP `is_method_not_found`
+/// check, dropped with the M4 cutover).
+pub fn is_session_not_found(err: &RuntimeError) -> bool {
+    matches!(
+        err,
+        RuntimeError::Rejected(body) if body.code == "session_not_found"
+    )
 }
 
 #[cfg(test)]
@@ -1955,7 +1947,7 @@ mod tests {
     #[test]
     fn push_session_config_snapshot_appends_config_option_update() {
         let session_id = "push-config-snapshot-test";
-        crate::acp_capabilities::set_session_config_from_response(
+        crate::session_config::set_session_config_from_response(
             session_id,
             &serde_json::json!({
                 "configOptions": [{
@@ -1974,7 +1966,7 @@ mod tests {
                 .any(|message| message.contains("ConfigOptionUpdate")),
             "expected ConfigOptionUpdate wire event"
         );
-        crate::acp_capabilities::clear_session_config(session_id);
+        crate::session_config::clear_session_config(session_id);
     }
 
     #[test]
@@ -1984,7 +1976,7 @@ mod tests {
         write_session_layout(&home, "hash-persist-config", session_id);
         let _lock = set_kimi_code_home(&home);
 
-        crate::acp_capabilities::set_session_config_from_response(
+        crate::session_config::set_session_config_from_response(
             session_id,
             &serde_json::json!({
                 "configOptions": [{
@@ -1994,7 +1986,7 @@ mod tests {
                 }]
             }),
         );
-        crate::acp_capabilities::clear_session_config(session_id);
+        crate::session_config::clear_session_config(session_id);
 
         let mut messages = Vec::new();
         push_session_config_snapshot(&mut messages, session_id).expect("push snapshot");
@@ -2163,7 +2155,7 @@ mod tests {
         let wire_path = session_dir.join("agents").join("main");
         fs::create_dir_all(&wire_path).expect("wire dir");
 
-        let prompt = crate::acp_translate::legacy_user_input_to_acp_prompt_with_swarm(
+        let prompt = crate::session_compat::legacy_user_input_to_acp_prompt_with_swarm(
             &json!({ "user_input": "review in parallel", "goal_action": "create" }),
             true,
             true,
@@ -2314,7 +2306,7 @@ mod tests {
         let session_dir = write_session_layout(&home, "hash-title", session_id);
         let wire_path = session_dir.join("agents").join("main");
         fs::create_dir_all(&wire_path).expect("wire dir");
-        let prompt = crate::acp_translate::legacy_user_input_to_acp_prompt_with_swarm(
+        let prompt = crate::session_compat::legacy_user_input_to_acp_prompt_with_swarm(
             &json!({ "user_input": "Investigate the ACP bridge" }),
             true,
             false,
@@ -2399,18 +2391,24 @@ mod tests {
     }
 
     #[test]
-    fn is_method_not_found_detects_json_rpc_code() {
-        use crate::acp::JsonRpcError;
-        let response = crate::acp::JsonRpcResponse {
-            id: Some(1),
-            result: None,
-            error: Some(JsonRpcError {
-                code: Some(json!(-32601)),
-                message: Some("Method not found".to_string()),
-                data: None,
-            }),
-            method: None,
-        };
-        assert!(is_method_not_found(&response));
+    fn is_session_not_found_detects_runtime_rejected_code() {
+        use crate::runtime::protocol::ErrorBody;
+        let err = RuntimeError::Rejected(ErrorBody {
+            code: "session_not_found".to_string(),
+            message: "Session \"s-1\" not found.".to_string(),
+            retryable: false,
+            details: None,
+        });
+        assert!(is_session_not_found(&err));
+        let other = RuntimeError::Rejected(ErrorBody {
+            code: "session_busy".to_string(),
+            message: "busy".to_string(),
+            retryable: false,
+            details: None,
+        });
+        assert!(!is_session_not_found(&other));
+        assert!(!is_session_not_found(&RuntimeError::Timeout(
+            "sessions.delete"
+        )));
     }
 }

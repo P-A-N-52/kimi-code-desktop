@@ -2,26 +2,38 @@
  * `sessions` method family — runtime-v1 session lifecycle handlers.
  *
  * Covers sessions.list / sessions.create / sessions.get / sessions.update /
- * sessions.delete / session.open / session.close over the engine composition
- * root (./engine). Reads go through the klient `global.sessions` facade
- * (`ISessionIndex`); writes compose `IWorkspaceLifecycleService.handlerFor` →
- * the handler's `ISessionLifecycleService` — there is deliberately no
- * App-scope session lifecycle facade, so this is the same composition the
- * node-sdk v2 client uses (`sdk-rpc-client-v2.ts`). `sessions.create` takes
- * the handler chain because the klient facade `global.sessions.create`
- * accepts no explicit session id; when the Desktop does not supply one, the
- * runtime mints it in the engine's own id shape (`session_<uuid>`). A fresh
- * create leaves the engine session materialized but unopened: `session.open`
+ * sessions.delete / sessions.fork / session.open / session.close over the
+ * engine composition root (./engine). Reads go through the klient
+ * `global.sessions` facade (`ISessionIndex`); writes compose
+ * `IWorkspaceLifecycleService.handlerFor` → the handler's
+ * `ISessionLifecycleService` — there is deliberately no App-scope session
+ * lifecycle facade, so this is the same composition the node-sdk v2 client
+ * uses (`sdk-rpc-client-v2.ts`), and `sessions.fork` takes the same handler
+ * chain because the klient facade has no fork entry point.
+ * `sessions.create` takes the handler chain because the klient facade
+ * `global.sessions.create` accepts no explicit session id; when the Desktop
+ * does not supply one, the runtime mints it in the engine's own id shape
+ * (`session_<uuid>`). A create without an explicit `model` inherits the
+ * configured global default (`default_model` in config.toml) through the
+ * engine's `mainAgentBinding`; with no default configured the session stays
+ * unbound — CLI parity, since the CLI resolves the default at first use
+ * rather than at create. `session.open` and `turn.start` re-apply that
+ * first-use bind (default-model helpers in `./default-model`) for any session
+ * that reached them without a binding. A fresh create leaves the engine
+ * session materialized but unopened, and a forked session lands in the same
+ * state: `session.open`
  * is the step that registers the session with the adapter and fires
  * `RuntimeSessionHooks.onSessionOpened` so the turns family can attach its
  * event bridge — repeat opens answer the current descriptor without
- * re-firing hooks. `sessions.update` covers runtime-owned fields only
- * (`model`, `cwd`) — title/archive are Desktop metadata and never cross
- * runtime-v1 — and follows the SDK rename pattern for a closed session:
- * resume, mutate, close again.
+ * re-firing hooks. `sessions.fork` is whole-session only in the pinned
+ * engine, so a `turnIndex` param is rejected with `fork_turn_unsupported`
+ * (non-retryable) rather than silently ignored. `sessions.update` covers
+ * runtime-owned fields only (`model`, `cwd`) — title/archive are Desktop
+ * metadata and never cross runtime-v1 — and follows the SDK rename pattern
+ * for a closed session: resume, mutate, close again.
  *
  * Error mapping: unknown session ids → `session_not_found`; a duplicate
- * explicit create id → `session_already_exists`; param validation →
+ * explicit create/fork id → `session_already_exists`; param validation →
  * `invalid_params`; any other engine failure → `internal_error` with the
  * original message preserved.
  */
@@ -37,9 +49,6 @@ import {
   handlerForSession,
   IAgentLifecycleService,
   IAgentProfileService,
-  IConfigService,
-  IModelService,
-  IProviderService,
   ISessionContext,
   ISessionIndex,
   ISessionLifecycleService,
@@ -53,6 +62,11 @@ import {
 } from '@moonshot-ai/agent-core-v2';
 import type { z } from 'zod';
 
+import {
+  bindDefaultModelIfUnbound,
+  configuredDefaultModel,
+  modelCatalogReady,
+} from './default-model';
 import type { EngineContext } from './engine';
 import {
   requireEngineContext,
@@ -61,6 +75,11 @@ import {
 } from './handler-context';
 import {
   RuntimeRequestError,
+  type JsonObject,
+  type JsonValue,
+  type RuntimeRequestFrame,
+} from './protocol';
+import {
   sessionCloseParamsSchema,
   sessionOpenParamsSchema,
   sessionsCreateParamsSchema,
@@ -68,11 +87,9 @@ import {
   sessionsGetParamsSchema,
   sessionsListParamsSchema,
   sessionsUpdateParamsSchema,
-  type JsonObject,
-  type JsonValue,
-  type RuntimeRequestFrame,
   type SessionDescriptor,
-} from './protocol';
+} from './protocol-schemas';
+import { sessionsForkParamsSchema } from './protocol-parity';
 
 export function createSessionHandlers(ctx: RuntimeHandlerContext): RuntimeHandlerEntry[] {
   // Sessions this family has opened (resumed + adapter-tracked + bridge hook
@@ -117,6 +134,12 @@ export function createSessionHandlers(ctx: RuntimeHandlerContext): RuntimeHandle
         );
       }
       if (params.model !== undefined) await modelCatalogReady(engine);
+      // Without an explicit model a create inherits the configured global
+      // default — the same default `AgentProfileService.bind` applies, and the
+      // ACP-era create path inherited it too. With no `default_model`
+      // configured the session is created unbound, exactly like the CLI's
+      // model-less create (the CLI resolves the default at first use instead).
+      const model = params.model ?? (await configuredDefaultModel(engine));
       const handler = await accessor
         .get(IWorkspaceLifecycleService)
         .handlerFor({ root: params.cwd });
@@ -124,9 +147,9 @@ export function createSessionHandlers(ctx: RuntimeHandlerContext): RuntimeHandle
         sessionId,
         workDir: params.cwd,
         mainAgentBinding:
-          params.model === undefined
+          model === undefined
             ? undefined
-            : { profile: DEFAULT_AGENT_PROFILE_NAME, model: params.model },
+            : { profile: DEFAULT_AGENT_PROFILE_NAME, model },
       });
       if (params.title !== undefined) {
         await handle.accessor.get(ISessionMetadata).setTitle(params.title);
@@ -230,6 +253,11 @@ export function createSessionHandlers(ctx: RuntimeHandlerContext): RuntimeHandle
       throw toInternalError(error);
     }
     if (handle === undefined) throw sessionNotFound(params.sessionId);
+    // CLI resume parity (node-sdk `materializeMainAgent`): a resumed session
+    // whose journal has no main-agent binding gets the default binding; an
+    // existing binding is left untouched; with no configured default the
+    // agent stays unbound instead of failing.
+    await bindDefaultModelIfUnbound(engine, handle);
     ctx.adapter.trackLiveSession(params.sessionId);
     // Added after the hook so a bridge-attach failure leaves the next open
     // free to retry the hook instead of being absorbed by idempotency.
@@ -278,6 +306,66 @@ export function createSessionHandlers(ctx: RuntimeHandlerContext): RuntimeHandle
   ];
 }
 
+/**
+ * The `sessions.fork` handler entry — a single entry exported separately
+ * from `createSessionHandlers` (it landed in M3 wave 2 while the wave-1
+ * placeholder still owned the method name; wave 3 dropped the placeholder
+ * and the protocol server registers this entry alongside the family).
+ *
+ * Semantics (pinned engine, sessionLifecycleService.fork): whole-session
+ * fork only. A `turnIndex` param is rejected with `fork_turn_unsupported`
+ * (non-retryable) rather than silently forking the whole session — the
+ * Desktop `fork_session` contract needs an honest answer until an engine
+ * with turn-granular fork lands. The forked session lands materialized but
+ * NOT opened — no adapter tracking, no `onSessionOpened` hook, no event
+ * bridge; the first `session.open` attaches all of that, exactly like a
+ * freshly created session.
+ */
+export function createForkSessionHandler(ctx: RuntimeHandlerContext): RuntimeHandlerEntry {
+  const forkSession = async (request: RuntimeRequestFrame): Promise<JsonValue> => {
+    const params = parseParams(sessionsForkParamsSchema, 'sessions.fork', request.params);
+    const engine = requireEngineContext(ctx);
+    const accessor = engine.app.accessor;
+    if (params.turnIndex !== undefined) {
+      throw new RuntimeRequestError(
+        'fork_turn_unsupported',
+        `The pinned engine forks whole sessions only; sessions.fork with turnIndex ${params.turnIndex} is not supported.`,
+        false,
+      );
+    }
+    let handler;
+    try {
+      handler = await handlerForSession(accessor, params.sessionId);
+    } catch (error) {
+      throw toInternalError(error);
+    }
+    if (handler === undefined) throw sessionNotFound(params.sessionId);
+    try {
+      const handle = await handler.accessor.get(ISessionLifecycleService).fork({
+        sourceSessionId: params.sessionId,
+        newSessionId: params.newSessionId,
+        title: params.title,
+      });
+      return toJson(await liveDescriptor(handle));
+    } catch (error) {
+      if (isError2(error)) {
+        if (error.code === ErrorCodes.SESSION_NOT_FOUND) {
+          throw sessionNotFound(params.sessionId);
+        }
+        if (error.code === ErrorCodes.SESSION_ALREADY_EXISTS) {
+          throw new RuntimeRequestError(
+            'session_already_exists',
+            `Session "${params.newSessionId ?? ''}" already exists.`,
+            false,
+          );
+        }
+      }
+      throw toInternalError(error);
+    }
+  };
+  return ['sessions.fork', forkSession];
+}
+
 function parseParams<Schema extends z.ZodType>(
   schema: Schema,
   method: string,
@@ -316,20 +404,6 @@ function toInternalError(error: unknown): RuntimeRequestError {
 /** `z.looseObject` inference carries an `unknown` catchall; the wire shapes built here are plain JSON. */
 function toJson(value: unknown): JsonValue {
   return value as JsonValue;
-}
-
-/**
- * The node-sdk `modelReady` gate: model alias resolution reads the catalog,
- * which only reflects config.toml once config/model/provider services report
- * ready — binding without the gate races the initial load.
- */
-async function modelCatalogReady(engine: EngineContext): Promise<void> {
-  const accessor = engine.app.accessor;
-  await Promise.all([
-    accessor.get(IConfigService).ready,
-    accessor.get(IModelService).ready,
-    accessor.get(IProviderService).ready,
-  ]).then(() => undefined);
 }
 
 /**

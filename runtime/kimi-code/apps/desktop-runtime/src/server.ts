@@ -1,3 +1,4 @@
+import { createAuthHandlers } from './auth-router';
 import { createConfigHandlers } from './config-router';
 import { attachSessionEvents } from './event-bridge';
 import type { RuntimeEngineAdapter, RuntimeHandlerContext } from './handler-context';
@@ -8,6 +9,7 @@ import {
   RUNTIME_PROTOCOL,
   RuntimeProtocolFault,
   RuntimeRequestError,
+  SESSION_EVENT_NAMES,
   errorResponse,
   okResponse,
   parseHelloParams,
@@ -19,8 +21,10 @@ import {
   type RuntimeScopedEventFrame,
   type RuntimeSessionEventFrame,
 } from './protocol';
+import { createReplayHandlers } from './replay-router';
 import { DEFERRED_RESPONSE, MethodRouter } from './router';
-import { createSessionHandlers } from './session-manager';
+import { createForkSessionHandler, createSessionHandlers } from './session-manager';
+import { createSessionModeHandlers } from './session-mode-router';
 import { clearActiveTurns, createTurnHandlers } from './turn-router';
 
 type RuntimeState = 'awaiting-hello' | 'ready' | 'shutting-down' | 'stopped';
@@ -34,8 +38,28 @@ const RECENT_REQUEST_ID_LIMIT = 4096;
  */
 export type RuntimeServerAdapter = RuntimeLifecycleAdapter & RuntimeEngineAdapter;
 
-/** All three M1 families are wired by this server, so hello/getInfo report them. */
-const WIRED_FAMILIES = { sessions: true, turns: true, config: true } as const;
+/**
+ * Every family is wired end to end as of M3 wave 3: the M1 families
+ * (sessions/turns/config) plus the parity families — replay
+ * (replay-router.ts), auth + usage (auth-router.ts), and whole-session fork
+ * (session-manager.ts `createForkSessionHandler`). The `fork` gate covers
+ * whole-session forks only: a `turnIndex` param is permanently answered
+ * `fork_turn_unsupported` until an engine with turn-granular fork lands.
+ * `events` advertises the full SESSION_EVENT_NAMES set — 24 events emitted
+ * by the Node bridge plus `background_task.observed`, which the Rust
+ * translate layer synthesizes from `tool.completed` (same side as the ACP
+ * era), so the Desktop still receives every advertised event.
+ */
+const WIRED_FAMILIES = {
+  sessions: true,
+  turns: true,
+  config: true,
+  replay: true,
+  auth: true,
+  usage: true,
+  fork: true,
+  events: SESSION_EVENT_NAMES,
+} as const;
 
 export interface RuntimeProtocolServerOptions {
   readonly adapter: RuntimeServerAdapter;
@@ -69,11 +93,10 @@ export class RuntimeProtocolServer {
       return Promise.resolve(DEFERRED_RESPONSE);
     });
 
-    // M1 wave 3: the sessions / turns / config families share one handler
-    // context. Session hooks bridge the families without cross-imports:
-    // opening a session attaches its event bridge, closing one detaches the
-    // bridge (a session that was never attached is a no-op) and drops its
-    // active-turn registration.
+    // All method families share one handler context. Session hooks bridge
+    // the families without cross-imports: opening a session attaches its
+    // event bridge, closing one detaches the bridge (a session that was
+    // never attached is a no-op) and drops its active-turn registration.
     const ctx: RuntimeHandlerContext = {
       adapter: this.adapter,
       emitSessionEvent: (sessionId, event, payload) =>
@@ -97,8 +120,16 @@ export class RuntimeProtocolServer {
     };
     for (const [method, handler] of [
       ...createSessionHandlers(ctx),
+      // Fork is a single handler entry exported separately from the sessions
+      // family (it landed in M3 wave 2 alongside the family).
+      createForkSessionHandler(ctx),
+      // M4 session.setMode (plan/permission mode control).
+      ...createSessionModeHandlers(ctx),
       ...createTurnHandlers(ctx),
       ...createConfigHandlers(ctx),
+      // M3 parity families, wired for real in wave 3 (no placeholders left).
+      ...createReplayHandlers(ctx),
+      ...createAuthHandlers(ctx),
     ]) {
       this.router.register(method, handler);
     }

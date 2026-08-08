@@ -2,9 +2,13 @@ import type { DomainEvent, Interaction, TokenUsage } from '@moonshot-ai/agent-co
 import { describe, expect, it } from 'vitest';
 
 import {
+  engineContentToWireInput,
+  mcpLoadingTransition,
+  slashCommandsUpdatePayload,
   statusUpdatedEmissions,
   translateApprovalInteraction,
   translateDomainEvent,
+  translatePromptSteered,
   translateQuestionInteraction,
   translateTurnEnded,
   type AgentStatusSnapshot,
@@ -193,13 +197,11 @@ describe('translateDomainEvent', () => {
     expect(wire(terminated?.payload)).toMatchObject({ taskId: 'task-1', status: 'completed' });
   });
 
-  it('drops engine events with no M1 runtime-v1 counterpart', () => {
+  it('drops engine events with no runtime-v1 counterpart', () => {
     const dropped: readonly DomainEvent[] = [
       { type: 'turn.started', turnId: 1, origin: { kind: 'user' } },
       { type: 'turn.ended', turnId: 1, reason: 'completed' },
-      { type: 'turn.step.started', turnId: 1, step: 1 },
       { type: 'turn.step.completed', turnId: 1, step: 1 },
-      { type: 'turn.step.interrupted', turnId: 1, step: 1, reason: 'x' },
       {
         type: 'tool.progress',
         turnId: 1,
@@ -222,6 +224,273 @@ describe('translateDomainEvent', () => {
     for (const event of dropped) {
       expect(translateDomainEvent(event, MAIN)).toBeNull();
     }
+  });
+});
+
+describe('step.* fidelity events', () => {
+  it('maps turn.step.started to step.begin for the main agent only', () => {
+    const begun = translateDomainEvent({ type: 'turn.step.started', turnId: 3, step: 2 }, MAIN);
+    expect(begun).toMatchObject({ event: 'step.begin' });
+    expect(wire(begun?.payload)).toEqual({ n: 2, requestId: 'req-1' });
+
+    // Without a registered turn there is no requestId.
+    const anonymous = translateDomainEvent(
+      { type: 'turn.step.started', turnId: 9, step: 1 },
+      { agentId: 'main', isMainAgent: true },
+    );
+    expect(wire(anonymous?.payload)).toEqual({ n: 1 });
+
+    // Subagent steps never reach the main transcript.
+    expect(
+      translateDomainEvent({ type: 'turn.step.started', turnId: 1, step: 1 }, SUBAGENT),
+    ).toBeNull();
+  });
+
+  it('maps turn.step.interrupted to step.interrupted for the main agent only', () => {
+    const interrupted = translateDomainEvent(
+      { type: 'turn.step.interrupted', turnId: 3, step: 2, reason: 'user_cancelled' },
+      MAIN,
+    );
+    expect(interrupted).toMatchObject({ event: 'step.interrupted' });
+    expect(wire(interrupted?.payload)).toEqual({ requestId: 'req-1' });
+
+    expect(
+      translateDomainEvent(
+        { type: 'turn.step.interrupted', turnId: 1, step: 1, reason: 'x' },
+        SUBAGENT,
+      ),
+    ).toBeNull();
+  });
+
+  it('maps turn.step.retrying to the snake_case step.retry payload', () => {
+    const retry = translateDomainEvent(
+      {
+        type: 'turn.step.retrying',
+        turnId: 3,
+        step: 1,
+        failedAttempt: 1,
+        nextAttempt: 2,
+        maxAttempts: 3,
+        delayMs: 4000,
+        errorName: 'APIStatusError',
+        errorMessage: '429 too many requests',
+        statusCode: 429,
+      },
+      MAIN,
+    );
+    expect(retry).toMatchObject({ event: 'step.retry' });
+    expect(wire(retry?.payload)).toEqual({
+      n: 1,
+      next_attempt: 2,
+      max_attempts: 3,
+      wait_s: 4,
+      error_type: 'APIStatusError',
+      status_code: 429,
+      requestId: 'req-1',
+    });
+
+    // statusCode is absent on non-HTTP failures; the wire field goes null.
+    const timeout = translateDomainEvent(
+      {
+        type: 'turn.step.retrying',
+        turnId: 3,
+        step: 2,
+        failedAttempt: 2,
+        nextAttempt: 3,
+        maxAttempts: 3,
+        delayMs: 1500,
+        errorName: 'APITimeoutError',
+        errorMessage: 'timed out',
+      },
+      MAIN,
+    );
+    expect(wire(timeout?.payload)).toEqual({
+      n: 2,
+      next_attempt: 3,
+      max_attempts: 3,
+      wait_s: 1.5,
+      error_type: 'APITimeoutError',
+      status_code: null,
+      requestId: 'req-1',
+    });
+
+    expect(
+      translateDomainEvent(
+        {
+          type: 'turn.step.retrying',
+          turnId: 1,
+          step: 1,
+          failedAttempt: 1,
+          nextAttempt: 2,
+          maxAttempts: 3,
+          delayMs: 1,
+          errorName: 'X',
+          errorMessage: 'x',
+        },
+        SUBAGENT,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('compaction.* fidelity events', () => {
+  it('maps compaction.started/completed for the main agent', () => {
+    const begun = translateDomainEvent(
+      { type: 'compaction.started', trigger: 'auto' },
+      MAIN,
+    );
+    expect(begun).toMatchObject({ event: 'compaction.begin' });
+    expect(wire(begun?.payload)).toEqual({ source: 'auto' });
+
+    const completed = translateDomainEvent(
+      {
+        type: 'compaction.completed',
+        result: { summary: 's', compactedCount: 4, tokensBefore: 100, tokensAfter: 40 },
+      },
+      MAIN,
+    );
+    expect(completed).toMatchObject({ event: 'compaction.end' });
+    expect(wire(completed?.payload)).toEqual({});
+  });
+
+  it('drops blocked/cancelled and every subagent compaction event', () => {
+    expect(
+      translateDomainEvent({ type: 'compaction.blocked', turnId: 3 }, MAIN),
+    ).toBeNull();
+    expect(translateDomainEvent({ type: 'compaction.cancelled' }, MAIN)).toBeNull();
+    expect(
+      translateDomainEvent({ type: 'compaction.started', trigger: 'auto' }, SUBAGENT),
+    ).toBeNull();
+    expect(
+      translateDomainEvent(
+        {
+          type: 'compaction.completed',
+          result: { summary: 's', compactedCount: 1, tokensBefore: 5, tokensAfter: 2 },
+        },
+        SUBAGENT,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('translatePromptSteered', () => {
+  it('collapses all-text content to one joined string', () => {
+    const translated = translatePromptSteered(
+      {
+        type: 'prompt.steered',
+        activePromptId: 'p-1',
+        promptIds: ['p-2'],
+        content: [
+          { type: 'text', text: 'also ' },
+          { type: 'text', text: 'check tests' },
+        ],
+        steeredAt: 'now',
+      },
+      'req-9',
+    );
+    expect(translated).toMatchObject({ event: 'turn.steered' });
+    expect(wire(translated.payload)).toEqual({ requestId: 'req-9', input: 'also check tests' });
+  });
+
+  it('crosses mixed content as wire content parts with snake_case media keys', () => {
+    const translated = translatePromptSteered(
+      {
+        type: 'prompt.steered',
+        activePromptId: 'p-1',
+        promptIds: ['p-2'],
+        content: [
+          { type: 'text', text: 'look at this' },
+          { type: 'image_url', imageUrl: { url: 'https://example.com/a.png', id: 'm1' } },
+          { type: 'video_url', videoUrl: { url: 'https://example.com/b.mp4' } },
+        ],
+        steeredAt: 'now',
+      },
+      'req-9',
+    );
+    expect(wire(translated.payload)).toEqual({
+      requestId: 'req-9',
+      input: [
+        { type: 'text', text: 'look at this' },
+        { type: 'image_url', image_url: { url: 'https://example.com/a.png', id: 'm1' } },
+        { type: 'video_url', video_url: { url: 'https://example.com/b.mp4' } },
+      ],
+    });
+  });
+
+  it('engineContentToWireInput keeps think and audio parts', () => {
+    expect(
+      wire(
+        engineContentToWireInput([
+          { type: 'think', think: 'hmm', encrypted: 'enc' },
+          { type: 'audio_url', audioUrl: { url: 'https://example.com/a.mp3' } },
+        ]),
+      ),
+    ).toEqual([
+      { type: 'think', think: 'hmm', encrypted: 'enc' },
+      { type: 'audio_url', audio_url: { url: 'https://example.com/a.mp3' } },
+    ]);
+    expect(wire(engineContentToWireInput([]))).toEqual('');
+  });
+});
+
+describe('mcpLoadingTransition', () => {
+  it('begins on 0 -> >0 pending and ends on >0 -> 0', () => {
+    expect(mcpLoadingTransition(false, 0)).toBeNull();
+    expect(mcpLoadingTransition(false, 2)).toBe('mcp.loading.begin');
+    expect(mcpLoadingTransition(true, 1)).toBeNull();
+    expect(mcpLoadingTransition(true, 0)).toBe('mcp.loading.end');
+  });
+});
+
+describe('slashCommandsUpdatePayload', () => {
+  it('maps the skill catalog with the ACP-era naming and ordering rules', () => {
+    const payload = slashCommandsUpdatePayload([
+      { name: 'zeta', description: 'user skill', path: '/u/zeta', source: 'user' },
+      { name: 'alpha', description: 'project skill', path: '/p/alpha', source: 'project' },
+      { name: 'docs', description: 'builtin skill', path: '/b/docs', source: 'builtin' },
+      { name: 'sub', description: 'sub skill', path: '/u/sub', source: 'user', isSubSkill: true },
+      { name: 'ref', description: 'reference', path: '/u/ref', source: 'user', type: 'reference' },
+      { name: 'flowy', description: 'flow', path: '/u/flowy', source: 'extra', type: 'flow' },
+    ]);
+    expect(wire(payload)).toEqual({
+      slash_commands: [
+        {
+          name: 'docs',
+          description: 'builtin skill',
+          aliases: [],
+          input_hint: null,
+          source: 'runtime',
+        },
+        {
+          name: 'skill:alpha',
+          description: 'project skill',
+          aliases: [],
+          input_hint: null,
+          source: 'runtime:skill',
+        },
+        {
+          name: 'skill:flowy',
+          description: 'flow',
+          aliases: [],
+          input_hint: null,
+          source: 'runtime:skill',
+        },
+        {
+          name: 'sub',
+          description: 'sub skill',
+          aliases: [],
+          input_hint: null,
+          source: 'runtime',
+        },
+        {
+          name: 'skill:zeta',
+          description: 'user skill',
+          aliases: [],
+          input_hint: null,
+          source: 'runtime:skill',
+        },
+      ],
+    });
   });
 });
 

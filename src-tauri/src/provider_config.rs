@@ -2,7 +2,6 @@
 //!
 //! Never returns api keys, tokens, or other credential material.
 
-use crate::managed_usage;
 use crate::runtime_check;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -240,7 +239,7 @@ pub fn get_providers_overview() -> Result<Value, String> {
         "structureValid": structure_issues.is_empty(),
         "structureIssues": structure_issues,
         "providers": providers,
-        "kimiAccountCredentialsPresent": managed_usage::credentials_present(),
+        "kimiAccountCredentialsPresent": runtime_check::credentials_present(),
         "acpAuth": acp_auth_snapshot(),
     }))
 }
@@ -298,7 +297,7 @@ fn resolve_credential_status(
     provider_type: &str,
 ) -> (String, String) {
     let lowered_type = provider_type.trim().to_ascii_lowercase();
-    let kimi_login_present = managed_usage::credentials_present();
+    let kimi_login_present = runtime_check::credentials_present();
 
     if lowered_type == "kimi" && kimi_login_present {
         return (

@@ -13,6 +13,7 @@
   },
   "scripts": {
     "build": "tsdown",
+    "build:sea": "node scripts/build-sea.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "smoke": "node scripts/smoke.mjs"
@@ -22,10 +23,14 @@
     "@moonshot-ai/agent-core-v2": "workspace:^",
     "@moonshot-ai/kimi-code-oauth": "workspace:^",
     "@moonshot-ai/klient": "workspace:^",
+    "@moonshot-ai/transcript": "workspace:^",
     "node-pty": "^1.1.0",
     "zod": "catalog:"
   },
   "engines": {
     "node": ">=24.15.0"
+  },
+  "devDependencies": {
+    "postject": "1.0.0-alpha.6"
   }
 }

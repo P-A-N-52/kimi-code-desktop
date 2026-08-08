@@ -1,44 +1,65 @@
 //! Pure-Rust session file browser helpers (work_dir listing, read, upload).
 
-use crate::acp_desktop::{fetch_all_acp_sessions, find_session_in_list, AcpDesktopClient};
-use crate::acp_translate::normalize_workspace_path;
+use crate::runtime::client::RuntimeClient;
+use crate::runtime::host::RuntimeHost;
+use crate::runtime::supervisor::RuntimeError;
 use crate::runtime_check;
+use crate::security;
 use crate::session_store;
 use base64::Engine;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tauri::AppHandle;
+use tauri::Manager;
 
 const MAX_DESKTOP_API_FILE_BYTES: u64 = 25 * 1024 * 1024;
 const MAX_SAFE_FILENAME_LENGTH: usize = 255;
+/// Bounded runtime `sessions.get` budget for work-dir fallback resolution.
+const SESSIONS_GET_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub fn resolve_session_file(workspace: &Path, rel_path: &str) -> Result<PathBuf, String> {
-    normalize_workspace_path(rel_path, workspace)
+    security::normalize_workspace_path(rel_path, workspace)
 }
 
-pub async fn resolve_session_work_dir(
+/// Resolve a session's work directory: local metadata first (hash-keyed
+/// `~/.kimi-code/kimi.json` work_dirs), then a runtime `sessions.get`
+/// fallback for sessions the desktop has never persisted. Blocking runtime
+/// calls require the caller to be on the blocking pool (spawn_blocking).
+pub fn resolve_session_work_dir_runtime(
     app: &AppHandle,
-    acp_desktop: &AcpDesktopClient,
     session_id: &str,
 ) -> Result<PathBuf, String> {
-    let raw_sessions = fetch_all_acp_sessions(acp_desktop, app).await?;
-    if let Some(session) = find_session_in_list(&raw_sessions, session_id) {
-        if let Some(cwd) = session.get("cwd").and_then(Value::as_str) {
-            if !cwd.is_empty() {
-                return Ok(PathBuf::from(cwd));
-            }
-        }
-    }
-
     if let Some(session_dir) = session_store::find_session_dir_by_id(session_id)? {
         if let Some(work_dir) = resolve_work_dir_from_session_dir(&session_dir)? {
             return Ok(work_dir);
         }
     }
 
-    Err("Session not found".to_string())
+    let host = app.state::<RuntimeHost>();
+    let supervisor = host.ensure_started()?;
+    let client = RuntimeClient::new(&supervisor);
+    let descriptor = client
+        .sessions_get(session_id, SESSIONS_GET_TIMEOUT)
+        .map_err(|err| session_work_dir_error("sessions.get", err))?;
+    match descriptor.cwd {
+        Some(cwd) if !cwd.is_empty() => Ok(PathBuf::from(cwd)),
+        _ => Err("Session not found".to_string()),
+    }
+}
+
+/// Command-level error mapping for work-dir resolution, mirroring the auth
+/// family: a runtime `Rejected` surfaces its code/message; fatal failures
+/// surface as an operation failure.
+fn session_work_dir_error(operation: &str, err: RuntimeError) -> String {
+    match err {
+        RuntimeError::Rejected(body) => {
+            format!("{operation} rejected: {}: {}", body.code, body.message)
+        }
+        other => format!("{operation} failed: {other}"),
+    }
 }
 
 fn resolve_work_dir_from_session_dir(session_dir: &Path) -> Result<Option<PathBuf>, String> {
