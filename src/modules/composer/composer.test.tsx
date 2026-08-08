@@ -73,7 +73,7 @@ const renderComposer = (overrides: Partial<Parameters<typeof Composer>[0]> = {})
 };
 
 describe("Composer integrations", () => {
-  it("opens ACP slash commands and inserts commands that take arguments", () => {
+  it("opens runtime slash commands and inserts commands that take arguments", () => {
     const { props } = renderComposer();
     fireEvent.click(screen.getByRole("button", { name: /命令/ }));
     fireEvent.click(screen.getByText("/compact"));

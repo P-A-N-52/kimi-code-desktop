@@ -309,7 +309,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		expect(result.current.goalMode).toBe(false);
 	});
 
-  it("refreshes the native Goal snapshot when the ACP bridge reports journal progress", async () => {
+  it("refreshes the native Goal snapshot when the runtime bridge reports journal progress", async () => {
     const { result } = renderHook(() =>
       useSessionStream({
         sessionId: "session-1",
@@ -1295,7 +1295,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		expect(result.current.error).toBeNull();
 	});
 
-	it("shows a sent user message before ACP echoes the turn", async () => {
+	it("shows a sent user message before runtime echoes the turn", async () => {
 		const { result } = renderHook(() =>
 			useSessionStream({
 				sessionId: "session-1",
@@ -1372,7 +1372,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		);
 	});
 
-	it("keeps user-authored system-like tags visible without an ACP echo", async () => {
+	it("keeps user-authored system-like tags visible without a runtime echo", async () => {
 		const { result } = renderHook(() =>
 			useSessionStream({
 				sessionId: "session-1",
@@ -1520,7 +1520,7 @@ describe("useSessionStream Tauri watchdog", () => {
 			]);
   });
 
-	it("replays local history without spawning ACP until a prompt is sent", async () => {
+	it("replays local history without spawning the runtime until a prompt is sent", async () => {
 		const { result } = renderHook(() =>
 			useSessionStream({
 				sessionId: "session-1",
@@ -1901,7 +1901,7 @@ describe("useSessionStream Tauri watchdog", () => {
 		expect(result.current.canCancel).toBe(false);
 	});
 
-	it("keeps waiting through a non-terminal ACP connection idle status", async () => {
+	it("keeps waiting through a non-terminal runtime connection idle status", async () => {
 		const { result } = renderHook(() =>
 			useSessionStream({
 				sessionId: "session-1",

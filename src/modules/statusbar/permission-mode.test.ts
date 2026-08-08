@@ -62,7 +62,7 @@ describe("parseAskUserToolOutput", () => {
 });
 
 describe("looksLikeAskUserInput / resolveAskUserParentToolCallId", () => {
-	it("识别 questions 形参并剥离 ACP question 后缀", async () => {
+	it("识别 questions 形参并剥离 runtime question 后缀", async () => {
 		const {
 			looksLikeAskUserInput,
 			isAskUserToolCall,
@@ -114,7 +114,7 @@ describe("isPlanTool", () => {
 		expect(isPlanTool(undefined)).toBe(false);
 	});
 
-	it("识别 ACP switch_mode kind", () => {
+	it("识别 runtime switch_mode kind", () => {
 		expect(isPlanTool(undefined, "switch_mode")).toBe(true);
 		expect(isPlanTool("Something", "switch_mode")).toBe(true);
 		expect(isPlanTool("Bash", "execute")).toBe(false);

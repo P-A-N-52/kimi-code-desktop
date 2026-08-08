@@ -1,6 +1,6 @@
 export type ProviderCredentialStatus = "not_configured" | "configured";
 
-export type AcpAuthStatus = "unknown" | "failed";
+export type RuntimeAuthStatus = "unknown" | "failed";
 
 export type ProviderModelBinding = {
 	alias: string;
@@ -30,8 +30,8 @@ export type ProvidersOverview = {
 	structureIssues: string[];
 	providers: ProviderSummary[];
 	kimiAccountCredentialsPresent: boolean;
-	acpAuth: {
-		status: AcpAuthStatus;
+	runtimeAuth: {
+		status: RuntimeAuthStatus;
 		lastFailureAtMs: number | null;
 		lastFailureMessage: string | null;
 	};
@@ -46,12 +46,12 @@ export function providerCredentialLabel(status: ProviderCredentialStatus): strin
 	}
 }
 
-export function acpAuthStatusLabel(status: AcpAuthStatus): string {
+export function runtimeAuthStatusLabel(status: RuntimeAuthStatus): string {
 	switch (status) {
 		case "failed":
-			return "上次 ACP 认证失败";
+			return "上次 Runtime 认证失败";
 		case "unknown":
-			return "ACP 认证状态未知";
+			return "Runtime 认证状态未知";
 	}
 }
 

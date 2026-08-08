@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isReconnectableStreamError } from "./reconnectable-error";
 
 describe("isReconnectableStreamError", () => {
-  it("recognizes disconnected transports and replaced ACP workers", () => {
+  it("recognizes disconnected transports and replaced runtime workers", () => {
     expect(
       isReconnectableStreamError({
         error: new Error("Connection closed"),
@@ -19,7 +19,7 @@ describe("isReconnectableStreamError", () => {
     ).toBe(true);
   });
 
-  it("does not offer ACP reconnect for an ordinary prompt failure on a live connection", () => {
+  it("does not offer runtime reconnect for an ordinary prompt failure on a live connection", () => {
     expect(
       isReconnectableStreamError({
         error: new Error("Prompt rejected: invalid argument"),

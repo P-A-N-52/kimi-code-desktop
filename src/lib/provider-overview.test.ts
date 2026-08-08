@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-	acpAuthStatusLabel,
+	runtimeAuthStatusLabel,
 	formatCapabilities,
 	overviewHasConfiguredProviders,
 	providerCredentialLabel,
@@ -11,8 +11,8 @@ describe("provider overview helpers", () => {
 	it("labels credential and auth states without mixing semantics", () => {
 		expect(providerCredentialLabel("configured")).toBe("已配置");
 		expect(providerCredentialLabel("not_configured")).toBe("未配置");
-		expect(acpAuthStatusLabel("failed")).toBe("上次 ACP 认证失败");
-		expect(acpAuthStatusLabel("unknown")).toBe("ACP 认证状态未知");
+		expect(runtimeAuthStatusLabel("failed")).toBe("上次 Runtime 认证失败");
+		expect(runtimeAuthStatusLabel("unknown")).toBe("Runtime 认证状态未知");
 	});
 
 	it("formats capability lists for display", () => {
@@ -20,17 +20,17 @@ describe("provider overview helpers", () => {
 		expect(formatCapabilities([])).toBe("（无）");
 	});
 
-	it("detects configured providers independently from ACP auth", () => {
+	it("detects configured providers independently from runtime auth", () => {
 		const overview: ProvidersOverview = {
 			configPath: "/tmp/config.toml",
 			defaultModel: "demo",
 			structureValid: true,
 			structureIssues: [],
 			kimiAccountCredentialsPresent: false,
-			acpAuth: {
+			runtimeAuth: {
 				status: "failed",
 				lastFailureAtMs: 1,
-				lastFailureMessage: "ACP authenticate failed",
+				lastFailureMessage: "Runtime authenticate failed",
 			},
 			providers: [
 				{
@@ -45,6 +45,6 @@ describe("provider overview helpers", () => {
 			],
 		};
 		expect(overviewHasConfiguredProviders(overview)).toBe(true);
-		expect(overview.acpAuth.status).toBe("failed");
+		expect(overview.runtimeAuth.status).toBe("failed");
 	});
 });

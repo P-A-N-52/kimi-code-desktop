@@ -31,10 +31,10 @@ export function sessionRuntimeIndicatorLabel(indicator: SessionRuntimeIndicator)
     case "working":
       return "模型正在响应";
     case "connected":
-      return "ACP 已连接";
+      return "Runtime 已连接";
     case "error":
-      return "ACP 连接异常";
+      return "Runtime 连接异常";
     default:
-      return "ACP 未连接";
+      return "Runtime 未连接";
   }
 }

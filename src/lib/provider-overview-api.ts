@@ -1,5 +1,5 @@
 import type {
-	AcpAuthStatus,
+	RuntimeAuthStatus,
 	ProviderCredentialStatus,
 	ProviderModelBinding,
 	ProviderSummary,
@@ -7,7 +7,7 @@ import type {
 } from "@/lib/provider-overview";
 
 export type {
-	AcpAuthStatus,
+	RuntimeAuthStatus,
 	ProviderCredentialStatus,
 	ProviderModelBinding,
 	ProviderSummary,
@@ -18,7 +18,7 @@ function normalizeCredentialStatus(value: unknown): ProviderCredentialStatus {
 	return value === "configured" ? "configured" : "not_configured";
 }
 
-function normalizeAcpAuthStatus(value: unknown): AcpAuthStatus {
+function normalizeRuntimeAuthStatus(value: unknown): RuntimeAuthStatus {
 	return value === "failed" ? "failed" : "unknown";
 }
 
@@ -65,9 +65,9 @@ function normalizeProviderSummary(raw: Record<string, unknown>): ProviderSummary
 export function normalizeProvidersOverview(
 	raw: Record<string, unknown>,
 ): ProvidersOverview {
-	const acpAuth =
-		(raw.acpAuth as Record<string, unknown> | undefined) ??
-		(raw.acp_auth as Record<string, unknown> | undefined) ??
+	const runtimeAuth =
+		(raw.runtimeAuth as Record<string, unknown> | undefined) ??
+		(raw.runtime_auth as Record<string, unknown> | undefined) ??
 		{};
 	return {
 		configPath: String(raw.configPath ?? raw.config_path ?? ""),
@@ -84,19 +84,19 @@ export function normalizeProvidersOverview(
 		kimiAccountCredentialsPresent: Boolean(
 			raw.kimiAccountCredentialsPresent ?? raw.kimi_account_credentials_present,
 		),
-		acpAuth: {
-			status: normalizeAcpAuthStatus(acpAuth.status),
+		runtimeAuth: {
+			status: normalizeRuntimeAuthStatus(runtimeAuth.status),
 			lastFailureAtMs:
-				typeof acpAuth.lastFailureAtMs === "number"
-					? acpAuth.lastFailureAtMs
-					: typeof acpAuth.last_failure_at_ms === "number"
-						? acpAuth.last_failure_at_ms
+				typeof runtimeAuth.lastFailureAtMs === "number"
+					? runtimeAuth.lastFailureAtMs
+					: typeof runtimeAuth.last_failure_at_ms === "number"
+						? runtimeAuth.last_failure_at_ms
 						: null,
 			lastFailureMessage:
-				typeof acpAuth.lastFailureMessage === "string"
-					? acpAuth.lastFailureMessage
-					: typeof acpAuth.last_failure_message === "string"
-						? acpAuth.last_failure_message
+				typeof runtimeAuth.lastFailureMessage === "string"
+					? runtimeAuth.lastFailureMessage
+					: typeof runtimeAuth.last_failure_message === "string"
+						? runtimeAuth.last_failure_message
 						: null,
 		},
 	};
