@@ -544,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_local_session_worktree_without_acp_data() {
+    fn resolves_local_session_worktree_without_runtime_lookup() {
         let temp = tempfile::tempdir().expect("tempdir");
         let home = temp.path().join("home");
         let work_dir = temp.path().join("local-project");

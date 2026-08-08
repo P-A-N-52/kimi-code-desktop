@@ -363,7 +363,7 @@ describe("createSessionRuntime", () => {
     expect(snapshot.status).toBe("streaming");
   });
 
-  it("restores ACP inline image blocks as distinct historical attachments and sources", () => {
+  it("restores compatible runtime image blocks as distinct historical attachments and sources", () => {
     const runtime = createSessionRuntime({ sessionId: "session-images" });
     runtime.handleWireMessage(
       JSON.stringify({
