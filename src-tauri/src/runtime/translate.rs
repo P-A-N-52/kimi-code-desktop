@@ -3,7 +3,7 @@
 //! Input: [`EventFrame`]s from the supervisor's event stream. Output: legacy
 //! desktop wire JSON strings — the exact lines `wire:message` delivers to the
 //! frontend `useSessionStream` consumer. The output contract is
-//! `src/hooks/wireTypes.ts` with `acp_translate.rs` as the behavioral
+//! `src/hooks/wireTypes.ts` with `the pre-cutover ACP translation module` as the behavioral
 //! baseline: field names, nesting, and optionality are kept identical so the
 //! existing UI works unchanged. Input payload conventions follow
 //! `runtime/kimi-code/apps/desktop-runtime/src/protocol.ts`

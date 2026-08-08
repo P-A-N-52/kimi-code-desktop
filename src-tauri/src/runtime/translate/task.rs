@@ -4,7 +4,7 @@
 //! budget. Both mappings are stateful by design: a task is announced via
 //! `TaskCreated` exactly once per session, and subagent provenance learned at
 //! `spawned` backfills later lifecycle events so the parent link stays
-//! stable. Output shapes mirror `acp_translate.rs` (the UI contract).
+//! stable. Output shapes mirror `the pre-cutover ACP translation module` (the UI contract).
 
 use super::{
     cloned_for_keys, malformed_event_notice, string_for_keys, value_for_keys, wire_event_message,

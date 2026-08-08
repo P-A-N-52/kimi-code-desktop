@@ -25,6 +25,11 @@
  * session event set). The fixture implements no business logic, so calls
  * still answer a structured not_implemented error-response.
  *
+ * M4 additions (session.setMode, providers.catalog.list,
+ * providers.catalog.get) plus the M1 providers.import name are registered
+ * and advertised the same way — the fixture pins the method surface, not
+ * the behavior, and params are not validated here.
+ *
  * Fault injection via environment (all optional):
  * - KIMI_RUNTIME_FIXTURE_RAW_STDOUT: printed verbatim (+LF) before anything
  *   else — exercises the desktop invalid-json fail-closed path.
@@ -54,6 +59,16 @@ const PARITY_METHODS = [
   'auth.logout',
   'auth.status',
   'usage.get',
+];
+
+// M4 method additions plus the M1 providers.import name (its params grew the
+// catalog/registry source channels in M4). Same not_implemented placeholder
+// treatment as the parity methods.
+const M4_METHODS = [
+  'session.setMode',
+  'providers.catalog.list',
+  'providers.catalog.get',
+  'providers.import',
 ];
 
 // The 25 runtime-v1 session events (SESSION_EVENT_NAMES in protocol.ts):
@@ -95,6 +110,7 @@ const FIXTURE_METHODS = [
   'fixture.slowRespond',
   'fixture.neverRespond',
   ...PARITY_METHODS,
+  ...M4_METHODS,
 ];
 
 function writeFrame(frame) {
@@ -370,8 +386,8 @@ function handleRequest(frame) {
       // alive for later calls.
       return;
     default:
-      if (PARITY_METHODS.includes(method)) {
-        // The fixture implements no parity business logic: calls answer
+      if (PARITY_METHODS.includes(method) || M4_METHODS.includes(method)) {
+        // The fixture implements no parity/M4 business logic: calls answer
         // not_implemented even though the snapshot gates are on (the
         // fixture pins the advertised surface, not the behavior, and params
         // are not validated here).

@@ -9,9 +9,10 @@
 //! file (exists, regular, non-empty, readable); the path is caller-injected —
 //! M2 tests pass the fixture worker, M4 resolves the real
 //! `runtime/kimi-code/apps/desktop-runtime` dist entry from config before the
-//! first supervisor spawn. `check_manifest` is a reserved release-manifest
-//! gate (JSON with `kimiSource.tag`/`commit`, produced by the M5 packaging
-//! pipeline). `check_runtime` spawns the artifact through
+//! first supervisor spawn. `check_manifest` is the release-manifest gate
+//! (JSON with `kimiSource.tag`/`commit`, produced by the M5 packaging
+//! pipeline as `src-tauri/binaries/desktop-runtime-<target-triple>.manifest.json`,
+//! sibling of the SEA artifact). `check_runtime` spawns the artifact through
 //! [`RuntimeSupervisor`], completes the `runtime.hello` handshake driven by a
 //! [`HandshakeConfig`], and gates the reported [`RuntimeInfo`] through
 //! `protocol::validate_runtime_info`.
@@ -255,9 +256,12 @@ fn check_artifact_impl(what: &str, path: &Path) -> Result<(), ReadinessError> {
     Ok(())
 }
 
-/// Release-manifest gate (reserved for M5): the file must pass the artifact
-/// checks, parse as JSON carrying `kimiSource.tag`/`commit`, and match the
-/// pinned commit when one is set. M5 produces the manifest at packaging time.
+/// Release-manifest gate: the file must pass the artifact checks, parse as
+/// JSON carrying `kimiSource.tag`/`commit`, and match the pinned commit when
+/// one is set. Convention (M5): `release-macos.sh` writes the manifest next
+/// to the SEA artifact at
+/// `src-tauri/binaries/desktop-runtime-<target-triple>.manifest.json`; it is a
+/// build-tree release gate (not bundled into the app).
 pub fn check_manifest(
     path: &Path,
     expected_commit: Option<&str>,
@@ -499,6 +503,46 @@ mod tests {
         let err = check_manifest(&malformed, Some(EXPECTED_COMMIT)).unwrap_err();
         assert_eq!(err.kind, ReadinessErrorKind::ArtifactInvalid);
         assert!(err.message.contains("kimiSource"));
+    }
+
+    /// M5 packaging check: when the release pipeline has produced the SEA
+    /// release manifest next to the artifact
+    /// (`src-tauri/binaries/desktop-runtime-<host-triple>.manifest.json`), it
+    /// must parse and match the pinned commit. Dev-only checkpoints and
+    /// non-macOS hosts build no sidecar, so the check self-skips then.
+    #[test]
+    fn real_release_manifest_parses_and_matches_the_pinned_commit() {
+        let triple = match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("macos", "aarch64") => "aarch64-apple-darwin",
+            ("macos", "x86_64") => "x86_64-apple-darwin",
+            _ => {
+                eprintln!(
+                    "skipping: no SEA sidecar target for {}/{}",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                );
+                return;
+            }
+        };
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(format!("desktop-runtime-{triple}.manifest.json"));
+        if !manifest_path.exists() {
+            eprintln!(
+                "skipping: no release manifest at {}",
+                manifest_path.display()
+            );
+            return;
+        }
+        let manifest =
+            check_manifest(&manifest_path, Some(EXPECTED_COMMIT)).unwrap_or_else(|err| {
+                panic!(
+                    "release manifest at {} failed the gate: {err}",
+                    manifest_path.display()
+                )
+            });
+        assert_eq!(manifest.kimi_source.commit, EXPECTED_COMMIT);
+        assert_eq!(manifest.kimi_source.tag, "@moonshot-ai/kimi-code@0.33.0");
     }
 
     #[test]

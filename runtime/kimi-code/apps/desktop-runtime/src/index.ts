@@ -10,5 +10,6 @@ export * from './protocol-schemas';
 export * from './router';
 export * from './server';
 export * from './session-manager';
+export * from './session-mode-router';
 export * from './stdio';
 export * from './turn-router';

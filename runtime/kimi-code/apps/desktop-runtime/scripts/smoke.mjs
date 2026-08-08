@@ -1,15 +1,25 @@
 import { spawn } from 'node:child_process';
 import { access, mkdtemp, rm } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const appRoot = join(import.meta.dirname, '..');
 const libraryPath = join(appRoot, 'dist/index.mjs');
 const mainPath = join(appRoot, 'dist/main.mjs');
+// When set, spawn the given executable instead of `node dist/main.mjs` —
+// used to run the full chain against the M5 SEA sidecar artifact
+// (`RUNTIME_EXEC=<path to desktop-runtime-*>`).
+const runtimeExec = process.env.RUNTIME_EXEC?.trim() || undefined;
 
 await Promise.all([access(libraryPath), access(mainPath)]).catch(() => {
   throw new Error('Desktop runtime dist is missing. Run the package build before smoke.');
 });
+if (runtimeExec) {
+  await access(runtimeExec).catch(() => {
+    throw new Error(`RUNTIME_EXEC=${runtimeExec} does not exist.`);
+  });
+}
 
 const runtime = await import(libraryPath);
 const libraryFrames = [];
@@ -36,9 +46,9 @@ assert(
     libraryFrames[0]?.result?.capabilities?.auth === true &&
     libraryFrames[0]?.result?.capabilities?.usage === true &&
     libraryFrames[0]?.result?.capabilities?.fork === true &&
-    libraryFrames[0]?.result?.capabilities?.methods?.length === 28 &&
+    libraryFrames[0]?.result?.capabilities?.methods?.length === 31 &&
     libraryFrames[0]?.result?.capabilities?.events?.length === 25,
-  'dist library did not report all families wired (28 methods, 25 events)',
+  'dist library did not report all families wired (31 methods, 25 events)',
 );
 assert(
   libraryFrames[1]?.type === 'event' &&
@@ -61,13 +71,22 @@ assert(
 // KIMI_CODE_HOME so smoke never touches the user's real ~/.kimi-code. The
 // method chain below is offline-safe: no provider is configured and no turn
 // is started (turn terminal-state timing is a vitest concern, not a
-// deterministic gate).
+// deterministic gate). The provider-directory probe falls back to the
+// engine's built-in models.dev snapshot without network, and the registry
+// probe targets a loopback server.
 const kimiHome = await mkdtemp(join(tmpdir(), 'desktop-runtime-smoke-'));
 const workDir = await mkdtemp(join(tmpdir(), 'desktop-runtime-smoke-work-'));
-const child = spawn(process.execPath, [mainPath], {
-  stdio: ['pipe', 'pipe', 'pipe'],
-  env: { ...process.env, KIMI_CODE_HOME: kimiHome },
-});
+let registryServer;
+// The SEA artifact embeds its own main; `node dist/main.mjs` is the dev path.
+const child = runtimeExec
+  ? spawn(runtimeExec, [], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, KIMI_CODE_HOME: kimiHome },
+    })
+  : spawn(process.execPath, [mainPath], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, KIMI_CODE_HOME: kimiHome },
+    });
 let stderr = '';
 child.stderr.setEncoding('utf8');
 child.stderr.on('data', (chunk) => {
@@ -159,9 +178,9 @@ try {
       helloResult.capabilities?.auth === true &&
       helloResult.capabilities?.usage === true &&
       helloResult.capabilities?.fork === true &&
-      helloResult.capabilities?.methods?.length === 28 &&
+      helloResult.capabilities?.methods?.length === 31 &&
       helloResult.capabilities?.events?.length === 25,
-    'hello did not advertise all families wired (28 methods, 25 events)',
+    'hello did not advertise all families wired (31 methods, 25 events)',
   );
   const ready = await waitForEvent(
     (frame) =>
@@ -175,6 +194,12 @@ try {
       infoResult.capabilities?.turns === true &&
       infoResult.capabilities?.config === true,
     'getInfo did not report the wired families',
+  );
+  // Release gate: the process must self-identify as the pinned kimi source
+  // (KIMI_SOURCE_COMMIT in src/protocol.ts), whatever executable hosts it.
+  assert(
+    infoResult.kimiSource?.commit === '53c832dfdf9566afd59a8b3d54ebd36d3cb03d72',
+    `getInfo did not report the pinned kimi source commit (${String(infoResult.kimiSource?.commit)})`,
   );
 
   const created = assertOk(
@@ -229,12 +254,100 @@ try {
   const providers = assertOk(await call('providers-1', 'providers.list'), 'providers-1');
   assert(Array.isArray(providers.providers), 'providers.list did not return a providers array');
 
+  // M4 provider directory probes. The directory data comes from the live
+  // models.dev fetch or, offline, the engine's built-in snapshot — either
+  // way the DTO shape is the contract under test.
+  const catalog = assertOk(await call('catalog-1', 'providers.catalog.list'), 'catalog-1');
+  assert(
+    Array.isArray(catalog.providers),
+    'providers.catalog.list did not return a providers array',
+  );
+  const firstCatalogId = catalog.providers[0]?.id;
+  if (typeof firstCatalogId === 'string') {
+    const entry = assertOk(
+      await call('catalog-2', 'providers.catalog.get', { entryId: firstCatalogId }),
+      'catalog-2',
+    );
+    assert(
+      entry.providerId === firstCatalogId && Array.isArray(entry.models),
+      'providers.catalog.get did not round-trip the first directory entry',
+    );
+  }
+
+  // M4 registry channel against a loopback api.json server (offline-safe).
+  let registryAuth;
+  registryServer = createServer((req, res) => {
+    registryAuth = req.headers['authorization'];
+    res.writeHead(200, { 'content-type': 'application/json' }).end(
+      JSON.stringify({
+        smokereg: {
+          id: 'smokereg',
+          name: 'Smoke Registry',
+          api: 'https://api.smokereg.test/v1',
+          type: 'openai',
+          models: { 'smoke-model': { id: 'smoke-model', limit: { context: 8192 } } },
+        },
+      }),
+    );
+  });
+  await new Promise((resolve) => registryServer.listen(0, '127.0.0.1', resolve));
+  const registryUrl = `http://127.0.0.1:${String(registryServer.address().port)}/api.json`;
+  const registryImport = assertOk(
+    await call('registry-1', 'providers.import', {
+      source: 'registry',
+      registryUrl,
+      config: { apiKey: 'smoke-registry-key' },
+    }),
+    'registry-1',
+  );
+  assert(
+    registryImport.providerId === 'smokereg' && registryImport.modelsImported === 1,
+    'providers.import registry channel did not import the smoke registry',
+  );
+  assert(
+    registryAuth === 'Bearer smoke-registry-key',
+    'registry import did not send the bearer key',
+  );
+
   assertOk(await call('open-1', 'session.open', { sessionId: 'smoke-session-1' }), 'open-1');
   // Attaching the event bridge emits the initial session.status snapshot.
   const status = await waitForEvent(
     (frame) => frame.sessionId === 'smoke-session-1' && frame.event === 'session.status',
   );
   assert(status !== undefined, 'session.open did not bridge the initial session.status event');
+
+  // M4 session.setMode probes on the open session (no turn is live, so the
+  // plan arm's idle gate is satisfied; the permission arm hot-switches).
+  const planOn = assertOk(
+    await call('mode-1', 'session.setMode', {
+      sessionId: 'smoke-session-1',
+      mode: 'plan',
+      enabled: true,
+    }),
+    'mode-1',
+  );
+  assert(planOn.planMode === true, 'session.setMode plan arm did not report planMode:true');
+  const planOff = assertOk(
+    await call('mode-2', 'session.setMode', {
+      sessionId: 'smoke-session-1',
+      mode: 'plan',
+      enabled: false,
+    }),
+    'mode-2',
+  );
+  assert(planOff.planMode === false, 'session.setMode plan arm did not report planMode:false');
+  const permission = assertOk(
+    await call('mode-3', 'session.setMode', {
+      sessionId: 'smoke-session-1',
+      mode: 'permission',
+      permissionMode: 'auto',
+    }),
+    'mode-3',
+  );
+  assert(
+    permission.permissionMode === 'auto',
+    'session.setMode permission arm did not apply auto',
+  );
 
   const closed = assertOk(
     await call('close-1', 'session.close', { sessionId: 'smoke-session-1' }),
@@ -315,6 +428,9 @@ try {
 
   process.stdout.write('Desktop runtime smoke passed.\n');
 } finally {
+  if (registryServer !== undefined) {
+    await new Promise((resolve) => registryServer.close(() => resolve()));
+  }
   await rm(kimiHome, { recursive: true, force: true });
   await rm(workDir, { recursive: true, force: true });
 }

@@ -13,8 +13,15 @@
  * `sessions.create` takes the handler chain because the klient facade
  * `global.sessions.create` accepts no explicit session id; when the Desktop
  * does not supply one, the runtime mints it in the engine's own id shape
- * (`session_<uuid>`). A fresh create leaves the engine session materialized
- * but unopened, and a forked session lands in the same state: `session.open`
+ * (`session_<uuid>`). A create without an explicit `model` inherits the
+ * configured global default (`default_model` in config.toml) through the
+ * engine's `mainAgentBinding`; with no default configured the session stays
+ * unbound — CLI parity, since the CLI resolves the default at first use
+ * rather than at create. `session.open` and `turn.start` re-apply that
+ * first-use bind (default-model helpers in `./default-model`) for any session
+ * that reached them without a binding. A fresh create leaves the engine
+ * session materialized but unopened, and a forked session lands in the same
+ * state: `session.open`
  * is the step that registers the session with the adapter and fires
  * `RuntimeSessionHooks.onSessionOpened` so the turns family can attach its
  * event bridge — repeat opens answer the current descriptor without
@@ -42,9 +49,6 @@ import {
   handlerForSession,
   IAgentLifecycleService,
   IAgentProfileService,
-  IConfigService,
-  IModelService,
-  IProviderService,
   ISessionContext,
   ISessionIndex,
   ISessionLifecycleService,
@@ -58,6 +62,11 @@ import {
 } from '@moonshot-ai/agent-core-v2';
 import type { z } from 'zod';
 
+import {
+  bindDefaultModelIfUnbound,
+  configuredDefaultModel,
+  modelCatalogReady,
+} from './default-model';
 import type { EngineContext } from './engine';
 import {
   requireEngineContext,
@@ -125,6 +134,12 @@ export function createSessionHandlers(ctx: RuntimeHandlerContext): RuntimeHandle
         );
       }
       if (params.model !== undefined) await modelCatalogReady(engine);
+      // Without an explicit model a create inherits the configured global
+      // default — the same default `AgentProfileService.bind` applies, and the
+      // ACP-era create path inherited it too. With no `default_model`
+      // configured the session is created unbound, exactly like the CLI's
+      // model-less create (the CLI resolves the default at first use instead).
+      const model = params.model ?? (await configuredDefaultModel(engine));
       const handler = await accessor
         .get(IWorkspaceLifecycleService)
         .handlerFor({ root: params.cwd });
@@ -132,9 +147,9 @@ export function createSessionHandlers(ctx: RuntimeHandlerContext): RuntimeHandle
         sessionId,
         workDir: params.cwd,
         mainAgentBinding:
-          params.model === undefined
+          model === undefined
             ? undefined
-            : { profile: DEFAULT_AGENT_PROFILE_NAME, model: params.model },
+            : { profile: DEFAULT_AGENT_PROFILE_NAME, model },
       });
       if (params.title !== undefined) {
         await handle.accessor.get(ISessionMetadata).setTitle(params.title);
@@ -238,6 +253,11 @@ export function createSessionHandlers(ctx: RuntimeHandlerContext): RuntimeHandle
       throw toInternalError(error);
     }
     if (handle === undefined) throw sessionNotFound(params.sessionId);
+    // CLI resume parity (node-sdk `materializeMainAgent`): a resumed session
+    // whose journal has no main-agent binding gets the default binding; an
+    // existing binding is left untouched; with no configured default the
+    // agent stays unbound instead of failing.
+    await bindDefaultModelIfUnbound(engine, handle);
     ctx.adapter.trackLiveSession(params.sessionId);
     // Added after the hook so a bridge-attach failure leaves the next open
     // free to retry the hook instead of being absorbed by idempotency.
@@ -384,20 +404,6 @@ function toInternalError(error: unknown): RuntimeRequestError {
 /** `z.looseObject` inference carries an `unknown` catchall; the wire shapes built here are plain JSON. */
 function toJson(value: unknown): JsonValue {
   return value as JsonValue;
-}
-
-/**
- * The node-sdk `modelReady` gate: model alias resolution reads the catalog,
- * which only reflects config.toml once config/model/provider services report
- * ready — binding without the gate races the initial load.
- */
-async function modelCatalogReady(engine: EngineContext): Promise<void> {
-  const accessor = engine.app.accessor;
-  await Promise.all([
-    accessor.get(IConfigService).ready,
-    accessor.get(IModelService).ready,
-    accessor.get(IProviderService).ready,
-  ]).then(() => undefined);
 }
 
 /**

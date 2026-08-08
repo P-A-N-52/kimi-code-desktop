@@ -32,6 +32,16 @@ pub const METHOD_AUTH_LOGOUT: &str = "auth.logout";
 pub const METHOD_AUTH_STATUS: &str = "auth.status";
 pub const METHOD_USAGE_GET: &str = "usage.get";
 
+// M4 protocol additions (`protocol-schemas.ts`): `session.setMode` joins the
+// session family (plan/permission mode control, session-scoped envelope);
+// `providers.catalog.*` extend the config family (the models.dev importable
+// directory behind the Desktop Settings picker). The `providers.import`
+// method name is unchanged; its params gain the `source` channels
+// (`client_types::ProvidersImportSourceParams`).
+pub const METHOD_SESSION_SET_MODE: &str = "session.setMode";
+pub const METHOD_PROVIDERS_CATALOG_LIST: &str = "providers.catalog.list";
+pub const METHOD_PROVIDERS_CATALOG_GET: &str = "providers.catalog.get";
+
 pub const EVENT_READY: &str = "runtime.ready";
 pub const EVENT_WARNING: &str = "runtime.warning";
 

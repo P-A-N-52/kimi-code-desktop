@@ -14,12 +14,17 @@
 //!   compatibility surface; generic fallback for unknown payloads).
 //! - `readiness`: artifact/manifest/handshake validation with actionable
 //!   errors.
+//! - `host`: M4 desktop-semantic singleton (`RuntimeHost`) — spawn
+//!   resolution, lazy lifecycle with fail-closed rebuild, the single-point
+//!   event pump, session/lease bookkeeping, and the injectable wire sink.
 //!
-//! Nothing here is wired to Tauri commands or app state yet (M4); the module
-//! is consumed by tests only.
+//! Only `host` is wired to Tauri state (`.manage` in `lib.rs`); production
+//! command rewiring lands in the later M4 waves (W1+).
 
 pub mod client;
 pub mod codec;
+pub mod host;
+pub mod migrate;
 pub mod protocol;
 pub(crate) mod pump;
 pub mod readiness;

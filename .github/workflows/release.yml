@@ -22,7 +22,10 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  NODE_VERSION: "22"
+  # Source Runtime workspace pins Node 24.15.0 (engine-strict); the smoke step
+  # builds and runs the vendored Kimi source, so the whole pipeline now runs on
+  # the pinned Node instead of the old ACP-era 22.
+  NODE_VERSION: "24.15.0"
   PYTHON_VERSION: "3.12"
 
 jobs:
@@ -55,9 +58,14 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Kimi CLI runtime
-        shell: pwsh
-        run: uv tool install kimi-cli --python $env:PYTHON_VERSION
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+          run_install: false
+
+      - name: Install Source Runtime workspace dependencies
+        run: npm run runtime:install
 
       - name: Install Node dependencies
         run: npm ci
@@ -66,9 +74,8 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/release-msi.ps1
 
-      - name: ACP smoke test
-        shell: pwsh
-        run: npm run smoke:acp
+      - name: Source Runtime smoke test
+        run: npm run smoke:runtime
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -112,10 +119,14 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Kimi CLI runtime
-        run: |
-          uv tool install kimi-cli --python "${PYTHON_VERSION}"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+          run_install: false
+
+      - name: Install Source Runtime workspace dependencies
+        run: npm run runtime:install
 
       - name: Install Node dependencies
         run: npm ci
@@ -131,8 +142,8 @@ jobs:
       - name: Rust Apple Silicon check
         run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
 
-      - name: ACP smoke test
-        run: npm run smoke:acp
+      - name: Source Runtime smoke test
+        run: npm run smoke:runtime
 
       - name: Build macOS ARM64 release
         env:

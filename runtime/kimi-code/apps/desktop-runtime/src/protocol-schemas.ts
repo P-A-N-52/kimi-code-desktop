@@ -86,6 +86,44 @@ export const sessionOpenResultSchema = sessionDescriptorSchema;
 export const sessionCloseParamsSchema = z.object({ sessionId: z.string().min(1) });
 export const sessionCloseResultSchema = z.object({ closed: z.boolean() });
 
+/**
+ * M4 `session.setMode` — one method replacing the ACP-era wire commands
+ * `set_plan_mode {enabled}` and `set_permission_mode {mode}`, discriminated
+ * on `mode`. The plan arm is idle-gated (a live turn answers `session_busy`,
+ * matching the ACP-era `ensure_mode_change_idle`); the permission arm
+ * hot-switches mid-turn (existing Desktop behavior — it must not regress to
+ * next-turn application). `permissionMode` mirrors the klient
+ * `permissionModeSchema` (agent/rpc.ts).
+ */
+export const sessionModePermissionSchema = z.enum(['manual', 'yolo', 'auto']);
+
+export const sessionSetModeParamsSchema = z.discriminatedUnion('mode', [
+  z.object({
+    sessionId: z.string().min(1),
+    mode: z.literal('plan'),
+    enabled: z.boolean(),
+  }),
+  z.object({
+    sessionId: z.string().min(1),
+    mode: z.literal('permission'),
+    permissionMode: sessionModePermissionSchema,
+  }),
+]);
+
+/**
+ * Arm-specific echo: the plan arm reports the engine readback (`planMode`,
+ * from `agentPlanService.status`), the permission arm the applied
+ * `permissionMode`. The Desktop merges the result into the same StatusUpdate
+ * fields the ACP-era mode response carried; engine-initiated mode changes do
+ * not cross runtime-v1 as events, so this result is the only echo channel.
+ */
+export const sessionSetModeResultSchema = z.looseObject({
+  sessionId: z.string(),
+  mode: z.enum(['plan', 'permission']),
+  planMode: z.boolean().optional(),
+  permissionMode: sessionModePermissionSchema.optional(),
+});
+
 export const turnStartParamsSchema = z.object({
   sessionId: z.string().min(1),
   /** Desktop-minted turn id; echoed by turn.completed/turn.failed and the response. */
@@ -187,11 +225,103 @@ export const providersListResultSchema = z.looseObject({
   providers: z.array(providerDescriptorSchema),
 });
 
-/** Wave 2 owns the full provider-input shape (klient kosong `ProviderInput`). */
-export const providersImportParamsSchema = z.object({
-  providers: z.array(z.looseObject({ id: z.string() })).min(1),
+// ---------------------------------------------------------------------------
+// M4 provider directory + import channels
+//
+// `providers.catalog.list` / `providers.catalog.get` expose the importable
+// models.dev directory (engine `IModelsDevImportService`) behind the Desktop
+// Settings provider picker; `providers.import` gains the catalog/registry
+// `source` channels next to the M1 direct form. Wire DTOs mirror the Desktop
+// `ProviderCatalogSummary` / `ProviderCatalogEntry` shapes
+// (`src/lib/tauri-api.ts`), so the M4 command rewiring is a field-for-field
+// pass-through.
+// ---------------------------------------------------------------------------
+
+/** Desktop `ProviderCatalogSummary` (`{id, name, modelCount}`). */
+export const providerCatalogSummarySchema = z.looseObject({
+  id: z.string(),
+  name: z.string(),
+  modelCount: z.number().int().min(0),
 });
-export const providersImportResultSchema = z.object({});
+export const providersCatalogListParamsSchema = z.object({});
+export const providersCatalogListResultSchema = z.looseObject({
+  providers: z.array(providerCatalogSummarySchema),
+});
+
+/** Desktop `ProviderCatalogModel` (`{id, name, maxContextTokens}`). */
+export const providerCatalogModelSchema = z.looseObject({
+  id: z.string(),
+  name: z.string(),
+  maxContextTokens: z.number().int().min(0),
+});
+export const providersCatalogGetParamsSchema = z.object({
+  /** models.dev directory entry id (the engine contract's `catalogId`). */
+  entryId: z.string().min(1),
+});
+/** Desktop `ProviderCatalogEntry` (`{providerId, name, models}`). */
+export const providersCatalogGetResultSchema = z.looseObject({
+  providerId: z.string(),
+  name: z.string(),
+  models: z.array(providerCatalogModelSchema),
+});
+
+/**
+ * Catalog channel config (ACP-era `import_provider_from_catalog` fields).
+ * `defaultModel` picks the global default among the imported aliases after
+ * the import, like the CLI's `provider catalog add --default-model`.
+ */
+export const providersImportCatalogConfigSchema = z.object({
+  apiKey: z.string().min(1),
+  defaultModel: z.string().min(1).optional(),
+  baseUrl: z.string().min(1).max(2048).optional(),
+});
+
+/**
+ * Registry channel config. `apiKey` is the api.json bearer key; when absent
+ * the handler falls back to the runtime process env KIMI_REGISTRY_API_KEY
+ * (the Rust host passes it through at spawn), then to the stored key of a
+ * previous import from the same URL (engine behavior). It never enters argv,
+ * logs, or protocol events.
+ */
+export const providersImportRegistryConfigSchema = z.object({
+  apiKey: z.string().min(1).optional(),
+});
+
+/**
+ * providers.import — three channels. The M1 direct form `{providers: [...]}`
+ * is unchanged (entries are tightened to the klient `ProviderInput` contract
+ * by the handler). `{source: 'catalog', entryId, config}` imports a
+ * models.dev directory entry through the engine's `importModelsDevProvider`
+ * (provider + model aliases). `{source: 'registry', registryUrl, config?}`
+ * imports a custom api.json registry through the engine's
+ * `importCustomRegistry` (the CLI `kimi provider add <url>` flow).
+ */
+export const providersImportParamsSchema = z.union([
+  z.object({
+    providers: z.array(z.looseObject({ id: z.string() })).min(1),
+  }),
+  z.object({
+    source: z.literal('catalog'),
+    entryId: z.string().min(1),
+    config: providersImportCatalogConfigSchema,
+  }),
+  z.object({
+    source: z.literal('registry'),
+    registryUrl: z.string().min(1).max(2048),
+    config: providersImportRegistryConfigSchema.optional(),
+  }),
+]);
+/**
+ * All channels answer the same shape: the first imported provider id plus
+ * the refreshed configured-provider list (`providerDescriptorSchema`-loose
+ * engine catalog items). `modelsImported` is present for the catalog and
+ * registry channels.
+ */
+export const providersImportResultSchema = z.looseObject({
+  providerId: z.string(),
+  providers: z.array(providerDescriptorSchema),
+  modelsImported: z.number().int().min(0).optional(),
+});
 
 const runtimeInfoResultSchema = z.looseObject({
   selectedProtocol: z.literal(RUNTIME_PROTOCOL),
@@ -217,6 +347,7 @@ export const runtimeMethodSchemas = {
   'sessions.delete': { params: sessionsDeleteParamsSchema, result: sessionsDeleteResultSchema },
   'session.open': { params: sessionOpenParamsSchema, result: sessionOpenResultSchema },
   'session.close': { params: sessionCloseParamsSchema, result: sessionCloseResultSchema },
+  'session.setMode': { params: sessionSetModeParamsSchema, result: sessionSetModeResultSchema },
   'turn.start': { params: turnStartParamsSchema, result: turnStartResultSchema },
   'turn.cancel': { params: turnCancelParamsSchema, result: turnCancelResultSchema },
   'turn.steer': { params: turnSteerParamsSchema, result: turnSteerResultSchema },
@@ -226,6 +357,14 @@ export const runtimeMethodSchemas = {
   'config.update': { params: configUpdateParamsSchema, result: configUpdateResultSchema },
   'models.list': { params: modelsListParamsSchema, result: modelsListResultSchema },
   'providers.list': { params: providersListParamsSchema, result: providersListResultSchema },
+  'providers.catalog.list': {
+    params: providersCatalogListParamsSchema,
+    result: providersCatalogListResultSchema,
+  },
+  'providers.catalog.get': {
+    params: providersCatalogGetParamsSchema,
+    result: providersCatalogGetResultSchema,
+  },
   'providers.import': { params: providersImportParamsSchema, result: providersImportResultSchema },
   ...parityMethodSchemas,
 } satisfies Record<RuntimeV1Method, RuntimeMethodSchema>;
@@ -370,7 +509,9 @@ export type { SessionDescriptor } from './protocol';
 
 export type SessionsCreateParams = z.infer<typeof sessionsCreateParamsSchema>;
 export type SessionsUpdateParams = z.infer<typeof sessionsUpdateParamsSchema>;
+export type SessionSetModeParams = z.infer<typeof sessionSetModeParamsSchema>;
 export type TurnStartParams = z.infer<typeof turnStartParamsSchema>;
 export type ApprovalRespondParams = z.infer<typeof approvalRespondParamsSchema>;
 export type QuestionRespondParams = z.infer<typeof questionRespondParamsSchema>;
 export type ConfigUpdateParams = z.infer<typeof configUpdateParamsSchema>;
+export type ProvidersImportParams = z.infer<typeof providersImportParamsSchema>;

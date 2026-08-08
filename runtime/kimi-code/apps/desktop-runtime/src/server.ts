@@ -24,6 +24,7 @@ import {
 import { createReplayHandlers } from './replay-router';
 import { DEFERRED_RESPONSE, MethodRouter } from './router';
 import { createForkSessionHandler, createSessionHandlers } from './session-manager';
+import { createSessionModeHandlers } from './session-mode-router';
 import { clearActiveTurns, createTurnHandlers } from './turn-router';
 
 type RuntimeState = 'awaiting-hello' | 'ready' | 'shutting-down' | 'stopped';
@@ -122,6 +123,8 @@ export class RuntimeProtocolServer {
       // Fork is a single handler entry exported separately from the sessions
       // family (it landed in M3 wave 2 alongside the family).
       createForkSessionHandler(ctx),
+      // M4 session.setMode (plan/permission mode control).
+      ...createSessionModeHandlers(ctx),
       ...createTurnHandlers(ctx),
       ...createConfigHandlers(ctx),
       // M3 parity families, wired for real in wave 3 (no placeholders left).

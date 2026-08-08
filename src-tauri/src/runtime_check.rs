@@ -1,10 +1,15 @@
-use crate::acp::{resolve_acp_command_validated, validate_kimi_acp_command};
+use crate::runtime::host::EXPECTED_KIMI_COMMIT;
+use crate::runtime::protocol::{HelloParams, RuntimeInfo};
+use crate::runtime::readiness::{
+    check_artifact, check_runtime, ReadinessError, ReadinessErrorKind,
+};
+use crate::runtime::supervisor::{HandshakeConfig, SpawnConfig};
 use serde::Serialize;
+use serde_json::Value;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::Mutex;
+use std::time::Duration;
 
 #[cfg(target_os = "macos")]
 pub fn configure_macos_cli_path() {
@@ -36,10 +41,127 @@ fn prepend_macos_cli_paths(home: Option<&Path>, mut paths: Vec<PathBuf>) -> Vec<
 
     paths
 }
-use tauri::AppHandle;
 
-const KIMI_CLI_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
-const KIMI_CLI_VERSION_COMMANDS: &[&[&str]] = &[&["version"], &["--version"]];
+// ---------------------------------------------------------------------------
+// Kimi account credentials presence (moved into this module at the M4 cutover;
+// the managed-usage fetch itself now goes through the runtime `usage.get`, but
+// the config readiness checks still report whether a Kimi credential file
+// exists)
+// ---------------------------------------------------------------------------
+
+const CREDENTIALS_NAME: &str = "kimi-code";
+static CREDENTIALS_LOCK: Mutex<()> = Mutex::new(());
+
+pub(crate) fn with_credentials_lock<R>(f: impl FnOnce() -> R) -> R {
+    let _guard = CREDENTIALS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    f()
+}
+
+pub(crate) fn credentials_path() -> Result<PathBuf, String> {
+    Ok(kimi_code_home_dir()?
+        .join("credentials")
+        .join(format!("{CREDENTIALS_NAME}.json")))
+}
+
+/// True when `~/.kimi-code/credentials/kimi-code.json` has a non-empty access_token.
+pub fn credentials_present() -> bool {
+    with_credentials_lock(|| {
+        let Ok(path) = credentials_path() else {
+            return false;
+        };
+        load_token_bundle(&path)
+            .map(|token| !token.access_token.is_empty())
+            .unwrap_or(false)
+    })
+}
+
+/// Credential bundle parsed from `~/.kimi-code/credentials/kimi-code.json`.
+///
+/// Retained verbatim from the pre-M4 managed-usage reader; only `access_token`
+/// is consumed by [`credentials_present`] — the remaining fields are parsed to
+/// keep credential-file validation parity (their original readers were removed
+/// with the managed-usage/oauth modules at the M4 cutover).
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub(crate) struct TokenBundle {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: i64,
+    pub scope: String,
+    pub token_type: String,
+    pub expires_in: i64,
+}
+
+pub(crate) fn load_token_bundle(path: &Path) -> Result<TokenBundle, String> {
+    if !path.is_file() {
+        return Err(
+            "Managed usage is unavailable without Kimi account credentials; configured providers remain usable."
+                .to_string(),
+        );
+    }
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("Failed to read credentials: {e}"))?;
+    // PowerShell / editors may write UTF-8 BOM; serde_json rejects it.
+    let content = content.strip_prefix('\u{feff}').unwrap_or(content.as_str());
+    let value: Value =
+        serde_json::from_str(content).map_err(|e| format!("Invalid credentials file: {e}"))?;
+    let access_token = value
+        .get("access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| "Managed usage credentials are missing an access token.".to_string())?
+        .to_string();
+    let refresh_token = value
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let expires_at = value
+        .get("expires_at")
+        .and_then(Value::as_i64)
+        .or_else(|| {
+            value
+                .get("expires_at")
+                .and_then(Value::as_u64)
+                .map(|v| v as i64)
+        })
+        .unwrap_or(0);
+    let expires_in = value
+        .get("expires_in")
+        .and_then(Value::as_i64)
+        .or_else(|| {
+            value
+                .get("expires_in")
+                .and_then(Value::as_u64)
+                .map(|v| v as i64)
+        })
+        .unwrap_or(0);
+    let scope = value
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let token_type = value
+        .get("token_type")
+        .and_then(Value::as_str)
+        .unwrap_or("Bearer")
+        .to_string();
+    Ok(TokenBundle {
+        access_token,
+        refresh_token,
+        expires_at,
+        scope,
+        token_type,
+        expires_in,
+    })
+}
+
+/// Bound for the readiness live probe (spawn -> handshake -> drain), covering
+/// the hello response and the trailing `runtime.ready` event.
+const RUNTIME_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,10 +226,7 @@ pub struct ConfigReadiness {
     pub error: Option<String>,
 }
 
-pub async fn check_runtime_readiness(_app: &AppHandle) -> RuntimeReadiness {
-    check_kimi_code_runtime_readiness()
-}
-
+/// Ensure `~/.kimi-code/config.toml` exists (first-run), then evaluate it.
 fn prepare_kimi_code_config_readiness() -> ConfigReadiness {
     let config_creation_error = ensure_kimi_code_config_file().err();
     let mut config = check_kimi_code_config_readiness();
@@ -117,92 +236,121 @@ fn prepare_kimi_code_config_readiness() -> ConfigReadiness {
     config
 }
 
-fn check_kimi_code_runtime_readiness() -> RuntimeReadiness {
+/// M4: full source-runtime readiness gate adapted to the existing
+/// `RuntimeReadiness` DTO the overlay consumes (frontend zero-change).
+///
+/// The gate composes the readiness module's three stages exactly like
+/// `readiness::check_readiness` (artifact -> optional manifest -> live probe;
+/// the probe is skipped when the artifact is unusable) but keeps the probe's
+/// `RuntimeInfo` so the `bundledRuntime.version` banner can be reported — the
+/// aggregate helper drops it. The runtime child is a disposable probe (start,
+/// handshake, shutdown); it never touches the managed host generation.
+pub fn check_source_runtime_readiness() -> RuntimeReadiness {
+    let (entry, spawn) = runtime_spawn_inputs();
+    let handshake = runtime_probe_handshake();
+
+    let mut errors = Vec::new();
+    let mut probe_info = None;
+    if let Err(err) = check_artifact(&entry) {
+        errors.push(err);
+    }
+    if errors.is_empty() {
+        match check_runtime(&spawn, &handshake) {
+            Ok(info) => probe_info = Some(info),
+            Err(err) => errors.push(err),
+        }
+    }
+
+    let config = prepare_kimi_code_config_readiness();
+    build_source_runtime_readiness(&errors, probe_info.as_ref(), &entry, &config)
+}
+
+/// Resolve the bundled runtime spawn inputs for the readiness probe,
+/// mirroring the host's dev-default resolution (`runtime/host/spawn.rs`):
+/// the source-tree dist entry, overridable via `KIMI_RUNTIME_ENTRY`.
+fn runtime_spawn_inputs() -> (PathBuf, SpawnConfig) {
+    let entry = std::env::var("KIMI_RUNTIME_ENTRY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("runtime")
+                .join("kimi-code")
+                .join("apps")
+                .join("desktop-runtime")
+                .join("dist")
+                .join("main.mjs")
+        });
+    let spawn = SpawnConfig {
+        program: "node".to_string(),
+        args: vec![entry.to_string_lossy().into_owned()],
+        env: Vec::new(),
+        cwd: None,
+    };
+    (entry, spawn)
+}
+
+/// Handshake inputs for the readiness probe: the pinned commit gate plus the
+/// production data root (the same hello the managed host sends).
+fn runtime_probe_handshake() -> HandshakeConfig {
+    let data_root = kimi_code_home_dir().unwrap_or_else(|_| std::env::temp_dir());
+    HandshakeConfig {
+        hello: HelloParams::new(
+            env!("CARGO_PKG_VERSION"),
+            data_root.to_string_lossy(),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            "en-US",
+        ),
+        expected_commit: Some(EXPECTED_KIMI_COMMIT.to_string()),
+        timeout: RUNTIME_PROBE_TIMEOUT,
+    }
+}
+
+/// Assemble the frontend `RuntimeReadiness` DTO from the gate results.
+///
+/// - each actionable `ReadinessError` becomes one `checks[]` entry (id/label
+///   keyed on the error kind) plus an `issues[]` message;
+/// - `bundledRuntime` reports the artifact path, `node` executable, the
+///   probe's source tag, and available only when no gate failed;
+/// - `externalCli.available` is hardcoded true with a null program: the
+///   bundled runtime replaced the installed-CLI dependency, and the overlay
+///   renders the "download CLI" CTA only when this flag is false;
+/// - the config segment comes from the retained config-check logic.
+fn build_source_runtime_readiness(
+    errors: &[ReadinessError],
+    probe_info: Option<&RuntimeInfo>,
+    entry: &Path,
+    config: &ConfigReadiness,
+) -> RuntimeReadiness {
     let mut checks = Vec::new();
     let mut issues = Vec::new();
     let mut warnings = Vec::new();
-    let config = prepare_kimi_code_config_readiness();
 
-    let program = match resolve_acp_command_validated() {
-        Ok(program) => {
-            checks.push(RuntimeReadinessCheck {
-                id: "kimiCodeCli",
-                label: "Kimi Code CLI",
-                status: CheckStatus::Ok,
-                detail: format!("Kimi Code CLI found: {program}"),
-            });
-            program
-        }
-        Err(error) => {
-            issues.push(error.clone());
-            checks.push(RuntimeReadinessCheck {
-                id: "kimiCodeCli",
-                label: "Kimi Code CLI",
-                status: CheckStatus::Error,
-                detail: error,
-            });
-            append_config_readiness(&config, &mut checks, &mut issues);
-            return build_kimi_code_runtime_readiness(checks, issues, warnings, None, None, config);
-        }
-    };
-
-    // Version + ACP entrypoint both shell out; run them in parallel to cut cold-start wait.
-    let program_for_version = program.clone();
-    let program_for_acp = program.clone();
-    let (version_result, acp_result) = thread::scope(|scope| {
-        let version_handle =
-            scope.spawn(move || resolve_kimi_code_cli_version_for_program(&program_for_version));
-        let acp_handle = scope.spawn(move || validate_kimi_acp_command(&program_for_acp));
-        (
-            version_handle
-                .join()
-                .unwrap_or_else(|_| Err("Kimi Code CLI version check thread panicked".to_string())),
-            acp_handle
-                .join()
-                .unwrap_or_else(|_| Err("Kimi ACP entrypoint check thread panicked".to_string())),
-        )
-    });
-
-    let version = match version_result {
-        Ok(version) => {
-            checks.push(RuntimeReadinessCheck {
-                id: "kimiCodeCliVersion",
-                label: "Kimi Code CLI version",
-                status: CheckStatus::Ok,
-                detail: format!("Resolved Kimi Code CLI version: v{version}"),
-            });
-            Some(version)
-        }
-        Err(error) => {
-            issues.push(error.clone());
-            checks.push(RuntimeReadinessCheck {
-                id: "kimiCodeCliVersion",
-                label: "Kimi Code CLI version",
-                status: CheckStatus::Error,
-                detail: error,
-            });
-            None
-        }
-    };
-
-    if let Err(error) = acp_result {
-        issues.push(error.clone());
+    for error in errors {
+        let (id, label) = match error.kind {
+            ReadinessErrorKind::ArtifactMissing | ReadinessErrorKind::ArtifactInvalid => {
+                ("runtimeArtifact", "Bundled runtime artifact")
+            }
+            ReadinessErrorKind::CommitMismatch => ("runtimeVersion", "Bundled runtime version"),
+            ReadinessErrorKind::HandshakeFailed => {
+                ("runtimeHandshake", "Bundled runtime handshake")
+            }
+            ReadinessErrorKind::ProtocolMismatch => ("runtimeProtocol", "Bundled runtime protocol"),
+        };
+        issues.push(error.message.clone());
         checks.push(RuntimeReadinessCheck {
-            id: "kimiAcpEntrypoint",
-            label: "Kimi ACP entrypoint",
+            id,
+            label,
             status: CheckStatus::Error,
-            detail: error,
-        });
-    } else {
-        checks.push(RuntimeReadinessCheck {
-            id: "kimiAcpEntrypoint",
-            label: "Kimi ACP entrypoint",
-            status: CheckStatus::Ok,
-            detail: format!("`{program} acp --help` succeeded"),
+            detail: error.message.clone(),
         });
     }
 
-    append_config_readiness(&config, &mut checks, &mut issues);
+    append_config_readiness(config, &mut checks, &mut issues);
 
     if let Some(hint) = legacy_migration_hint() {
         warnings.push(hint.clone());
@@ -214,7 +362,32 @@ fn check_kimi_code_runtime_readiness() -> RuntimeReadiness {
         });
     }
 
-    build_kimi_code_runtime_readiness(checks, issues, warnings, Some(program), version, config)
+    let has_blocking_issues = !issues.is_empty();
+    let bundled_runtime = BundledRuntimeStatus {
+        available: errors.is_empty(),
+        version: probe_info.map(|info| info.kimi_source.tag.clone()),
+        package_path: Some(entry.to_string_lossy().into_owned()),
+        executable: Some("node".to_string()),
+        error: errors.first().map(|err| err.message.clone()),
+    };
+    // Hardcoded per the M4 contract: the built-in runtime removed the
+    // external-CLI requirement; the overlay must not offer a download CTA.
+    let external_cli = ExternalCliStatus {
+        available: true,
+        program: None,
+        version: None,
+        error: None,
+    };
+    RuntimeReadiness {
+        ok: !has_blocking_issues && warnings.is_empty(),
+        has_blocking_issues,
+        checks,
+        issues,
+        warnings,
+        bundled_runtime,
+        external_cli,
+        config: config.clone(),
+    }
 }
 
 fn append_config_readiness(
@@ -285,46 +458,6 @@ fn incomplete_config_detail(config: &ConfigReadiness) -> String {
     )
 }
 
-fn build_kimi_code_runtime_readiness(
-    checks: Vec<RuntimeReadinessCheck>,
-    issues: Vec<String>,
-    warnings: Vec<String>,
-    program: Option<String>,
-    version: Option<String>,
-    config: ConfigReadiness,
-) -> RuntimeReadiness {
-    let available = program.is_some() && version.is_some();
-    let external_error = if program.is_some() && version.is_none() {
-        Some("Kimi Code CLI version could not be resolved.".to_string())
-    } else {
-        None
-    };
-    let external_cli = ExternalCliStatus {
-        available,
-        program,
-        version,
-        error: external_error,
-    };
-    let bundled_runtime = BundledRuntimeStatus {
-        available: false,
-        version: None,
-        package_path: None,
-        executable: None,
-        error: None,
-    };
-    let has_blocking_issues = !issues.is_empty();
-    RuntimeReadiness {
-        ok: !has_blocking_issues && warnings.is_empty(),
-        has_blocking_issues,
-        checks,
-        issues,
-        warnings,
-        bundled_runtime,
-        external_cli,
-        config,
-    }
-}
-
 fn legacy_migration_hint() -> Option<String> {
     let home = user_home_dir().ok()?;
     let legacy_dir = home.join(".kimi");
@@ -348,41 +481,6 @@ fn legacy_migration_hint() -> Option<String> {
         "Legacy ~/.kimi configuration detected and ~/.kimi-code is empty. Run `kimi migrate` to import settings."
             .to_string(),
     )
-}
-
-/// Resolve the Kimi Code CLI program used for ACP (`KIMI_CODE_BIN`, then `kimi`).
-pub fn resolve_kimi_code_cli_program_blocking() -> Result<String, String> {
-    let program = resolve_acp_command_validated()?;
-    resolve_kimi_code_cli_version_for_program(&program).map(|_| program)
-}
-
-pub fn resolve_kimi_code_cli_version_blocking() -> Result<String, String> {
-    let program = resolve_acp_command_validated()?;
-    resolve_kimi_code_cli_version_for_program(&program)
-}
-
-fn resolve_kimi_code_cli_version_for_program(program: &str) -> Result<String, String> {
-    let mut errors = Vec::new();
-    for args in KIMI_CLI_VERSION_COMMANDS {
-        let command_label = args.join(" ");
-        match run_kimi_command(program, args, KIMI_CLI_VERSION_TIMEOUT) {
-            Ok(output) => {
-                if let Some(version) = parse_kimi_code_version_output(&output) {
-                    return Ok(version);
-                }
-                errors.push(format!(
-                    "{command_label} returned unparseable output: {}",
-                    output.trim()
-                ));
-            }
-            Err(error) => errors.push(format!("{command_label}: {error}")),
-        }
-    }
-
-    Err(format!(
-        "Unable to resolve Kimi Code CLI version for `{program}` ({})",
-        errors.join("; ")
-    ))
 }
 
 pub fn kimi_code_home_dir() -> Result<PathBuf, String> {
@@ -422,10 +520,6 @@ pub fn kimi_code_config_file_path(
     user_home: Option<&Path>,
 ) -> Result<PathBuf, String> {
     Ok(kimi_code_home_dir_from_values(kimi_code_home, user_home)?.join(file_name))
-}
-
-pub fn parse_kimi_code_version_output(output: &str) -> Option<String> {
-    parse_version_from_output(output)
 }
 
 pub fn ensure_kimi_code_config_file() -> Result<PathBuf, String> {
@@ -562,7 +656,7 @@ fn check_kimi_code_config_readiness() -> ConfigReadiness {
     let has_default_model = default_model.is_some();
     let has_provider_section = providers.map(|table| !table.is_empty()).unwrap_or(false);
     let has_model_section = models.map(|table| !table.is_empty()).unwrap_or(false);
-    let kimi_login_present = crate::managed_usage::credentials_present();
+    let kimi_login_present = credentials_present();
     let credential_sources = collect_credential_sources(providers, kimi_login_present);
     let has_credential_source = !credential_sources.is_empty();
 
@@ -713,62 +807,6 @@ fn is_api_key_name(name: &str) -> bool {
     lowered.contains("api_key") || lowered.ends_with("_key") || lowered == "apikey"
 }
 
-fn run_kimi_command(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
-    let mut command = Command::new(program);
-    command
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-
-    let mut child = command.spawn().map_err(|e| e.to_string())?;
-    let started_at = Instant::now();
-    loop {
-        match child.try_wait().map_err(|e| e.to_string())? {
-            Some(_) => {
-                let output = child.wait_with_output().map_err(|e| e.to_string())?;
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let combined = format!("{}{}", stdout, stderr);
-                if output.status.success() {
-                    return Ok(combined);
-                }
-                return Err(format!(
-                    "exited with status {}: {}",
-                    output.status,
-                    combined.trim()
-                ));
-            }
-            None if started_at.elapsed() >= timeout => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("timed out while running {}", args.join(" ")));
-            }
-            None => thread::sleep(Duration::from_millis(50)),
-        }
-    }
-}
-
-fn parse_version_from_output(output: &str) -> Option<String> {
-    output
-        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '+'))
-        .find(|token| {
-            token.contains('.')
-                && token
-                    .chars()
-                    .next()
-                    .map(|ch| ch.is_ascii_digit())
-                    .unwrap_or(false)
-        })
-        .map(str::to_string)
-}
-
 fn user_home_dir() -> Result<PathBuf, String> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
@@ -780,12 +818,16 @@ fn user_home_dir() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_config_readiness, build_kimi_code_runtime_readiness,
-        check_kimi_code_config_readiness, ensure_kimi_code_config_file, kimi_code_config_file_path,
-        kimi_code_home_dir_from_values, legacy_migration_hint, parse_kimi_code_version_output,
-        parse_version_from_output, prepare_kimi_code_config_readiness, prepend_macos_cli_paths,
+        append_config_readiness, build_source_runtime_readiness, check_kimi_code_config_readiness,
+        ensure_kimi_code_config_file, kimi_code_config_file_path, kimi_code_home_dir_from_values,
+        legacy_migration_hint, prepare_kimi_code_config_readiness, prepend_macos_cli_paths,
+        CheckStatus, ConfigReadiness, RuntimeInfo,
     };
+    use crate::runtime::protocol::{KimiSourceInfo, RuntimeCapabilities};
+    use crate::runtime::readiness::ReadinessError;
+    use crate::runtime::readiness::ReadinessErrorKind;
     use crate::test_env::lock::{env_lock, set_kimi_code_home};
+    use serde_json::json;
     use std::fs;
     use std::path::{Path, PathBuf};
     use tempfile::TempDir;
@@ -861,26 +903,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_kimi_code_version_output() {
-        assert_eq!(
-            parse_kimi_code_version_output("0.18.0\n"),
-            Some("0.18.0".to_string())
-        );
-        assert_eq!(
-            parse_kimi_code_version_output("kimi-code version 0.18.0"),
-            Some("0.18.0".to_string())
-        );
-    }
-
-    #[test]
-    fn parses_generic_cli_version_output() {
-        assert_eq!(
-            parse_version_from_output("kimi, version 1.45.0"),
-            Some("1.45.0".to_string())
-        );
-    }
-
-    #[test]
     fn ensure_config_file_is_idempotent_and_preserves_existing_content() {
         let temp = tempfile::tempdir().expect("tempdir");
         let _home = set_kimi_code_home(temp.path());
@@ -939,9 +961,11 @@ mod tests {
         assert_eq!(checks.len(), 1);
         assert!(issues.iter().any(|issue| issue.contains("missing")));
         let readiness =
-            build_kimi_code_runtime_readiness(checks, issues, Vec::new(), None, None, config);
+            build_source_runtime_readiness(&[], None, Path::new("/opt/kimi/runtime.mjs"), &config);
         assert!(!readiness.ok);
         assert!(readiness.has_blocking_issues);
+        assert!(readiness.external_cli.available);
+        assert!(readiness.external_cli.program.is_none());
     }
 
     #[test]
@@ -1133,5 +1157,159 @@ model = "gpt-test"
             Some(value) => std::env::set_var("HOME", value),
             None => std::env::remove_var("HOME"),
         }
+    }
+
+    fn config_fixture() -> ConfigReadiness {
+        ConfigReadiness {
+            path: Some("/home/u/.kimi-code/config.toml".to_string()),
+            exists: true,
+            ready: true,
+            has_default_model: true,
+            has_provider_section: true,
+            has_model_section: true,
+            has_credential_source: true,
+            credential_sources: vec!["config api_key".to_string()],
+            error: None,
+        }
+    }
+
+    fn error_of(kind: ReadinessErrorKind) -> ReadinessError {
+        ReadinessError {
+            kind,
+            message: format!("{kind}: something went wrong"),
+            details: None,
+        }
+    }
+
+    fn probe_info() -> RuntimeInfo {
+        RuntimeInfo {
+            selected_protocol: "runtime-v1".to_string(),
+            runtime_version: "0.0.0-test".to_string(),
+            kimi_source: KimiSourceInfo {
+                tag: "@moonshot-ai/kimi-code@0.33.0".to_string(),
+                commit: "abc".to_string(),
+            },
+            node_version: "24.15.0".to_string(),
+            capabilities: RuntimeCapabilities {
+                methods: Vec::new(),
+                sessions: true,
+                turns: true,
+                config: true,
+                replay: true,
+                auth: true,
+                usage: true,
+                fork: true,
+                events: Vec::new(),
+            },
+            data_schema_version: 1,
+        }
+    }
+
+    #[test]
+    fn source_readiness_dto_maps_every_error_kind_to_a_check() {
+        let cases = [
+            (
+                ReadinessErrorKind::ArtifactMissing,
+                "runtimeArtifact",
+                "Bundled runtime artifact",
+            ),
+            (
+                ReadinessErrorKind::ArtifactInvalid,
+                "runtimeArtifact",
+                "Bundled runtime artifact",
+            ),
+            (
+                ReadinessErrorKind::CommitMismatch,
+                "runtimeVersion",
+                "Bundled runtime version",
+            ),
+            (
+                ReadinessErrorKind::HandshakeFailed,
+                "runtimeHandshake",
+                "Bundled runtime handshake",
+            ),
+            (
+                ReadinessErrorKind::ProtocolMismatch,
+                "runtimeProtocol",
+                "Bundled runtime protocol",
+            ),
+        ];
+        for (kind, expected_id, expected_label) in cases {
+            let readiness = build_source_runtime_readiness(
+                &[error_of(kind)],
+                None,
+                Path::new("/opt/kimi/runtime.mjs"),
+                &config_fixture(),
+            );
+            let check = readiness
+                .checks
+                .iter()
+                .find(|c| c.id == expected_id)
+                .expect("check id");
+            assert_eq!(check.label, expected_label, "label for {expected_id}");
+            assert!(matches!(check.status, CheckStatus::Error));
+            assert!(check.detail.contains("something went wrong"));
+            assert!(readiness
+                .issues
+                .iter()
+                .any(|i| i.contains("something went wrong")));
+            assert!(readiness.has_blocking_issues);
+            assert!(!readiness.bundled_runtime.available);
+            assert!(readiness
+                .bundled_runtime
+                .error
+                .as_deref()
+                .is_some_and(|message| message.contains("something went wrong")));
+            // Hardcoded external-CLI shape: available with no program, so the
+            // overlay never renders the "download CLI" CTA.
+            assert!(readiness.external_cli.available);
+            assert!(readiness.external_cli.program.is_none());
+            assert!(readiness.external_cli.version.is_none());
+        }
+    }
+
+    #[test]
+    fn source_readiness_dto_reports_probe_info_on_success() {
+        let readiness = build_source_runtime_readiness(
+            &[],
+            Some(&probe_info()),
+            Path::new("/opt/kimi/runtime.mjs"),
+            &config_fixture(),
+        );
+        assert!(readiness.bundled_runtime.available);
+        assert_eq!(
+            readiness.bundled_runtime.version.as_deref(),
+            Some("@moonshot-ai/kimi-code@0.33.0")
+        );
+        assert_eq!(
+            readiness.bundled_runtime.package_path.as_deref(),
+            Some("/opt/kimi/runtime.mjs")
+        );
+        assert_eq!(
+            readiness.bundled_runtime.executable.as_deref(),
+            Some("node")
+        );
+        assert!(readiness.bundled_runtime.error.is_none());
+        assert!(readiness.issues.is_empty());
+        assert!(!readiness.has_blocking_issues);
+        assert!(readiness.ok);
+    }
+
+    #[test]
+    fn source_readiness_dto_config_ok_serializes_to_stable_shape() {
+        let readiness = build_source_runtime_readiness(
+            &[],
+            Some(&probe_info()),
+            Path::new("/opt/kimi/runtime.mjs"),
+            &config_fixture(),
+        );
+        let value = serde_json::to_value(&readiness).expect("serialize");
+        let obj = value.as_object().expect("object");
+        assert_eq!(obj["ok"], json!(true));
+        assert_eq!(obj["hasBlockingIssues"], json!(false));
+        assert_eq!(obj["externalCli"]["available"], json!(true));
+        assert_eq!(obj["externalCli"]["program"], json!(null));
+        assert_eq!(obj["bundledRuntime"]["executable"], json!("node"));
+        assert_eq!(obj["config"]["ready"], json!(true));
     }
 }

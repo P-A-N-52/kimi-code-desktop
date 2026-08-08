@@ -3,7 +3,7 @@
 //! Split out of `translate.rs` to keep each file under the 600-line module
 //! budget. Maps the ten parity session events (`PARITY_SESSION_EVENT_NAMES`
 //! in `protocol-parity.ts`) onto the desktop wire shapes of
-//! `src/hooks/wireTypes.ts`, with `acp_translate.rs` / `session_store.rs` as
+//! `src/hooks/wireTypes.ts`, with `the pre-cutover ACP translation module` / `session_store.rs` as
 //! the behavioral baseline:
 //!
 //! - `step.begin` -> `StepBegin {n}` (replay shape, session_store.rs:1252);
@@ -17,12 +17,12 @@
 //!   matters);
 //! - `slash_commands.update` -> `SlashCommandsUpdate`, normalizing item
 //!   shapes exactly like the ACP-era `available_commands_update` mapping
-//!   (acp_translate.rs `translate_available_commands_update`);
+//!   (the pre-cutover ACP translation module `translate_available_commands_update`);
 //! - `background_task.observed` -> `BackgroundTaskObserved` with
 //!   `session_id` lifted from the event envelope and the full ACP-era key
 //!   set (explicit nulls), plus the synthesized observation the
 //!   `tool.completed` mapping emits for the background/cron tool set —
-//!   mirroring acp_translate.rs
+//!   mirroring the pre-cutover ACP translation module
 //!   `background_task_observation_from_tool_call_update`, because the pinned
 //!   engine exposes no native per-observation event (its task domain
 //!   publishes lifecycle `task.*` facts, not tool-call observations);
@@ -119,7 +119,7 @@ pub(super) fn translate_slash_commands_update(payload: &Value) -> Vec<String> {
 }
 
 /// One slash-command item, normalized like the ACP-era
-/// `translate_available_commands_update` (acp_translate.rs): plain string
+/// `translate_available_commands_update` (the pre-cutover ACP translation module): plain string
 /// entries tolerated, `command` accepted as the name key, `input.hint`
 /// unwrapped, `source` honored when the runtime sends it and inferred
 /// otherwise.
@@ -171,7 +171,7 @@ fn slash_command_item_wire(command: &Value, index: usize) -> Value {
     })
 }
 
-/// Mirror of the ACP-era `infer_slash_command_source` (acp_translate.rs) —
+/// Mirror of the ACP-era `infer_slash_command_source` (the pre-cutover ACP translation module) —
 /// the frontend's session-influence heuristics read exactly this vocabulary.
 fn infer_slash_command_source(name: &str) -> String {
     if name.starts_with("skill:") {
@@ -197,7 +197,7 @@ fn infer_slash_command_source(name: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Tool titles whose results reveal background-task or cron state; mirrors
-/// the ACP-era `background_task_tool_names` (acp_translate.rs).
+/// the ACP-era `background_task_tool_names` (the pre-cutover ACP translation module).
 const BACKGROUND_TASK_TOOL_NAMES: &[&str] = &[
     "TaskList",
     "TaskOutput",
@@ -248,7 +248,7 @@ pub(super) fn translate_background_task_observed(session_id: &str, payload: &Val
 }
 
 /// The full-key BackgroundTaskObserved wire payload (ACP parity:
-/// acp_translate.rs `background_task_observation_from_tool_call_update`).
+/// the pre-cutover ACP translation module `background_task_observation_from_tool_call_update`).
 /// `extras` carries the optional fields when a caller already parsed them.
 fn background_task_observed_payload(
     session_id: &str,
@@ -280,7 +280,7 @@ fn background_task_observed_payload(
 
 /// Synthesize a `BackgroundTaskObserved` wire line from a terminal
 /// `tool.completed` for the background/cron observation tool set, mirroring
-/// the ACP-era tool_call_update heuristic (acp_translate.rs:1173-1207). The
+/// the ACP-era tool_call_update heuristic (the pre-cutover ACP translation module:1173-1207). The
 /// pinned engine has no native per-observation event, so — exactly like the
 /// ACP era — the observation is derived from the tool result text. Returns
 /// None for non-observation tools. runtime-v1 `tool.completed` is terminal
@@ -320,7 +320,7 @@ pub(super) fn background_task_observation_from_tool_completed(
 }
 
 // Text heuristics below mirror the ACP-era extraction helpers in
-// acp_translate.rs (extract_task_id_from_text / extract_output_path_from_text
+// the pre-cutover ACP translation module (extract_task_id_from_text / extract_output_path_from_text
 // / extract_field_value / parse_cron_fields) — the wire consumer
 // (`src/lib/background-tasks/normalize.ts`) was built against exactly these.
 

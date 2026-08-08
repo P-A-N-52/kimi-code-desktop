@@ -5629,7 +5629,7 @@ export function createSessionRuntime(initialOptions: SessionRuntimeOptions): Ses
               error: true,
             };
           }
-          // Resume is performed by the following Goal-aware ACP prompt:
+          // Resume is performed by the following Goal-aware runtime prompt:
           // Kimi's native GetGoal/UpdateGoal tools reactivate the existing
           // state, then its own multi-turn Goal driver continues the work.
         } catch (err) {
