@@ -8,6 +8,13 @@ src-tauri/target/
 src-tauri/gen/
 src-tauri/sidecar/*.exe
 src-tauri/sidecar/*.manifest.json
+# Tauri externalBin sidecars (produced by `build:sea` / the release pipeline;
+# never committed — each platform/triple is built on the release runner)
+src-tauri/binaries/
+# M5 SEA build intermediates and the pinned SEA-capable Node toolchain
+# (downloaded only when the host `node` cannot build SEA blobs)
+runtime/kimi-code/apps/desktop-runtime/dist-sea/
+runtime/kimi-code/apps/desktop-runtime/.sea-node/
 __pycache__/
 *.py[cod]
 

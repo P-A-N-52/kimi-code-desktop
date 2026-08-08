@@ -22,11 +22,6 @@ if (-not $DownloadUrl) {
 }
 
 $allowUnconfigured = $env:KIMI_ALLOW_UNCONFIGURED_START -eq "1"
-$promptMissingCliRaw = [Environment]::GetEnvironmentVariable("KIMI_PROMPT_MISSING_CLI")
-$promptMissingCli = $true
-if (-not [string]::IsNullOrWhiteSpace($promptMissingCliRaw)) {
-    $promptMissingCli = $promptMissingCliRaw.Trim().ToLowerInvariant() -notin @("0", "false", "no")
-}
 
 $issues = New-Object System.Collections.Generic.List[string]
 $warnings = New-Object System.Collections.Generic.List[string]
@@ -268,57 +263,62 @@ function Show-StartupAttentionDialog {
     return $script:startupDialogChoice
 }
 
-function Resolve-KimiCodeProgram {
-    $program = $env:KIMI_CODE_BIN
-    if (-not [string]::IsNullOrWhiteSpace($program)) {
-        return $program.Trim().Trim('"')
+# Source Runtime readiness (post-M4): the product runs a source-built Node
+# runtime, not an installed CLI. These probes replace the old kimi/ACP CLI
+# checks: the built artifact must exist, and Node must satisfy the pinned
+# 24.15.0 the runtime workspace requires (engine-strict). A full protocol
+# verification is 'npm run smoke:runtime' (dev-time, not per-launch).
+function Test-SourceRuntimeArtifact {
+    $distEntry = Join-Path $ProjectRoot "runtime\kimi-code\apps\desktop-runtime\dist\main.mjs"
+    if (!(Test-Path $distEntry)) {
+        return [pscustomobject]@{
+            Ok = $false
+            Error = "Source Runtime artifact missing: $distEntry. Run ``npm run runtime:install`` and ``npm run runtime:build`` (or ``npm run smoke:runtime``) first."
+        }
     }
 
-    $command = Get-Command kimi -ErrorAction SilentlyContinue
-    if ($command -and $command.Source) {
-        return $command.Source
+    $item = Get-Item $distEntry
+    if ($item.Length -le 0) {
+        return [pscustomobject]@{
+            Ok = $false
+            Error = "Source Runtime artifact is empty: $distEntry"
+        }
     }
 
-    return "kimi"
+    return [pscustomobject]@{
+        Ok = $true
+        Version = "dist\main.mjs ($($item.Length) bytes)"
+    }
 }
 
-function Test-KimiCodeCli {
-    param([string]$Program)
-
+function Test-SourceRuntimeNode {
     try {
-        $versionOutput = & $Program --version 2>&1
+        $versionOutput = & node --version 2>&1
         if ($LASTEXITCODE -ne 0) {
             return [pscustomobject]@{
                 Ok = $false
-                Error = "``$Program --version`` failed: $(($versionOutput | Out-String).Trim())"
+                Error = "``node --version`` failed: $(($versionOutput | Out-String).Trim())"
             }
         }
 
-        $helpOutput = & $Program acp --help 2>&1
-        if ($LASTEXITCODE -ne 0) {
+        $versionText = (($versionOutput | Out-String).Trim() -replace '^v', '')
+        $version = [Version]$versionText
+        if ($version -lt [Version]"24.15.0") {
             return [pscustomobject]@{
                 Ok = $false
-                Error = "``$Program acp --help`` failed: $(($helpOutput | Out-String).Trim())"
-            }
-        }
-
-        $helpText = (($helpOutput | Out-String).Trim()).ToLowerInvariant()
-        if ($helpText -notmatch "acp" -and $helpText -notmatch "agent client protocol") {
-            return [pscustomobject]@{
-                Ok = $false
-                Error = "``$Program acp --help`` did not look like an ACP entrypoint"
+                Error = "Node $versionText is older than the pinned 24.15.0 required by the Source Runtime workspace."
             }
         }
 
         return [pscustomobject]@{
             Ok = $true
-            Version = (($versionOutput | Out-String).Trim() -replace '\s+', ' ')
+            Version = "v$versionText"
         }
     }
     catch {
         return [pscustomobject]@{
             Ok = $false
-            Error = "Failed to run Kimi Code CLI ``$Program``: $($_.Exception.Message)"
+            Error = "Failed to run ``node --version``: $($_.Exception.Message)"
         }
     }
 }
@@ -326,15 +326,24 @@ function Test-KimiCodeCli {
 Show-LoadingForm
 Write-Host "[INFO] Runtime check mode: $Mode"
 
-Update-LoadingStatus "Checking Kimi Code CLI"
-$kimiProgram = Resolve-KimiCodeProgram
-$kimiCheck = Test-KimiCodeCli -Program $kimiProgram
-if ($kimiCheck.Ok) {
-    Write-Host "[OK] Kimi Code CLI: $kimiProgram ($($kimiCheck.Version))"
+Update-LoadingStatus "Checking Source Runtime artifact"
+$artifactCheck = Test-SourceRuntimeArtifact
+if ($artifactCheck.Ok) {
+    Write-Host "[OK] Source Runtime artifact: $($artifactCheck.Version)"
 }
 else {
-    $issues.Add($kimiCheck.Error)
-    Write-Host "[ERROR] $($kimiCheck.Error)"
+    $issues.Add($artifactCheck.Error)
+    Write-Host "[ERROR] $($artifactCheck.Error)"
+}
+
+Update-LoadingStatus "Checking Node version"
+$nodeCheck = Test-SourceRuntimeNode
+if ($nodeCheck.Ok) {
+    Write-Host "[OK] Node: $($nodeCheck.Version)"
+}
+else {
+    $issues.Add($nodeCheck.Error)
+    Write-Host "[ERROR] $($nodeCheck.Error)"
 }
 
 Update-LoadingStatus "Checking Kimi Code config"
@@ -376,24 +385,9 @@ if ($issues.Count -gt 0) {
         exit 0
     }
     if ($choice -eq "download") {
-        Write-Host "[INFO] Opened Kimi Code CLI setup page: $DownloadUrl"
+        Write-Host "[INFO] Opened setup page: $DownloadUrl"
     }
     exit 1
-}
-
-if (-not $kimiCheck.Ok -and $promptMissingCli) {
-    $choice = Show-StartupAttentionDialog -Issues @() -Warnings $warnings.ToArray() -HasBlockingIssues $false -Url $DownloadUrl
-    if ($choice -eq "continue") {
-        Write-Host "[WARN] Continuing without Kimi Code CLI."
-    }
-    elseif ($choice -eq "download") {
-        Write-Host "[INFO] Opened Kimi Code CLI setup page: $DownloadUrl"
-        exit 1
-    }
-    else {
-        Write-Host "[INFO] Startup cancelled."
-        exit 1
-    }
 }
 
 Close-LoadingForm

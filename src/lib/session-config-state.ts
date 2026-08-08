@@ -3,7 +3,7 @@
  * Isolated from AgentRuntimeCapabilities — never merged with initialize state.
  */
 
-import type { AgentRuntimeCapabilities } from "./acp-capabilities";
+import type { AgentRuntimeCapabilities } from "./runtime-capabilities";
 
 export type SessionConfigStatus = "known" | "unknown";
 

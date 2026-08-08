@@ -29,10 +29,10 @@ describe("ProvidersPanel", () => {
 			structureValid: true,
 			structureIssues: [],
 			kimiAccountCredentialsPresent: false,
-			acpAuth: {
+			runtimeAuth: {
 				status: "failed",
 				lastFailureAtMs: 1,
-				lastFailureMessage: "ACP authenticate failed",
+				lastFailureMessage: "Runtime authenticate failed",
 			},
 			providers: [
 				{
@@ -58,7 +58,7 @@ describe("ProvidersPanel", () => {
 		});
 	});
 
-	it("shows configured credentials separately from ACP auth failure", async () => {
+	it("shows configured credentials separately from runtime auth failure", async () => {
 		renderPanel({
 			enabled: true,
 			advancedEditor: <div>advanced editor</div>,
@@ -69,8 +69,8 @@ describe("ProvidersPanel", () => {
 		});
 
 		expect(screen.getByText("已配置")).toBeTruthy();
-		expect(screen.getByText("上次 ACP 认证失败")).toBeTruthy();
-		expect(screen.getByText("ACP authenticate failed")).toBeTruthy();
+		expect(screen.getByText("上次 Runtime 认证失败")).toBeTruthy();
+		expect(screen.getByText("Runtime authenticate failed")).toBeTruthy();
 		expect(screen.getByText(/不等于当前会话一定可用/)).toBeTruthy();
 	});
 

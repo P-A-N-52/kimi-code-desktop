@@ -3,24 +3,53 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 
 import { decodeJsonLines } from '../src/codec';
+import type { EngineContext } from '../src/engine';
+import type { RuntimeEngineAdapter } from '../src/handler-context';
 import type {
   KimiRuntimeStartOptions,
   RuntimeLifecycleAdapter,
 } from '../src/kimi-runtime-adapter';
 import {
   KIMI_SOURCE_COMMIT,
+  PARITY_SESSION_EVENT_NAMES,
   RUNTIME_PROTOCOL,
+  RUNTIME_SCOPED_EVENTS,
+  RUNTIME_V1_METHODS,
+  SESSION_EVENT_NAMES,
   type RuntimeOutputFrame,
 } from '../src/protocol';
+import {
+  authGetFlowResultSchema,
+  authStartLoginResultSchema,
+  parityMethodSchemas,
+  paritySessionEventPayloadSchemas,
+  sessionReplayParamsSchema,
+} from '../src/protocol-parity';
+import {
+  runtimeEventPayloadSchemas,
+  runtimeMethodSchemas,
+  sessionEventPayloadSchemas,
+  turnStartParamsSchema,
+} from '../src/protocol-schemas';
 import { RuntimeProtocolServer } from '../src/server';
 import { runStdioRuntime } from '../src/stdio';
 
-class FakeAdapter implements RuntimeLifecycleAdapter {
+class FakeAdapter implements RuntimeLifecycleAdapter, RuntimeEngineAdapter {
   isStarted = false;
   closeCalls = 0;
+  startCalls = 0;
+
+  get engineContext(): EngineContext | undefined {
+    return undefined;
+  }
+
+  trackLiveSession(_sessionId: string): void {}
+
+  untrackLiveSession(_sessionId: string): void {}
 
   async start(_options: KimiRuntimeStartOptions): Promise<void> {
     this.isStarted = true;
+    this.startCalls += 1;
   }
 
   async close(): Promise<void> {
@@ -46,8 +75,15 @@ function hello(id = 'hello-1'): object {
   };
 }
 
-function request(id: string, method: string): object {
-  return { protocol: RUNTIME_PROTOCOL, type: 'request', id, method, params: {} };
+function request(id: string, method: string, params: object = {}): object {
+  return { protocol: RUNTIME_PROTOCOL, type: 'request', id, method, params };
+}
+
+/** Narrow a captured frame to the hello/getInfo response shape for assertions. */
+function helloResultOf(frame: RuntimeOutputFrame | undefined): {
+  result: { capabilities: { methods: string[] } };
+} {
+  return frame as unknown as { result: { capabilities: { methods: string[] } } };
 }
 
 function setup(): {
@@ -78,25 +114,63 @@ describe('runtime-v1 server', () => {
     ]);
   });
 
-  it('returns frozen source identity from hello and getInfo without starting Kimi', async () => {
+  it('starts the engine adapter on hello and announces runtime.ready', async () => {
     const { adapter, frames, server } = setup();
     await server.accept(hello());
     await server.accept(request('info-1', 'runtime.getInfo'));
-    expect(adapter.isStarted).toBe(false);
-    expect(frames).toHaveLength(2);
+    expect(adapter.isStarted).toBe(true);
+    expect(adapter.startCalls).toBe(1);
+    expect(frames).toHaveLength(3);
     expect(frames[0]).toMatchObject({
       id: 'hello-1',
       ok: true,
       result: { selectedProtocol: RUNTIME_PROTOCOL, kimiSource: { commit: KIMI_SOURCE_COMMIT } },
     });
-    expect(frames[1]).toMatchObject({ id: 'info-1', ok: true });
+    // Runtime-scoped events carry no sessionId/seq.
+    expect(frames[1]).toMatchObject({ type: 'event', event: 'runtime.ready' });
+    expect(frames[1]).not.toHaveProperty('sessionId');
+    expect(frames[1]).not.toHaveProperty('seq');
+    expect(frames[2]).toMatchObject({ id: 'info-1', ok: true });
   });
 
-  it('returns structured unknown-method errors and fails closed on duplicate ids', async () => {
+  it('fails hello with engine_start_failed when the adapter cannot start', async () => {
+    const adapter = new FakeAdapter();
+    adapter.start = () => Promise.reject(new Error('boom'));
+    const frames: RuntimeOutputFrame[] = [];
+    const server = new RuntimeProtocolServer({
+      adapter,
+      emitFrame: (frame) => {
+        frames.push(frame);
+      },
+    });
+    await server.accept(hello());
+    expect(frames).toMatchObject([
+      { id: 'hello-1', ok: false, error: { code: 'engine_start_failed', retryable: false } },
+    ]);
+    // A failed handshake leaves the server in awaiting-hello: the next
+    // non-hello request is still rejected as before.
+    await server.accept(request('info-after-fail', 'runtime.getInfo'));
+    expect(frames[1]).toMatchObject({
+      id: 'info-after-fail',
+      ok: false,
+      error: { code: 'handshake_required' },
+    });
+  });
+
+  it('wires every runtime-v1 method to a real handler and rejects unknown methods', async () => {
     const { frames, server } = setup();
     await server.accept(hello());
+    // No skeleton remains: with the fake adapter the sessions probe reaches
+    // the real family handler and fails structurally on the missing engine —
+    // never with not_implemented.
+    await server.accept(request('list-1', 'sessions.list'));
     await server.accept(request('unknown-1', 'runtime.missing'));
-    expect(frames[1]).toMatchObject({
+    expect(frames[2]).toMatchObject({
+      id: 'list-1',
+      ok: false,
+      error: { code: 'engine_not_available', retryable: false },
+    });
+    expect(frames[3]).toMatchObject({
       id: 'unknown-1',
       ok: false,
       error: { code: 'method_not_found', retryable: false },
@@ -104,7 +178,76 @@ describe('runtime-v1 server', () => {
     await expect(server.accept(request('unknown-1', 'runtime.getInfo'))).rejects.toMatchObject({
       code: 'duplicate_request_id',
     });
-    expect(frames).toHaveLength(2);
+    expect(frames).toHaveLength(4);
+  });
+
+  it('advertises every registered method and all wired families in the capability snapshot', async () => {
+    const { frames, server } = setup();
+    await server.accept(hello());
+    expect(frames[0]).toMatchObject({
+      result: {
+        capabilities: {
+          sessions: true,
+          turns: true,
+          config: true,
+        },
+      },
+    });
+    // Registration order is not contractual; compare the sets.
+    const helloResult = helloResultOf(frames[0]).result;
+    expect([...helloResult.capabilities.methods].sort()).toEqual([...RUNTIME_V1_METHODS].sort());
+  });
+
+  it('advertises the wired parity families and the full session event set', async () => {
+    const { frames, server } = setup();
+    await server.accept(hello());
+    // M3 wave 3: every parity gate is on and `events` lists the full
+    // SESSION_EVENT_NAMES set (base 15 + fidelity 10).
+    expect(frames[0]).toMatchObject({
+      result: {
+        capabilities: {
+          replay: true,
+          auth: true,
+          usage: true,
+          fork: true,
+          events: [...SESSION_EVENT_NAMES],
+        },
+      },
+    });
+  });
+
+  it('routes the parity methods to real handlers (validation first, then the engine)', async () => {
+    const { frames, server } = setup();
+    await server.accept(hello());
+    // Params are validated against the registered schema first.
+    await server.accept(request('replay-bad', 'session.replay'));
+    // No placeholder remains: with the fake adapter the real handlers fail
+    // structurally on the missing engine — never with not_implemented.
+    await server.accept(
+      request('replay-ok', 'session.replay', {
+        sessionId: 's-1',
+      }),
+    );
+    await server.accept(request('fork-ok', 'sessions.fork', { sessionId: 's-1' }));
+    await server.accept(request('auth-ok', 'auth.status'));
+    await server.accept(request('usage-ok', 'usage.get'));
+    expect(frames[2]).toMatchObject({
+      id: 'replay-bad',
+      ok: false,
+      error: { code: 'invalid_params', retryable: false },
+    });
+    for (const [index, id] of [
+      [3, 'replay-ok'],
+      [4, 'fork-ok'],
+      [5, 'auth-ok'],
+      [6, 'usage-ok'],
+    ] as const) {
+      expect(frames[index]).toMatchObject({
+        id,
+        ok: false,
+        error: { code: 'engine_not_available', retryable: false },
+      });
+    }
   });
 
   it('maintains isolated monotonic event sequences per session', async () => {
@@ -113,11 +256,25 @@ describe('runtime-v1 server', () => {
     await server.emitSessionEvent('session-a', 'content.delta', { text: 'a' });
     await server.emitSessionEvent('session-b', 'content.delta', { text: 'b' });
     await server.emitSessionEvent('session-a', 'turn.completed', { requestId: 'turn-1' });
-    expect(frames.slice(1)).toMatchObject([
+    expect(frames.slice(2)).toMatchObject([
       { sessionId: 'session-a', seq: 1 },
       { sessionId: 'session-b', seq: 1 },
       { sessionId: 'session-a', seq: 2 },
     ]);
+  });
+
+  it('keeps runtime and session event namespaces disjoint', async () => {
+    const { frames, server } = setup();
+    await server.accept(hello());
+    await server.emitRuntimeEvent('runtime.warning', { code: 'w', message: 'm' });
+    expect(frames[2]).toMatchObject({ type: 'event', event: 'runtime.warning' });
+    expect(frames[2]).not.toHaveProperty('sessionId');
+    await expect(server.emitRuntimeEvent('content.delta')).rejects.toMatchObject({
+      code: 'invalid_event',
+    });
+    await expect(server.emitSessionEvent('session-a', 'runtime.ready')).rejects.toMatchObject({
+      code: 'invalid_event',
+    });
   });
 
   it('rejects buffered requests and acknowledges shutdown last', async () => {
@@ -127,14 +284,14 @@ describe('runtime-v1 server', () => {
     await server.accept(request('after-shutdown', 'runtime.getInfo'));
     expect(adapter.closeCalls).toBe(0);
     expect(server.shutdownRequested).toBe(true);
-    expect(frames[1]).toMatchObject({
+    expect(frames[2]).toMatchObject({
       id: 'after-shutdown',
       ok: false,
       error: { code: 'runtime_shutting_down' },
     });
     await server.completeShutdown();
     expect(adapter.closeCalls).toBe(1);
-    expect(frames[2]).toMatchObject({ id: 'shutdown-1', ok: true });
+    expect(frames[3]).toMatchObject({ id: 'shutdown-1', ok: true });
   });
 
   it('completes shutdown after a bounded drain when stdin stays open', async () => {
@@ -142,8 +299,11 @@ describe('runtime-v1 server', () => {
     const output = new PassThrough();
     const diagnostics = new PassThrough();
     let closeCalls = 0;
-    const adapter: RuntimeLifecycleAdapter = {
+    const adapter: RuntimeLifecycleAdapter & RuntimeEngineAdapter = {
       isStarted: false,
+      engineContext: undefined,
+      trackLiveSession(): void {},
+      untrackLiveSession(): void {},
       async start(): Promise<void> {},
       close(): Promise<void> {
         closeCalls += 1;
@@ -169,6 +329,7 @@ describe('runtime-v1 server', () => {
     expect(closeCalls).toBe(1);
     expect(stdout.trim().split('\n').map((line) => JSON.parse(line))).toMatchObject([
       { id: 'hello-1', ok: true },
+      { type: 'event', event: 'runtime.ready' },
       { id: 'shutdown-1', ok: true },
     ]);
   });
@@ -183,5 +344,120 @@ describe('runtime-v1 server', () => {
       }
     };
     await expect(collect()).rejects.toMatchObject({ code: 'frame_too_large' });
+  });
+});
+
+describe('runtime-v1 contract registry', () => {
+  it('declares param/result schemas for exactly the registered methods', () => {
+    expect(Object.keys(runtimeMethodSchemas).sort()).toEqual([...RUNTIME_V1_METHODS].sort());
+  });
+
+  it('declares payload schemas for exactly the registered events', () => {
+    expect(Object.keys(sessionEventPayloadSchemas).sort()).toEqual(
+      [...SESSION_EVENT_NAMES].sort(),
+    );
+    expect(Object.keys(runtimeEventPayloadSchemas).sort()).toEqual(
+      [...RUNTIME_SCOPED_EVENTS].sort(),
+    );
+  });
+
+  it('pins the turn.start requestId contract', () => {
+    expect(
+      turnStartParamsSchema.safeParse({ sessionId: 's-1', input: 'hi' }).success,
+    ).toBe(false);
+    expect(
+      turnStartParamsSchema.safeParse({ sessionId: 's-1', requestId: 't-1', input: 'hi' }).success,
+    ).toBe(true);
+  });
+
+  it('covers the parity methods and events with the merged tables', () => {
+    for (const method of Object.keys(parityMethodSchemas)) {
+      expect(runtimeMethodSchemas[method as keyof typeof runtimeMethodSchemas]).toBeDefined();
+    }
+    for (const event of Object.keys(paritySessionEventPayloadSchemas)) {
+      expect(sessionEventPayloadSchemas[event as keyof typeof sessionEventPayloadSchemas]).toBeDefined();
+    }
+    expect(Object.keys(paritySessionEventPayloadSchemas).sort()).toEqual(
+      [...PARITY_SESSION_EVENT_NAMES].sort(),
+    );
+  });
+
+  it('pins the session.replay streaming contract', () => {
+    expect(sessionReplayParamsSchema.safeParse({ sessionId: 's-1' }).success).toBe(true);
+    expect(
+      sessionReplayParamsSchema.safeParse({ sessionId: 's-1', fromSeq: 40, limit: 100 }).success,
+    ).toBe(true);
+    expect(sessionReplayParamsSchema.safeParse({ sessionId: 's-1', fromSeq: 0 }).success).toBe(
+      false,
+    );
+    expect(sessionReplayParamsSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('pins the klient-aligned auth result shapes', () => {
+    // startLogin: pending flow carries the device-code fields; an already
+    // authenticated flow collapses to flow_id/provider (klient discriminated
+    // union on `status`).
+    expect(
+      authStartLoginResultSchema.safeParse({
+        flow_id: 'f-1',
+        provider: 'kimi-code',
+        status: 'pending',
+        verification_uri: 'https://example.com/device',
+        verification_uri_complete: 'https://example.com/device?user_code=ABCD',
+        user_code: 'ABCD',
+        expires_in: 900,
+        interval: 5,
+        expires_at: '2026-08-07T00:15:00Z',
+      }).success,
+    ).toBe(true);
+    expect(
+      authStartLoginResultSchema.safeParse({
+        flow_id: 'f-1',
+        provider: 'kimi-code',
+        status: 'authenticated',
+      }).success,
+    ).toBe(true);
+    expect(
+      authStartLoginResultSchema.safeParse({ flow_id: 'f-1', status: 'denied' }).success,
+    ).toBe(false);
+    // getFlow is null when no flow is active.
+    expect(authGetFlowResultSchema.safeParse(null).success).toBe(true);
+  });
+
+  it('pins the fidelity event payload shapes', () => {
+    const parse = (event: keyof typeof paritySessionEventPayloadSchemas, payload: unknown) =>
+      paritySessionEventPayloadSchemas[event].safeParse(payload).success;
+    expect(parse('step.begin', { n: 1, requestId: 'r-1' })).toBe(true);
+    expect(parse('step.begin', {})).toBe(false);
+    expect(
+      parse('step.retry', {
+        n: 2,
+        next_attempt: 3,
+        max_attempts: 5,
+        wait_s: 4,
+        error_type: 'rate_limit',
+        status_code: 429,
+      }),
+    ).toBe(true);
+    expect(parse('step.retry', { n: 2 })).toBe(false);
+    expect(parse('compaction.begin', {})).toBe(true);
+    expect(parse('mcp.loading.end', {})).toBe(true);
+    expect(
+      parse('slash_commands.update', {
+        slash_commands: [{ name: 'usage', description: 'Show quota', aliases: ['u'] }],
+      }),
+    ).toBe(true);
+    expect(
+      parse('background_task.observed', {
+        tool_call_id: 'tc-1',
+        tool_name: 'TaskOutput',
+        snapshot: '...',
+        terminal_state: 'running',
+      }),
+    ).toBe(true);
+    expect(
+      parse('background_task.observed', { tool_call_id: 'tc-1', terminal_state: 'bogus' }),
+    ).toBe(false);
+    expect(parse('turn.steered', { requestId: 'r-1', input: 'hold on' })).toBe(true);
   });
 });

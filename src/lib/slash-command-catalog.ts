@@ -71,7 +71,7 @@ const DESKTOP_SLASH_DENYLIST = new Set([
 ]);
 
 /** Always safe to forward to ACP even before available_commands_update. */
-const ACP_FORWARDABLE_SLASH_COMMANDS = new Set(["compact", "mcp"]);
+const RUNTIME_FORWARDABLE_SLASH_COMMANDS = new Set(["compact", "mcp"]);
 
 /** Local desktop handlers (not forwarded to ACP as raw prompts). */
 const LOCALLY_HANDLED_SLASH_COMMANDS = new Set([
@@ -105,7 +105,7 @@ const TASKS_SLASH_LIMIT_MESSAGE =
 const DESKTOP_DESCRIPTION_OVERRIDES: Record<string, string> = {
   usage: "Show plan quotas (5h / 7d) and session token usage",
   status: "Show session status and plan quotas (5h / 7d)",
-  help: "Show available desktop / ACP commands",
+  help: "Show available desktop / runtime commands",
   compact: "Compact the conversation context",
   mcp: "List MCP servers for this session",
   tasks: "List background tasks (read-only in desktop)",
@@ -120,7 +120,7 @@ const DENIED_COMMAND_HINTS: Record<string, string> = {
   clear: "Use New chat in the sidebar.",
   sessions: "Use the sessions sidebar.",
   resume: "Use the sessions sidebar.",
-  fork: "ACP does not support session/fork yet. Use /fork in the Kimi Code CLI TUI, or wait for a future desktop release.",
+  fork: "The desktop runtime does not support session/fork yet. Use /fork in the Kimi Code CLI TUI, or wait for a future desktop release.",
   title: "Rename the session from the sidebar.",
   rename: "Rename the session from the sidebar.",
   settings: "Open Settings from the app menu.",
@@ -141,7 +141,7 @@ const DENIED_COMMAND_HINTS: Record<string, string> = {
   "export-md": "Use Export Markdown in the title menu.",
   export: "Use Export Markdown in the title menu.",
   "export-debug-zip": "Use `kimi export` or `/export-debug-zip` in the Kimi Code CLI TUI.",
-  undo: "Use `/undo` in the Kimi Code CLI TUI (idle only; not available over ACP).",
+  undo: "Use `/undo` in the Kimi Code CLI TUI (idle only; not available over the desktop runtime).",
   init: "Use `/init` in the Kimi Code CLI TUI to analyze the repo and generate AGENTS.md.",
   "add-dir": "Use `/add-dir` in the Kimi Code CLI TUI to add session work directories.",
   btw: "Use `/btw` in the Kimi Code CLI TUI for side conversations.",
@@ -237,7 +237,7 @@ export function classifySlashDispatch(
     };
   }
 
-  if (ACP_FORWARDABLE_SLASH_COMMANDS.has(name)) {
+  if (RUNTIME_FORWARDABLE_SLASH_COMMANDS.has(name)) {
     return { kind: "passthrough" };
   }
 
@@ -313,7 +313,7 @@ export function formatDesktopHelpReport(commands: readonly SlashCommandDef[]): s
     return !["usage", "status", "help", "swarm"].includes(key);
   });
   if (extras.length > 0) {
-    lines.push("", "From Kimi Code ACP:");
+    lines.push("", "From Kimi Code Runtime:");
     for (const command of extras) {
       const hint = command.inputHint ? ` ${command.inputHint}` : "";
       lines.push(`- /${command.name}${hint} — ${command.description}`);

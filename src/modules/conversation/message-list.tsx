@@ -379,7 +379,7 @@ export function MessageList({
         ) : isAwaitingFirstResponse ? (
           <>
             <StatusMessage streaming>
-              {connectionPhase === "connected" ? "ACP 已连接，等待模型响应…" : "正在连接 ACP…"}
+              {connectionPhase === "connected" ? "Runtime 已连接，等待模型响应…" : "正在连接 Runtime…"}
             </StatusMessage>
             {responseIsSlow && connectionPhase === "connected" ? (
               <StatusMessage>响应时间较长</StatusMessage>

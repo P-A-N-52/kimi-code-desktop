@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
 import {
-	acpAuthStatusLabel,
+	runtimeAuthStatusLabel,
 	formatCapabilities,
 	providerCredentialLabel,
 	type ProviderSummary,
@@ -220,17 +220,17 @@ export function ProvidersPanel({
 								tone={overview.structureValid ? "ok" : "warn"}
 							/>
 							<StatusBadge
-								label={acpAuthStatusLabel(overview.acpAuth.status)}
-								tone={overview.acpAuth.status === "failed" ? "danger" : "neutral"}
+								label={runtimeAuthStatusLabel(overview.runtimeAuth.status)}
+								tone={overview.runtimeAuth.status === "failed" ? "danger" : "neutral"}
 							/>
 							{overview.kimiAccountCredentialsPresent ? (
 								<StatusBadge label="Kimi 账号已登录" tone="ok" />
 							) : null}
 						</div>
-						{overview.acpAuth.status === "failed" &&
-						overview.acpAuth.lastFailureMessage ? (
+						{overview.runtimeAuth.status === "failed" &&
+						overview.runtimeAuth.lastFailureMessage ? (
 							<p className="mt-2 font-mono text-[10.5px] text-danger">
-								{overview.acpAuth.lastFailureMessage}
+								{overview.runtimeAuth.lastFailureMessage}
 							</p>
 						) : null}
 						{overview.defaultModel ? (

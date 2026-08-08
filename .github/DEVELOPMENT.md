@@ -10,7 +10,7 @@
 
 ## 1. 项目边界
 
-`codex/source-runtime` 正在把 Kimi Code Desktop 从 CLI 外壳迁移为源码自有产品。当前可执行代码仍是 ACP 基线；最终产品只交付仓内源码构建的 Kimi Runtime。
+`codex/runtime-cutover` 已把 Kimi Code Desktop 从 CLI 外壳切换为源码自有产品：当前可执行代码是 Source Runtime（`runtime-v1`），只交付仓内源码构建的 Kimi Runtime，不再依赖安装的 CLI。
 
 ```text
 React UI
@@ -22,9 +22,9 @@ React UI
 
 必须保持：
 
-- 目标运行时为 Source-Runtime-only；不恢复 Python sidecar，不保留 ACP/旧 runtime 的生产 fallback，也不发布双 backend。
-- M4 切换前 ACP 仅作为已验证迁移基线存在；不得宣称已取代，也不得扩展成长期兼容层。
-- Source Runtime 的目录、协议、数据与发布契约以 `docs/plans/2026-08-06-source-runtime-migration.md` 为准。
+- 运行时为 Source-Runtime-only；不恢复 Python sidecar，不保留 ACP/旧 runtime 的生产 fallback，也不发布双 backend。
+- Source Runtime 是唯一可执行基线：运行不依赖 PATH 上的 `kimi`，不留 ACP 入口；runtime artifact 缺失、握手失败或进程崩溃时 fail-closed，向用户显示可操作错误，绝不静默降级。
+- Source Runtime 的目录、协议、数据与发布契约以 `docs/plans/2026-08-08-runtime-cutover-m4.md` 与 `docs/plans/2026-08-07-source-backend-maintenance.md` 为准。
 - 不为后端尚未支持的能力制作假入口。
 - 自动化测试通过、代码已实现、真实 Tauri/WebView2 已验收是三个不同状态，交付时分别说明。
 
@@ -210,7 +210,7 @@ lib     -> 平台 API 与第三方库
 
 ## 4. 会话与 Runtime 变更
 
-`useSessionStream` 是 live event 与 history replay 的前端统一入口。M4 前 ACP 是当前适配层；M4 后由 Source Runtime adapter 取代。修改 wire、tool、media、subagent、steering、approval 或 status 行为时，必须核对完整链路：
+`useSessionStream` 是 live event 与 history replay 的前端统一入口，适配层是 Source Runtime（`src-tauri/src/runtime/`）。修改 wire、tool、media、subagent、steering、approval 或 status 行为时，必须核对完整链路：
 
 ```text
 wire type -> runtime translation -> live dispatch
@@ -224,31 +224,32 @@ wire type -> runtime translation -> live dispatch
 - session list/get/update/delete 是 Runtime 数据、本地 metadata 与运行状态的组合，不按单一远程 CRUD 理解。
 - live 与 replay 的语义必须一致，不能只修其中一条路径。
 - turn 终态必须与 request/turn id 精确关联；不得靠事件时间或广泛清空完成新旧 turn 归属。
-- 未完成 M4 前，新增接口必须能映射到已冻结的 `runtime-v1`，不要继续扩大 ACP 私有面。
+- 新增接口必须能映射到已冻结的 `runtime-v1`，不要引入第二条运行链路或恢复 ACP 私有面。
 
 ## 5. Rust/Tauri 边界
 
 | 模块 | 职责 |
 | --- | --- |
-| `commands.rs` | 薄 IPC 入口、参数转换与调用编排 |
-| `acp.rs` | 每会话 ACP wire 进程 |
-| `acp_desktop.rs` | 非 wire 的共享 ACP session RPC |
-| `acp_translate.rs`、`wire_events.rs` | ACP 数据到前端 wire 语义的翻译 |
+| `commands/` | 薄 IPC 入口、参数转换与调用编排 |
+| `runtime/host.rs` | RuntimeHost 单例：supervisor 懒启动/重建、泵线程单点 emit、会话表/lease、控制通道 |
+| `runtime/translate.rs`（+ `translate/`）、`wire_events.rs` | Runtime 事件到前端 wire 语义的翻译 |
 | `session_store.rs` | 本地 metadata、wire history 与 replay |
 | `session_files.rs`、`git_diff.rs` | 当前会话工作区文件与 Git 数据 |
 | `global_config.rs`、`mcp_config.rs` | `~/.kimi-code` 配置 |
 | `security.rs` | 路径与本地访问安全边界 |
 
-Source Runtime 目标模块：
+Source Runtime 模块：
 
 | 模块 | 职责 |
 | --- | --- |
 | `runtime/kimi-code/apps/desktop-runtime` | Kimi source adapter、stdio router 与 Runtime lifecycle |
-| `runtime_supervisor.rs` | source-built 子进程生命周期、请求表、超时和重启 |
-| `runtime_protocol.rs` | `runtime-v1` envelope、codec 和版本协商 |
-| `runtime_translate.rs` | Runtime event 到 Desktop wire 语义的翻译 |
+| `src-tauri/src/runtime/host.rs` | RuntimeHost 单例：supervisor 懒启动/重建、泵线程单点 emit、会话表/lease |
+| `src-tauri/src/runtime/supervisor.rs`（+ `pump.rs`） | source-built 子进程生命周期、请求表、超时和重启 |
+| `src-tauri/src/runtime/protocol.rs`（+ `codec.rs`） | `runtime-v1` envelope、codec 和版本协商 |
+| `src-tauri/src/runtime/translate.rs`（+ `translate/`） | Runtime event 到 Desktop wire 语义的翻译 |
+| `src-tauri/src/runtime/client.rs` / `readiness.rs` | 类型化方法调用 / artifact、manifest 与 handshake readiness |
 
-业务逻辑不得持续堆入 `commands.rs`。配置、登录、skills、usage、通知和 runtime readiness 应继续收口在各自模块。
+业务逻辑不得持续堆入 `commands/`。配置、登录、skills、usage、通知和 runtime readiness 应继续收口在各自模块。
 
 测试不得覆盖真实的 `~/.kimi-code` 凭据、配置或历史记录；使用测试环境和临时目录。
 
@@ -272,7 +273,7 @@ Source Runtime 目标模块：
 | React UI 或 hook | 相关 Vitest + `npm run build` |
 | 跨多个前端模块 | `npm test` + `npm run build` |
 | Rust | `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` + `npm run rust:check` + `npm run rust:clippy` + `npm run rust:test` |
-| ACP runtime | 上述检查 + `npm run smoke:acp` |
+| Source Runtime | 上述检查 + `npm run smoke:runtime` |
 | 发布 | `npm run release:preflight`；需要 MSI 时运行 `npm run release:msi` |
 
 前端源码的历史 Biome 基线尚未清零。修改源码时至少运行：
@@ -283,7 +284,7 @@ npx biome lint <changed-files>
 
 触及文件不得新增 lint 诊断。若文件原有诊断无法在本次安全清理，应在交付中明确记录，不要用提高阈值、禁用规则或整仓格式化掩盖。
 
-`npm run smoke:acp` 需要可用的本地 CLI 和认证；浏览器 mock 不能替代真实桌面验收。
+`npm run smoke:runtime` 构建 dist 后在临时 `KIMI_CODE_HOME` 走完整 runtime-v1 方法链，离线安全；浏览器 mock 不能替代真实桌面验收（M5）。
 
 ## 8. 提交前检查
 

@@ -9,10 +9,10 @@ describe("normalizeProvidersOverview", () => {
 			structure_valid: false,
 			structure_issues: ["missing provider"],
 			kimi_account_credentials_present: true,
-			acp_auth: {
+			runtime_auth: {
 				status: "failed",
 				last_failure_at_ms: 42,
-				last_failure_message: "ACP authenticate failed",
+				last_failure_message: "Runtime authenticate failed",
 			},
 			providers: [
 				{
@@ -40,7 +40,7 @@ describe("normalizeProvidersOverview", () => {
 		expect(overview.configPath).toBe("/tmp/config.toml");
 		expect(overview.defaultModel).toBe("demo");
 		expect(overview.kimiAccountCredentialsPresent).toBe(true);
-		expect(overview.acpAuth.status).toBe("failed");
+		expect(overview.runtimeAuth.status).toBe("failed");
 		expect(overview.providers[0]?.credentialStatus).toBe("configured");
 		expect(overview.providers[0]?.models[0]?.capabilities).toEqual(["thinking"]);
 	});

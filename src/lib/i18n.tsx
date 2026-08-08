@@ -659,9 +659,9 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "(Waiting for the Agent to return a snapshot or completion notification)":
     "（等待 Agent 返回快照或完成通知）",
   "Failed to switch session model": "切换会话模型失败",
-  "Check the ACP connection or try again later.": "请检查 ACP 连接或稍后重试。",
+  "Check the Runtime connection or try again later.": "请检查 Runtime 连接或稍后重试。",
   "The current runtime cannot modify the session model": "当前运行时无法修改会话模型",
-  "Upgrade Kimi Code or check the ACP connection.": "请升级 Kimi Code 或检查 ACP 连接。",
+  "Upgrade Kimi Code or check the Runtime connection.": "请升级 Kimi Code 或检查 Runtime 连接。",
   "Failed to update session Thinking": "更新会话 Thinking 失败",
   "The current runtime cannot modify session Thinking": "当前运行时无法修改会话 Thinking",
   "Model binding": "模型绑定",
