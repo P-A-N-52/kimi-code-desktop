@@ -9,6 +9,7 @@ import {
 	renameModel,
 	renameProvider,
 	setModelOptionalStringValue,
+	setModelProtocol,
 	setModelStringValue,
 	setModelSupportEfforts,
 	setProviderStringValue,
@@ -46,6 +47,7 @@ type = "openai_legacy"
 
 		expect(result.error).toBeUndefined();
 		expect(result.modelName).toBe("demo/model-name");
+		expect(result.content).not.toContain("protocol");
 		const config = readProviderModelConfig(result.content);
 		expect(config.defaultModel).toBe("demo/model-name");
 		expect(config.models).toEqual([
@@ -303,11 +305,54 @@ capabilities = [
 		expect(getProviderModelTomlCompatibilityError("models = {}\n")).toMatch(/顶层 models/);
 	});
 
-	it("does not add display_name to new Provider sections", () => {
+	it("does not add display_name or a default type to new Provider sections", () => {
 		const addedProvider = addProvider("");
 
 		expect(addedProvider.error).toBeUndefined();
 		expect(addedProvider.content).toContain("[providers.custom-provider]");
+		expect(addedProvider.content).not.toContain("type");
 		expect(addedProvider.content).not.toContain("display_name");
+		expect(addedProvider.content).not.toContain("protocol");
+		expect(readProviderModelConfig(addedProvider.content).providers).toEqual([
+			expect.objectContaining({ name: "custom-provider", type: "" }),
+		]);
+	});
+
+	it("sets and clears a model wire protocol", () => {
+		const set = setModelProtocol(baseConfig, "demo/alpha", "openai_responses");
+
+		expect(set.error).toBeUndefined();
+		expect(set.content).toContain('protocol = "openai_responses"');
+		expect(readProviderModelConfig(set.content).models).toEqual([
+			expect.objectContaining({ name: "demo/alpha", protocol: "openai_responses" }),
+			expect.objectContaining({ name: "demo/beta", protocol: "" }),
+		]);
+
+		const cleared = setModelProtocol(set.content, "demo/alpha", "");
+		expect(cleared.error).toBeUndefined();
+		expect(cleared.content).not.toContain("protocol");
+		expect(readProviderModelConfig(cleared.content).models[0]).toEqual(
+			expect.objectContaining({ name: "demo/alpha", protocol: "" }),
+		);
+	});
+
+	it("reads the wire protocol of existing models and defaults to empty", () => {
+		const content = `[providers.demo]
+type = "openai_legacy"
+
+[models."demo/alpha"]
+provider = "demo"
+model = "alpha"
+protocol = "anthropic"
+
+[models."demo/beta"]
+provider = "demo"
+model = "beta"
+`;
+
+		const models = readProviderModelConfig(content).models;
+		expect(models).toHaveLength(2);
+		expect(models[0]).toEqual(expect.objectContaining({ name: "demo/alpha", protocol: "anthropic" }));
+		expect(models[1]).toEqual(expect.objectContaining({ name: "demo/beta", protocol: "" }));
 	});
 });

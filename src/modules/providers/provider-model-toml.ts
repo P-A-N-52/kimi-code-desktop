@@ -1,12 +1,8 @@
 import { parse } from "smol-toml";
 
-export const PROVIDER_TYPE_OPTIONS = [
-	"kimi",
-	"openai_legacy",
-	"anthropic",
-	"gemini",
-	"vertexai",
-] as const;
+export const PROVIDER_TYPE_OPTIONS = ["openai", "openai_responses", "anthropic"] as const;
+
+export const MODEL_PROTOCOL_OPTIONS = ["openai", "openai_responses", "anthropic"] as const;
 
 export const MODEL_CAPABILITY_OPTIONS = [
 	"thinking",
@@ -28,6 +24,7 @@ export type ProviderEditorConfig = {
 export type ModelEditorConfig = {
 	name: string;
 	provider: string;
+	protocol: string;
 	upstreamModel: string;
 	displayName: string;
 	maxContextSize: string;
@@ -824,6 +821,7 @@ export function readProviderModelConfig(content: string): ProviderModelConfig {
 			return {
 				name,
 				provider: readSectionString(content, parts, "provider"),
+				protocol: readSectionString(content, parts, "protocol"),
 				upstreamModel: readSectionString(content, parts, "model"),
 				displayName: readSectionString(content, parts, "display_name"),
 				maxContextSize: readSectionNumber(content, parts, "max_context_size"),
@@ -862,7 +860,6 @@ export function addProvider(content: string): TomlMutationResult {
 	);
 	return {
 		content: appendTomlSection(content, providerPath(providerName), [
-			["type", formatTomlString("openai_legacy")],
 			["base_url", formatTomlString("")],
 			["api_key", formatTomlString("")],
 		]),
@@ -1099,6 +1096,18 @@ export function setModelOptionalStringValue(
 		value
 			? setTomlSectionValue(current, modelPath(modelName), key, formatTomlString(value))
 			: removeTomlSectionValue(current, modelPath(modelName), key),
+	);
+}
+
+export function setModelProtocol(
+	content: string,
+	modelName: string,
+	value: string,
+): TomlMutationResult {
+	return setEditableValue(content, (current) =>
+		value
+			? setTomlSectionValue(current, modelPath(modelName), "protocol", formatTomlString(value))
+			: removeTomlSectionValue(current, modelPath(modelName), "protocol"),
 	);
 }
 

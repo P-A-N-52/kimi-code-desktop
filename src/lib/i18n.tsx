@@ -738,6 +738,10 @@ const ZH_CN_TRANSLATIONS: Record<string, string> = {
   "Model alias": "模型别名",
   "Model Provider": "模型 Provider",
   "Upstream model": "上游模型",
+  "Wire protocol": "线路协议",
+  "Leave empty for auto-detection; set it explicitly when the wire protocol cannot be inferred.":
+    "留空表示自动推断；无法推断线路协议时需显式设置。",
+  "(Auto)": "（自动推断）",
   "Supported thinking efforts": "支持的思考档位",
   "Comma-separated, for example low, high, max.": "以逗号分隔，例如 low, high, max。",
   "Default thinking effort": "默认思考档位",

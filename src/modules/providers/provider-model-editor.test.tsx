@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfirmDialogProvider } from "@/ui/confirm-dialog";
 import { ProviderModelEditor } from "./provider-model-editor";
+import { MODEL_PROTOCOL_OPTIONS } from "./provider-model-toml";
 
 const mocks = vi.hoisted(() => ({
 	getConfigTomlFile: vi.fn(),
@@ -378,5 +379,68 @@ display_name = "Kimi Default"
 		});
 		const savedContent = mocks.updateConfigTomlFile.mock.calls[0]?.[0] as string;
 		expect(savedContent).not.toContain("display_name");
+	});
+
+	it("renders the wire protocol selector with automatic inference and supported options", async () => {
+		renderEditor();
+		await waitFor(() => {
+			expect((screen.getByLabelText("线路协议") as HTMLSelectElement).value).toBe("");
+		});
+
+		const protocolSelect = screen.getByLabelText("线路协议") as HTMLSelectElement;
+		expect(protocolSelect.options[0]?.value).toBe("");
+		expect(protocolSelect.options[0]?.text).toBe("（自动推断）");
+		expect(Array.from(protocolSelect.options).map((option) => option.value)).toEqual([
+			"",
+			...MODEL_PROTOCOL_OPTIONS,
+		]);
+	});
+
+	it("writes a model wire protocol into the saved config", async () => {
+		renderEditor();
+		await waitFor(() => {
+			expect((screen.getByLabelText("线路协议") as HTMLSelectElement).value).toBe("");
+		});
+
+		fireEvent.change(screen.getByLabelText("线路协议"), {
+			target: { value: "anthropic" },
+		});
+		expect((screen.getByLabelText("线路协议") as HTMLSelectElement).value).toBe("anthropic");
+		fireEvent.click(screen.getByRole("button", { name: "保存模型配置" }));
+
+		await waitFor(() => {
+			expect(mocks.updateConfigTomlFile).toHaveBeenCalledOnce();
+		});
+		const savedContent = mocks.updateConfigTomlFile.mock.calls[0]?.[0] as string;
+		const alphaModelSection = savedContent.slice(
+			savedContent.indexOf('[models."demo/alpha"]'),
+			savedContent.indexOf('[models."demo/beta"]'),
+		);
+		expect(alphaModelSection).toContain('protocol = "anthropic"');
+	});
+
+	it("removes a model wire protocol when reset to automatic inference", async () => {
+		renderEditor();
+		await waitFor(() => {
+			expect((screen.getByLabelText("线路协议") as HTMLSelectElement).value).toBe("");
+		});
+
+		fireEvent.change(screen.getByLabelText("线路协议"), {
+			target: { value: "openai" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "保存模型配置" }));
+		await waitFor(() => {
+			expect(mocks.updateConfigTomlFile).toHaveBeenCalledTimes(1);
+		});
+
+		fireEvent.change(screen.getByLabelText("线路协议"), {
+			target: { value: "" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "保存模型配置" }));
+		await waitFor(() => {
+			expect(mocks.updateConfigTomlFile).toHaveBeenCalledTimes(2);
+		});
+		const savedContent = mocks.updateConfigTomlFile.mock.calls[1]?.[0] as string;
+		expect(savedContent).not.toContain("protocol");
 	});
 });
