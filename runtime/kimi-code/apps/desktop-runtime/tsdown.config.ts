@@ -8,7 +8,11 @@ export default defineConfig({
     main: './src/main.ts',
   },
   format: ['esm'],
-  dts: true,
+  // d.ts bundling is off: this is a private process bundle with no TypeScript
+  // consumers, and rolldown-dts cannot inline the type-only barrel re-exports
+  // (`export type { X }`) of force-bundled @moonshot-ai deps — it fails with
+  // MISSING_EXPORT / emits broken alias artifacts.
+  dts: false,
   outDir: 'dist',
   clean: true,
   hash: false,
@@ -22,6 +26,10 @@ export default defineConfig({
     ].join('\n'),
   },
   deps: {
+    // Workspace sources are always bundled. Third-party packages in the
+    // dependency closure must instead stay declared in package.json so
+    // tsdown externalizes them: node-pty ships a native .node binding and
+    // @jsquash/webp ships .wasm — inlining either crashes at runtime.
     alwaysBundle: [/^@moonshot-ai\//],
     neverBundle: [],
   },

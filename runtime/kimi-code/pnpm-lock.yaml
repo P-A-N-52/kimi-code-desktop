@@ -74,9 +74,24 @@ importers:
 
   apps/desktop-runtime:
     dependencies:
-      '@moonshot-ai/kimi-code-sdk':
+      '@jsquash/webp':
+        specifier: ^1.5.0
+        version: 1.5.0
+      '@moonshot-ai/agent-core-v2':
         specifier: workspace:^
-        version: link:../../packages/node-sdk
+        version: link:../../packages/agent-core-v2
+      '@moonshot-ai/kimi-code-oauth':
+        specifier: workspace:^
+        version: link:../../packages/oauth
+      '@moonshot-ai/klient':
+        specifier: workspace:^
+        version: link:../../packages/klient
+      node-pty:
+        specifier: ^1.1.0
+        version: 1.1.0
+      zod:
+        specifier: 'catalog:'
+        version: 4.3.6
 
   apps/kimi-code:
     devDependencies:
