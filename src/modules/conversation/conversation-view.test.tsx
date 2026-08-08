@@ -183,14 +183,14 @@ function makeStream(
   };
 }
 
-describe("ConversationView ACP reconnect", () => {
-  it("offers reconnect for a disconnected ACP error and guards repeated clicks", () => {
+describe("ConversationView runtime reconnect", () => {
+  it("offers reconnect for a disconnected runtime error and guards repeated clicks", () => {
     const reconnect = vi.fn();
     const stream = makeStream(vi.fn(), {
       status: "error",
       isConnected: false,
       connectionPhase: "disconnected",
-      error: new Error("ACP connection closed"),
+      error: new Error("Runtime connection closed"),
       reconnect,
     });
     renderConversation("reconnectable-error", stream);
@@ -240,7 +240,7 @@ describe("ConversationView model switching fallback", () => {
     ];
   });
 
-  it("switches through global config when ACP has no session config options", async () => {
+  it("switches through global config when the runtime has no session config options", async () => {
     const stream = makeStream(vi.fn());
     renderConversation("test-session", stream);
 
@@ -254,7 +254,7 @@ describe("ConversationView model switching fallback", () => {
     expect(stream.sendSetConfigOption).not.toHaveBeenCalled();
   });
 
-  it("keeps session-scoped switching when ACP declares model config options", async () => {
+  it("keeps session-scoped switching when the runtime declares model config options", async () => {
     tauriApi.isTauri.mockReturnValue(true);
     tauriApi.getAgentRuntimeCapabilities.mockResolvedValueOnce({
       loadSession: true,

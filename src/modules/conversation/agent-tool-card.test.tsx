@@ -80,7 +80,7 @@ describe("AgentToolCard", () => {
     expect(document.querySelector("[data-slot=agent-subagent-progress]")).not.toBeNull();
   });
 
-  it("does not show a checkmark for ACP in_progress ToolResult ticks", () => {
+  it("does not show a checkmark for runtime in_progress ToolResult ticks", () => {
     render(
       <AgentToolCard
         toolCall={{

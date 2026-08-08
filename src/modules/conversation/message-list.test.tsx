@@ -9,7 +9,7 @@ const renderMessages = (messages: LiveMessage[]) =>
   );
 
 describe("MessageList semantic rendering", () => {
-  it("distinguishes ACP connection from waiting for the model", () => {
+  it("distinguishes runtime connection from waiting for the model", () => {
     const { rerender } = render(
       <MessageList
         messages={[{ id: "user", role: "user", content: "Hello" }]}
@@ -19,7 +19,7 @@ describe("MessageList semantic rendering", () => {
         onRespondQuestion={vi.fn()}
       />,
     );
-    expect(screen.getByText("正在连接 ACP…")).toBeTruthy();
+    expect(screen.getByText("正在连接 Runtime…")).toBeTruthy();
 
     rerender(
       <MessageList
@@ -30,8 +30,8 @@ describe("MessageList semantic rendering", () => {
         onRespondQuestion={vi.fn()}
       />,
     );
-    expect(screen.queryByText("正在连接 ACP…")).toBeNull();
-    expect(screen.getByText("ACP 已连接，等待模型响应…")).toBeTruthy();
+    expect(screen.queryByText("正在连接 Runtime…")).toBeNull();
+    expect(screen.getByText("Runtime 已连接，等待模型响应…")).toBeTruthy();
 
     rerender(
       <MessageList
@@ -43,7 +43,7 @@ describe("MessageList semantic rendering", () => {
         onRespondQuestion={vi.fn()}
       />,
     );
-    expect(screen.queryByText("ACP 已连接，等待模型响应…")).toBeNull();
+    expect(screen.queryByText("Runtime 已连接，等待模型响应…")).toBeNull();
     expect(screen.getByText("Hi")).toBeTruthy();
   });
 
@@ -128,7 +128,7 @@ describe("MessageList semantic rendering", () => {
       />,
     );
 
-    expect(screen.queryByText("ACP 已连接，等待模型响应…")).toBeNull();
+    expect(screen.queryByText("Runtime 已连接，等待模型响应…")).toBeNull();
     expect(screen.getByText("错误报告：provider returned 404")).toBeTruthy();
   });
 
@@ -236,7 +236,7 @@ describe("MessageList semantic rendering", () => {
     expect(container.querySelectorAll("[data-slot=assistant-avatar]")).toHaveLength(0);
   });
 
-  it("does not expose session fork while ACP lacks fork support", () => {
+  it("does not expose session fork while the runtime lacks fork support", () => {
     renderMessages([{ id: "turn-2", role: "user", content: "Try another approach", turnIndex: 2 }]);
     expect(screen.queryByRole("button", { name: "从此轮分叉会话" })).toBeNull();
   });
@@ -444,7 +444,7 @@ describe("MessageList todo merging (issue #13)", () => {
     expect(screen.getByText("ls")).toBeTruthy();
   });
 
-  it("merges live ACP Todo List titles even when replay message ids collide", () => {
+  it("merges live runtime Todo List titles even when replay message ids collide", () => {
     renderMessages([
       todoMessage("replayed-assistant", "旧清单项", "Todo List"),
       todoMessage("replayed-assistant", "新清单项", "Todo List"),

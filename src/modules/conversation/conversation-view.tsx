@@ -11,8 +11,8 @@ import type { SessionFileEntry } from "@/hooks/useSessions";
 import { useSkillSlashCommands } from "@/hooks/useSkillSlashCommands";
 import type { ConfigModel, UploadSessionFileResponse } from "@/lib/api/models";
 import { ProviderType } from "@/lib/api/models/ProviderType";
-import type { AgentRuntimeCapabilities } from "@/lib/acp-capabilities";
-import { emptyAgentRuntimeCapabilities } from "@/lib/acp-capabilities";
+import type { AgentRuntimeCapabilities } from "@/lib/runtime-capabilities";
+import { emptyAgentRuntimeCapabilities } from "@/lib/runtime-capabilities";
 import { notifyGlobalConfigApplied } from "@/lib/config-update-toast";
 import {
 	canUseSessionConfigOption,
@@ -395,13 +395,13 @@ export function ConversationView({
         const ok = await stream.sendSetConfigOption("model", name);
         if (!ok) {
           toast.error("切换会话模型失败", {
-            description: "请检查 ACP 连接或稍后重试。",
+            description: "请检查 Runtime 连接或稍后重试。",
           });
         }
         return;
       }
       toast.error("当前运行时无法修改会话模型", {
-        description: "请升级 Kimi Code 或检查 ACP 连接。",
+        description: "请升级 Kimi Code 或检查 Runtime 连接。",
       });
     },
     [canSetSessionModel, canUseSessionModel, displaySelectedModel, stream, update],
@@ -460,13 +460,13 @@ export function ConversationView({
         const ok = await stream.sendSetConfigOption("thinking", enabled ? "on" : "off");
         if (!ok) {
           toast.error("更新会话 Thinking 失败", {
-            description: "请检查 ACP 连接或稍后重试。",
+            description: "请检查 Runtime 连接或稍后重试。",
           });
         }
         return;
       }
       toast.error("当前运行时无法修改会话 Thinking", {
-        description: "请升级 Kimi Code 或检查 ACP 连接。",
+        description: "请升级 Kimi Code 或检查 Runtime 连接。",
       });
     },
     [canSetSessionThinking, canUseSessionThinking, selectedConfigModel, stream, update],

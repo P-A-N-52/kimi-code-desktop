@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   normalizeAgentRuntimeCapabilities,
   supportsSessionConfigOptions,
-} from "./acp-capabilities";
+} from "./runtime-capabilities";
 
 const V030_INIT = {
   protocolVersion: 1,
@@ -20,7 +20,7 @@ const V031_INIT = {
   sessionConfigOptions: true,
 };
 
-describe("acp-capabilities", () => {
+describe("runtime-capabilities", () => {
   it("normalizes v0.30 initialize without session config capability", () => {
     const caps = normalizeAgentRuntimeCapabilities(V030_INIT);
     expect(caps.agentVersion).toBe("0.30.0");

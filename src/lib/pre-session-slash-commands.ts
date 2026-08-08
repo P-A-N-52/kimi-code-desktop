@@ -26,7 +26,7 @@ export const PRE_SESSION_SLASH_COMMANDS: SlashCommandDef[] = [
 	},
 	{
 		name: "goal",
-		description: "Create or continue a long-running goal (forwarded to ACP)",
+		description: "Create or continue a long-running goal (forwarded to the runtime)",
 		aliases: [],
 		inputHint: "goal description",
 	},
@@ -79,7 +79,7 @@ export const PRE_SESSION_SLASH_COMMANDS: SlashCommandDef[] = [
 	},
 	{
 		name: "help",
-		description: "Show available desktop / ACP commands",
+		description: "Show available desktop / runtime commands",
 		aliases: ["h", "?"],
 	},
 ];

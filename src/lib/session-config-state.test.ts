@@ -11,7 +11,7 @@ import {
   runtimeModesFromSessionModeValue,
   sessionHasConfigOption,
 } from "./session-config-state";
-import { normalizeAgentRuntimeCapabilities } from "./acp-capabilities";
+import { normalizeAgentRuntimeCapabilities } from "./runtime-capabilities";
 
 describe("session-config-state", () => {
   it("resume without options stays unknown", () => {

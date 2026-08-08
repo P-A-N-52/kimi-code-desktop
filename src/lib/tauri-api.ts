@@ -3,7 +3,7 @@ import { type Event, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   type AgentRuntimeCapabilities,
   normalizeAgentRuntimeCapabilities,
-} from "@/lib/acp-capabilities";
+} from "@/lib/runtime-capabilities";
 import type { GoalItem, GoalStatus } from "@/lib/goal";
 import { normalizeProvidersOverview, type ProvidersOverview } from "@/lib/provider-overview-api";
 import { normalizeSessionConfigState, type SessionConfigState } from "@/lib/session-config-state";

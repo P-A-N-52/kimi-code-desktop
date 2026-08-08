@@ -145,7 +145,7 @@ describe("slash-command-catalog", () => {
     });
     expect(classifySlashDispatch("/fork", advertised)).toEqual({
       kind: "blocked",
-      message: expect.stringMatching(/ACP.*session\/fork|session\/fork.*ACP/i),
+      message: expect.stringMatching(/desktop runtime.*session\/fork|session\/fork.*desktop runtime/i),
     });
     const forkBlocked = classifySlashDispatch("/fork", advertised);
     expect(forkBlocked.kind).toBe("blocked");
@@ -158,7 +158,7 @@ describe("slash-command-catalog", () => {
     });
   });
 
-  it("formats desktop help including ACP extras", () => {
+  it("formats desktop help including runtime extras", () => {
     const help = formatDesktopHelpReport([
       { name: "compact", description: "Compact context", aliases: [], inputHint: "hint" },
     ]);
