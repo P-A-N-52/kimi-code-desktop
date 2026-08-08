@@ -1,7 +1,7 @@
 import { AlertCircle, Check, Circle, Clock, FilePlus2, ListTodo, LoaderCircle } from "lucide-react";
 import { isTerminalObservedTaskState } from "@/lib/background-tasks/normalize";
 import { useBackgroundTasksStore } from "@/lib/background-tasks/store";
-import { useToolEventsStore } from "@/lib/tool-events/store";
+import { EMPTY_TOOL_EVENTS, useToolEventsStore } from "@/lib/tool-events/store";
 import { GoalCard } from "./goal-card";
 
 function taskStateLabel(state: string): string {
@@ -26,9 +26,10 @@ export function TasksTab({
   sessionId: string;
   onGoalControl?: (action: "pause" | "resume" | "cancel") => Promise<unknown>;
 }) {
-  const goal = useToolEventsStore((state) => state.currentGoal);
-  const todoItems = useToolEventsStore((state) => state.todoItems);
-  const newFiles = useToolEventsStore((state) => state.newFiles);
+  const snapshot = useToolEventsStore(
+    (state) => state.sessions[sessionId] ?? EMPTY_TOOL_EVENTS,
+  );
+  const { currentGoal: goal, todoItems, newFiles } = snapshot;
   // Select the stable arrays and filter in render; a `.filter()` inside the
   // selector returns a fresh array every snapshot and makes
   // useSyncExternalStore loop ("Maximum update depth exceeded").

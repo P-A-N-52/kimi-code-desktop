@@ -433,18 +433,16 @@ mod tests {
         assert!(err.contains("outside"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn normalize_workspace_path_rejects_symlink_escape() {
         let dir = TempDir::new().expect("tempdir");
         let outside = TempDir::new().expect("outside dir");
         std::fs::write(outside.path().join("secret.txt"), b"secret").expect("secret file");
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).expect("symlink");
-            let err = normalize_workspace_path("link/secret.txt", dir.path())
-                .expect_err("symlink escape must be rejected");
-            assert!(err.contains("outside"));
-        }
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).expect("symlink");
+        let err = normalize_workspace_path("link/secret.txt", dir.path())
+            .expect_err("symlink escape must be rejected");
+        assert!(err.contains("outside"));
     }
 
     #[test]

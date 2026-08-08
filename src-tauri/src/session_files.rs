@@ -32,10 +32,8 @@ pub fn resolve_session_work_dir_runtime(
     app: &AppHandle,
     session_id: &str,
 ) -> Result<PathBuf, String> {
-    if let Some(session_dir) = session_store::find_session_dir_by_id(session_id)? {
-        if let Some(work_dir) = resolve_work_dir_from_session_dir(&session_dir)? {
-            return Ok(work_dir);
-        }
+    if let Some(work_dir) = resolve_local_session_work_dir(session_id)? {
+        return Ok(work_dir);
     }
 
     let host = app.state::<RuntimeHost>();
@@ -60,6 +58,13 @@ fn session_work_dir_error(operation: &str, err: RuntimeError) -> String {
         }
         other => format!("{operation} failed: {other}"),
     }
+}
+
+fn resolve_local_session_work_dir(session_id: &str) -> Result<Option<PathBuf>, String> {
+    let Some(session_dir) = session_store::find_session_dir_by_id(session_id)? else {
+        return Ok(None);
+    };
+    resolve_work_dir_from_session_dir(&session_dir)
 }
 
 fn resolve_work_dir_from_session_dir(session_dir: &Path) -> Result<Option<PathBuf>, String> {
@@ -536,6 +541,31 @@ mod tests {
             .expect("lookup")
             .expect("work dir");
         assert_eq!(resolved, work_dir);
+    }
+
+    #[test]
+    fn resolves_local_session_worktree_without_runtime_lookup() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        let work_dir = temp.path().join("local-project");
+        std::fs::create_dir_all(&work_dir).expect("work dir");
+        let hash = format!("{:x}", md5::compute(work_dir.to_string_lossy().as_bytes()));
+        std::fs::create_dir_all(home.join("sessions").join(&hash).join("local-session"))
+            .expect("session dir");
+        std::fs::write(
+            home.join("kimi.json"),
+            format!(
+                r#"{{"work_dirs":[{{"path":"{}"}}]}}"#,
+                work_dir.to_string_lossy().replace('\\', "\\\\")
+            ),
+        )
+        .expect("metadata");
+
+        let _home_guard = set_kimi_code_home(&home);
+        assert_eq!(
+            resolve_local_session_work_dir("local-session").expect("local lookup"),
+            Some(work_dir)
+        );
     }
 
     #[test]

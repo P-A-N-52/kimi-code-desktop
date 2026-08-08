@@ -3,6 +3,7 @@ import { access, mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const appRoot = join(import.meta.dirname, '..');
 const libraryPath = join(appRoot, 'dist/index.mjs');
@@ -21,7 +22,7 @@ if (runtimeExec) {
   });
 }
 
-const runtime = await import(libraryPath);
+const runtime = await import(pathToFileURL(libraryPath).href);
 const libraryFrames = [];
 const libraryServer = new runtime.RuntimeProtocolServer({
   adapter: {

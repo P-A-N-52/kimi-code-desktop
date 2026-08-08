@@ -5,8 +5,8 @@ import App from "./app";
 
 const mocks = vi.hoisted(() => {
 	const useToolEventsStore = Object.assign(
-		vi.fn((selector: (state: { currentGoal: null }) => unknown) =>
-			selector({ currentGoal: null }),
+		vi.fn((selector: (state: { sessions: Record<string, never> }) => unknown) =>
+			selector({ sessions: {} }),
 		),
 		{
 			getState: vi.fn(() => ({ clearCurrentGoal: vi.fn() })),
@@ -67,8 +67,7 @@ vi.mock("@/lib/config-update", () => ({
 	})),
 }));
 vi.mock("@/lib/tool-events/store", () => ({
-	getCurrentGoal: vi.fn(() => null),
-	selectCurrentGoal: vi.fn(() => null),
+	getToolEventsSnapshot: vi.fn(() => ({ currentGoal: null, todoItems: [], newFiles: [] })),
 	useToolEventsStore: mocks.useToolEventsStore,
 }));
 vi.mock("@/modules/readiness/readiness-overlay", () => ({

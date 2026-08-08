@@ -8,9 +8,11 @@ pub mod config;
 pub mod sessions;
 pub mod system;
 pub mod wire;
+pub mod workspace;
 
 pub use auth::*;
 pub use config::*;
 pub use sessions::*;
 pub use system::*;
 pub use wire::*;
+pub use workspace::*;

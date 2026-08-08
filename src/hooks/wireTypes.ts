@@ -524,27 +524,35 @@ export type ContentPart =
     }
   | {
       type: "image_url";
-      image_url: { url: string; id?: string | null };
+      image_url?: { url: string; id?: string | null };
+      imageUrl?: { url: string; id?: string | null };
     }
   | {
       type: "audio_url";
-      audio_url: { url: string; id?: string | null };
+      audio_url?: { url: string; id?: string | null };
+      audioUrl?: { url: string; id?: string | null };
     }
   | {
       type: "video_url";
-      video_url: { url: string; id?: string | null };
+      video_url?: { url: string; id?: string | null };
+      videoUrl?: { url: string; id?: string | null };
     }
   | {
       type: "image" | "input_image";
       image_url?: string;
       url?: string;
       mime_type?: string;
+      mimeType?: string;
       alt?: string;
       data?: unknown;
     }
   | {
       type: "audio" | "input_audio";
       audio_url?: string;
+      url?: string;
+      mime_type?: string;
+      mimeType?: string;
+      alt?: string;
       transcript?: string;
       data?: unknown;
     }

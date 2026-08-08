@@ -8,7 +8,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  NODE_VERSION: "22"
+  # Source Runtime enforces this minimum before spawning its worker. Keep CI
+  # aligned with the runtime and release workflows so host tests exercise the
+  # real process path instead of failing at the version gate.
+  NODE_VERSION: "24.15.0"
   PYTHON_VERSION: "3.12"
 
 jobs:
@@ -55,6 +58,11 @@ jobs:
         working-directory: ./src-tauri
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -111,5 +119,11 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Check Apple Silicon target
+      - name: Check Apple Silicon Rust target
+        # This job validates cross-target Rust compilation, not release
+        # packaging. The release workflow builds and verifies the real SEA
+        # sidecar before bundling; disabling externalBin here avoids requiring
+        # a fake artifact in a compile-only check.
+        env:
+          TAURI_CONFIG: '{"bundle":{"externalBin":[]}}'
         run: cargo check --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SubagentStep } from "@/hooks/types";
 import { useAgentMonitorStore } from "@/lib/agent-monitor/store";
+import { deriveSessionSources } from "@/lib/session-sources";
 import { createSessionRuntime } from "./runtime";
 
 let wireMessageHandler: ((message: string) => void) | null = null;
@@ -360,6 +361,72 @@ describe("createSessionRuntime", () => {
     expect(snapshot.messages[2].content).toBe("live text");
     expect(snapshot.messages[2].isStreaming).toBe(true);
     expect(snapshot.status).toBe("streaming");
+  });
+
+  it("restores compatible runtime image blocks as distinct historical attachments and sources", () => {
+    const runtime = createSessionRuntime({ sessionId: "session-images" });
+    runtime.handleWireMessage(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: "event",
+        params: {
+          type: "TurnBegin",
+          payload: {
+            user_input: [
+              { type: "input_text", text: "Compare these images" },
+              {
+                type: "image",
+                mimeType: "image/png",
+                alt: "same-name.png",
+                data: "iVBORw0KGgo=",
+              },
+              {
+                type: "input_image",
+                mimeType: "image/png",
+                alt: "same-name.png",
+                data: "iVBORw0KGgoAAA=",
+              },
+              {
+                type: "image_url",
+                imageUrl: {
+                  url: "blobref:image/png;ea2567f2abc709ae78308501128a6d4c7c7e78c758ec456699651ad5eebca227",
+                },
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    const message = runtime.getSnapshot().messages[0];
+    expect(message).toMatchObject({
+      role: "user",
+      content: "Compare these images",
+      attachments: [
+        {
+          type: "file",
+          filename: "same-name.png",
+          mediaType: "image/png",
+          url: "data:image/png;base64,iVBORw0KGgo=",
+        },
+        {
+          type: "file",
+          filename: "same-name.png",
+          mediaType: "image/png",
+          url: "data:image/png;base64,iVBORw0KGgoAAA=",
+        },
+        {
+          type: "file",
+          mediaType: "image/png",
+          url: "blobref:image/png;ea2567f2abc709ae78308501128a6d4c7c7e78c758ec456699651ad5eebca227",
+        },
+      ],
+    });
+    expect(deriveSessionSources([message])).toMatchObject([
+      { id: `${message.id}:attachment:0`, label: "same-name.png" },
+      { id: `${message.id}:attachment:1`, label: "same-name.png" },
+      { id: `${message.id}:attachment:2`, label: "attachment" },
+    ]);
   });
 
   it("start() connects the wire and stop() disconnects and ignores late messages", async () => {

@@ -1,7 +1,7 @@
 import { ArrowLeft, FileText, Folder, LoaderCircle, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionFileEntry } from "@/hooks/useSessions";
-import { useToolEventsStore } from "@/lib/tool-events/store";
+import { EMPTY_TOOL_EVENTS, useToolEventsStore } from "@/lib/tool-events/store";
 import { cn } from "@/lib/utils";
 
 type FilesTabProps = {
@@ -54,14 +54,20 @@ export function FilesTab({ sessionId, listDirectory, getFile }: FilesTabProps) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const newFiles = useToolEventsStore((state) => state.newFiles);
+  const directoryRequestRef = useRef(0);
+  const previewRequestRef = useRef(0);
+  const newFiles = useToolEventsStore(
+    (state) => (state.sessions[sessionId] ?? EMPTY_TOOL_EVENTS).newFiles,
+  );
   const newFileSet = useMemo(() => new Set(newFiles), [newFiles]);
 
   const loadDirectory = useCallback(async () => {
+    const request = ++directoryRequestRef.current;
     setLoading(true);
     setError(null);
     try {
       const next = await listDirectory(sessionId, path);
+      if (request !== directoryRequestRef.current) return;
       setEntries(
         [...next].sort((left, right) =>
           left.type === right.type
@@ -72,18 +78,24 @@ export function FilesTab({ sessionId, listDirectory, getFile }: FilesTabProps) {
         ),
       );
     } catch (err) {
+      if (request !== directoryRequestRef.current) return;
       setEntries([]);
       setError(err instanceof Error ? err.message : "无法读取目录");
     } finally {
-      setLoading(false);
+      if (request === directoryRequestRef.current) setLoading(false);
     }
   }, [listDirectory, path, sessionId]);
 
   useEffect(() => {
-    void sessionId;
+    directoryRequestRef.current += 1;
+    previewRequestRef.current += 1;
     setPath(".");
+    setEntries([]);
+    setLoading(false);
+    setError(null);
     setSelectedPath(null);
     setPreview(null);
+    setPreviewLoading(false);
   }, [sessionId]);
 
   useEffect(() => {
@@ -92,21 +104,25 @@ export function FilesTab({ sessionId, listDirectory, getFile }: FilesTabProps) {
 
   const openFile = useCallback(
     async (filePath: string) => {
+      const request = ++previewRequestRef.current;
       setSelectedPath(filePath);
       setPreview(null);
       setPreviewLoading(true);
       try {
         const blob = await getFile(sessionId, filePath);
+        if (request !== previewRequestRef.current) return;
         if (!canPreviewText(blob, filePath)) {
           setPreview(`二进制文件 · ${blob.type || "未知类型"} · ${blob.size} bytes`);
           return;
         }
         const text = await blob.text();
+        if (request !== previewRequestRef.current) return;
         setPreview(text.length > 200_000 ? `${text.slice(0, 200_000)}\n\n…预览已截断` : text);
       } catch (err) {
+        if (request !== previewRequestRef.current) return;
         setPreview(err instanceof Error ? err.message : "无法读取文件");
       } finally {
-        setPreviewLoading(false);
+        if (request === previewRequestRef.current) setPreviewLoading(false);
       }
     },
     [getFile, sessionId],
@@ -118,8 +134,10 @@ export function FilesTab({ sessionId, listDirectory, getFile }: FilesTabProps) {
         <button
           type="button"
           onClick={() => {
+            previewRequestRef.current += 1;
             setSelectedPath(null);
             setPreview(null);
+            setPreviewLoading(false);
           }}
           className="flex items-center gap-2 border-b border-line px-2 py-2 text-left font-mono text-[11px] text-muted hover:bg-hover hover:text-foreground"
         >

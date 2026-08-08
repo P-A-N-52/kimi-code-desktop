@@ -21,7 +21,7 @@ import {
   setNativeUiLanguage,
   showWindow,
 } from "@/lib/tauri-api";
-import { useToolEventsStore } from "@/lib/tool-events/store";
+import { getToolEventsSnapshot, useToolEventsStore } from "@/lib/tool-events/store";
 import { ConversationView } from "@/modules/conversation/conversation-view";
 import { GoalCancelConfirmation } from "@/modules/conversation/goal-cancel-confirmation";
 import { ReadinessOverlay } from "@/modules/readiness/readiness-overlay";
@@ -30,7 +30,8 @@ import { SettingsDialog, type SettingsTab } from "@/modules/settings/settings-di
 import { type SessionModeDraft, shouldAutoApprove } from "@/modules/statusbar/permission-mode";
 import { Topbar } from "@/modules/topbar/topbar";
 import { useDesktopUpdate } from "@/modules/update/desktop-update";
-import { ChangesPanel, type WorkspaceTab } from "@/modules/workspace/changes-panel";
+import type { WorkspaceTab } from "@/modules/workspace/changes-panel";
+import { ContextSidebar } from "@/modules/workspace/context-sidebar";
 import {
   deriveChanges,
   derivePendingApprovals,
@@ -83,7 +84,6 @@ export default function App() {
   const [goalCancelOpen, setGoalCancelOpen] = useState(false);
   const [goalCancelPending, setGoalCancelPending] = useState(false);
   const [goalCancelTarget, setGoalCancelTarget] = useState<GoalCancelTarget | null>(null);
-  const currentGoal = useToolEventsStore((state) => state.currentGoal);
 
   const runRuntimeReadinessCheck = useCallback(async () => {
     if (!isTauri()) {
@@ -197,6 +197,9 @@ export default function App() {
     () => sessions.find((s) => s.sessionId === selectedSessionId),
     [sessions, selectedSessionId],
   );
+  const currentGoal = useToolEventsStore(
+    (state) => state.sessions[selectedSessionId]?.currentGoal ?? null,
+  );
 
   const handleSessionStatus = useCallback(
     (status: SessionStatus) => {
@@ -279,7 +282,7 @@ export default function App() {
   const confirmGoalCancel = useCallback(async () => {
     const target = goalCancelTarget;
     if (!target) return;
-    const liveGoal = useToolEventsStore.getState().currentGoal;
+    const liveGoal = getToolEventsSnapshot(target.sessionId).currentGoal;
     const sameGoal = target.goalId
       ? liveGoal?.goalId === target.goalId
       : liveGoal?.objective === target.objective;
@@ -619,17 +622,14 @@ export default function App() {
           />
         }
         panel={
-          <ChangesPanel
+          <ContextSidebar
             sessionId={selectedSessionId}
-            workDir={currentSession?.workDir}
-            runtimeSlashCommands={stream.slashCommands}
+            workDir={currentSession?.workDir ?? undefined}
+            messages={stream.messages}
             activeTab={workspaceTab}
             onTabChange={setWorkspaceTab}
             changes={changes}
             pendingApprovals={pendingApprovals}
-            changesLoading={gitDiff.isLoading}
-            changesError={gitDiff.error}
-            onRefreshChanges={() => void gitDiff.refresh()}
             listDirectory={listSessionDirectory}
             getFile={getSessionFile}
             onApproveAll={handleApproveAll}

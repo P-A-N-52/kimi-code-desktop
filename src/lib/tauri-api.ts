@@ -5,6 +5,17 @@ import {
   normalizeAgentRuntimeCapabilities,
 } from "@/lib/runtime-capabilities";
 import type { GoalItem, GoalStatus } from "@/lib/goal";
+import {
+  type GitActionResult,
+  type GitComparison,
+  type GitEnvironment,
+  type GitHubEnvironment,
+  normalizeGitAction,
+  normalizeGitComparison,
+  normalizeGitEnvironment,
+  normalizeGitHubEnvironment,
+  type SessionPlan,
+} from "@/lib/git-workspace";
 import { normalizeProvidersOverview, type ProvidersOverview } from "@/lib/provider-overview-api";
 import { normalizeSessionConfigState, type SessionConfigState } from "@/lib/session-config-state";
 import { stripThinkMarkup } from "@/lib/utils";
@@ -947,6 +958,130 @@ export async function getGitDiffStats(sessionId: string): Promise<GitDiffStats> 
     })),
     error: typeof data.error === "string" ? data.error : undefined,
   };
+}
+
+export async function getGitEnvironment(
+	sessionId: string,
+	baseRef?: string,
+): Promise<GitEnvironment> {
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+	const raw = await invoke<Record<string, unknown>>("get_git_environment", {
+		sessionId,
+		baseRef,
+	});
+	return normalizeGitEnvironment(raw);
+}
+
+export async function getGithubEnvironment(sessionId: string): Promise<GitHubEnvironment> {
+	if (!isTauri()) return Promise.reject(new Error("Not in Tauri"));
+	const raw = await invoke<Record<string, unknown>>("get_github_environment", { sessionId });
+	return normalizeGitHubEnvironment(raw);
+}
+
+export async function compareGitBranches(
+	sessionId: string,
+	leftRef: string,
+	rightRef: string,
+): Promise<GitComparison> {
+	const raw = await invoke<Record<string, unknown>>("compare_git_branches", {
+		sessionId,
+		leftRef,
+		rightRef,
+	});
+	return normalizeGitComparison(raw);
+}
+
+export async function getGitComparisonFileDiff(
+	sessionId: string,
+	leftRef: string,
+	rightRef: string,
+	path: string,
+): Promise<string> {
+	return invoke<string>("get_git_comparison_file_diff", {
+		sessionId,
+		leftRef,
+		rightRef,
+		path,
+	});
+}
+
+export async function switchGitBranch(
+	sessionId: string,
+	targetRef: string,
+	expectedHead: string,
+	confirmDirty: boolean,
+): Promise<GitActionResult> {
+	const raw = await invoke<Record<string, unknown>>("switch_git_branch", {
+		sessionId,
+		targetRef,
+		expectedHead,
+		confirmDirty,
+	});
+	return normalizeGitAction(raw);
+}
+
+export async function commitGitChanges(
+	sessionId: string,
+	paths: string[],
+	message: string,
+	expectedHead: string,
+): Promise<GitActionResult> {
+	const raw = await invoke<Record<string, unknown>>("commit_git_changes", {
+		sessionId,
+		paths,
+		message,
+		expectedHead,
+	});
+	return normalizeGitAction(raw);
+}
+
+export async function pushGitBranch(
+	sessionId: string,
+	remote: string,
+	branch: string,
+	expectedHead: string,
+): Promise<GitActionResult> {
+	const raw = await invoke<Record<string, unknown>>("push_git_branch", {
+		sessionId,
+		remote,
+		branch,
+		expectedHead,
+	});
+	return normalizeGitAction(raw);
+}
+
+export async function createGithubPullRequest(args: {
+	sessionId: string;
+	baseRef: string;
+	headRef: string;
+	title: string;
+	body: string;
+	draft: boolean;
+	expectedHead: string;
+}): Promise<GitActionResult> {
+	const raw = await invoke<Record<string, unknown>>("create_github_pull_request", args);
+	return normalizeGitAction(raw);
+}
+
+export async function listSessionPlans(sessionId: string): Promise<SessionPlan[]> {
+	const raw = await invoke<Array<Record<string, unknown>>>("list_session_plans", { sessionId });
+	return raw.map((plan) => ({
+		id: String(plan.id ?? ""),
+		title: String(plan.title ?? ""),
+		modifiedMs: Number(plan.modified_ms ?? 0),
+		size: Number(plan.size ?? 0),
+	}));
+}
+
+export async function getSessionPlan(sessionId: string, planId: string): Promise<SessionPlan> {
+	const raw = await invoke<Record<string, unknown>>("get_session_plan", { sessionId, planId });
+	return {
+		id: String(raw.id ?? ""),
+		title: String(raw.title ?? ""),
+		modifiedMs: 0,
+		size: typeof raw.content === "string" ? new Blob([raw.content]).size : 0,
+		content: String(raw.content ?? ""),
+	};
 }
 
 export async function sendNotification(title: string, body: string): Promise<void> {

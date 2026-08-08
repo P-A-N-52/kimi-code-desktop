@@ -428,7 +428,11 @@ fn write_marker(home: &Path, report: &MigrationReport, backup_dir: &Path) -> Res
         }
     }
 
-    let rel_backup = backup_dir.strip_prefix(home).unwrap_or(backup_dir);
+    let rel_backup = backup_dir
+        .strip_prefix(home)
+        .unwrap_or(backup_dir)
+        .to_string_lossy()
+        .replace('\\', "/");
     let body = json!({
         "name": MARKER_NAME.strip_suffix(".json").unwrap_or(MARKER_NAME),
         "created_at": rfc3339_now(),

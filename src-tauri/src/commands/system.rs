@@ -10,6 +10,7 @@ use crate::session_store;
 use crate::skills;
 use serde_json::{json, Value};
 use std::fs;
+#[cfg(target_os = "macos")]
 use std::process::Command;
 use tauri::Manager;
 
