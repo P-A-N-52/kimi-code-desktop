@@ -406,6 +406,11 @@ mod tests {
                 sessions: false,
                 turns: false,
                 config: false,
+                replay: false,
+                auth: false,
+                usage: false,
+                fork: false,
+                events: Vec::new(),
             },
             data_schema_version: 1,
         }

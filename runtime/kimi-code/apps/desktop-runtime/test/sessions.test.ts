@@ -13,7 +13,7 @@ import {
   type JsonObject,
 } from '../src/protocol';
 import { MethodRouter } from '../src/router';
-import { createSessionHandlers } from '../src/session-manager';
+import { createForkSessionHandler, createSessionHandlers } from '../src/session-manager';
 
 /**
  * Offline config: two static models on a stub provider so model binding
@@ -120,13 +120,21 @@ describe('sessions method family', () => {
     for (const [method, handler] of createSessionHandlers(ctx)) {
       router.register(method, handler);
     }
+    // sessions.fork is a separate single-handler export (see
+    // createForkSessionHandler); the test router registers it like the
+    // protocol server does.
+    const forkEntry = createForkSessionHandler(ctx);
+    router.register(forkEntry[0], forkEntry[1]);
   }, 120_000);
 
   afterAll(async () => {
     await adapter.close();
-    await rm(homeDir, { recursive: true, force: true });
+    // The engine's query-store cache writer can still be flushing when
+    // teardown runs; rm retries absorb the ENOTEMPTY/EBUSY race.
+    const rmOptions = { recursive: true, force: true, maxRetries: 5, retryDelay: 200 } as const;
+    await rm(homeDir, rmOptions);
     for (const dir of workDirs) {
-      await rm(dir, { recursive: true, force: true });
+      await rm(dir, rmOptions);
     }
   }, 60_000);
 
@@ -324,6 +332,124 @@ describe('sessions method family', () => {
     await expectRequestError(call('session.close', {}), 'invalid_params');
     await expectRequestError(call('sessions.delete', {}), 'invalid_params');
     await expectRequestError(call('sessions.update', { sessionId: 'x', model: 1 }), 'invalid_params');
+  }, 60_000);
+
+  it('forks a session with an explicit id and title, leaving the fork unopened', async () => {
+    const workDir = await makeWorkDir();
+    await call('sessions.create', {
+      sessionId: 'session_fork_src',
+      cwd: workDir,
+      title: 'Fork source',
+      model: 'test-model-a',
+    });
+
+    const forked = asDescriptor(
+      await call('sessions.fork', {
+        sessionId: 'session_fork_src',
+        newSessionId: 'session_fork_dst',
+        title: 'Forked copy',
+      }),
+    );
+    expect(forked).toMatchObject({
+      sessionId: 'session_fork_dst',
+      title: 'Forked copy',
+      archived: false,
+    });
+    expect(forked.cwd).toBe(workDir);
+
+    // The fork is a real persisted session (the index read model can serve a
+    // stale create-time title — engine-internal timing — so the title is
+    // asserted on the live descriptor at open below, not here).
+    const fetched = asDescriptor(await call('sessions.get', { sessionId: 'session_fork_dst' }));
+    expect(fetched).toMatchObject({ sessionId: 'session_fork_dst', archived: false });
+    // …but fork did not open it: no hook fired, so the first session.open
+    // still attaches (and a repeat open stays idempotent).
+    const openedBefore = openedCalls.length;
+    expect(openedCalls.map((entry) => entry.sessionId)).not.toContain('session_fork_dst');
+    const openedFork = asDescriptor(await call('session.open', { sessionId: 'session_fork_dst' }));
+    expect(openedFork).toMatchObject({ sessionId: 'session_fork_dst', title: 'Forked copy' });
+    expect(openedCalls.length).toBe(openedBefore + 1);
+    expect(openedCalls[openedCalls.length - 1]?.sessionId).toBe('session_fork_dst');
+    await call('session.close', { sessionId: 'session_fork_dst' });
+
+    // The source session is untouched: its own scope metadata still reports
+    // the title (the session-index read model may serve a stale create-time
+    // summary — engine-internal timing — so this reads the live descriptor).
+    const sourceOpened = asDescriptor(await call('session.open', { sessionId: 'session_fork_src' }));
+    expect(sourceOpened).toMatchObject({ sessionId: 'session_fork_src', title: 'Fork source' });
+    await call('session.close', { sessionId: 'session_fork_src' });
+  }, 60_000);
+
+  it('forks without an explicit id and derives the default title', async () => {
+    await call('sessions.create', {
+      sessionId: 'session_fork_mint',
+      cwd: await makeWorkDir(),
+      title: 'Mint source',
+    });
+    const forked = asDescriptor(await call('sessions.fork', { sessionId: 'session_fork_mint' }));
+    expect(forked.sessionId).toEqual(expect.any(String));
+    expect(forked.sessionId).not.toBe('session_fork_mint');
+    expect(forked.title).toBe('Fork: Mint source');
+    const fetched = asDescriptor(
+      await call('sessions.get', { sessionId: forked.sessionId as string }),
+    );
+    expect(fetched.sessionId).toBe(forked.sessionId);
+  }, 60_000);
+
+  it('rejects fork-at-turn with fork_turn_unsupported and forks nothing', async () => {
+    await call('sessions.create', {
+      sessionId: 'session_fork_turn',
+      cwd: await makeWorkDir(),
+    });
+    const error = await expectRequestError(
+      call('sessions.fork', { sessionId: 'session_fork_turn', turnIndex: 0 }),
+      'fork_turn_unsupported',
+    );
+    expect(error.message).toContain('whole sessions only');
+    // The rejection happened before any engine fork: a follow-up whole-session
+    // fork with an explicit id succeeds (no half-created record in the way).
+    const forked = asDescriptor(
+      await call('sessions.fork', {
+        sessionId: 'session_fork_turn',
+        newSessionId: 'session_fork_turn_dst',
+      }),
+    );
+    expect(forked.sessionId).toBe('session_fork_turn_dst');
+  }, 60_000);
+
+  it('maps fork failures: unknown source and duplicate target id', async () => {
+    await expectRequestError(
+      call('sessions.fork', { sessionId: 'session_missing' }),
+      'session_not_found',
+    );
+    await call('sessions.create', {
+      sessionId: 'session_fork_dupe_src',
+      cwd: await makeWorkDir(),
+    });
+    await call('sessions.create', {
+      sessionId: 'session_fork_dupe_taken',
+      cwd: await makeWorkDir(),
+    });
+    await expectRequestError(
+      call('sessions.fork', {
+        sessionId: 'session_fork_dupe_src',
+        newSessionId: 'session_fork_dupe_taken',
+      }),
+      'session_already_exists',
+    );
+  }, 60_000);
+
+  it('rejects invalid fork params with invalid_params', async () => {
+    await expectRequestError(call('sessions.fork', {}), 'invalid_params');
+    await expectRequestError(call('sessions.fork', { sessionId: '' }), 'invalid_params');
+    await expectRequestError(
+      call('sessions.fork', { sessionId: 'x', turnIndex: -1 }),
+      'invalid_params',
+    );
+    await expectRequestError(
+      call('sessions.fork', { sessionId: 'x', turnIndex: 1.5 }),
+      'invalid_params',
+    );
   }, 60_000);
 
   it('fails structurally when the engine is not started', async () => {

@@ -3,28 +3,58 @@
  * into the runtime-v1 session event stream.
  *
  * One bridge attaches per live session (wave 3 wires it to
- * `RuntimeSessionHooks.onSessionOpened`) and covers exactly the M1 surface
- * declared in protocol.ts `SESSION_EVENT_NAMES`. Following the node-sdk
+ * `RuntimeSessionHooks.onSessionOpened`) and covers the M1 surface declared in
+ * protocol.ts `BASE_SESSION_EVENT_NAMES` plus the M3 fidelity set
+ * (`PARITY_SESSION_EVENT_NAMES`). Following the node-sdk
  * `v2/session-wiring.ts` pattern, the typed klient hubs are NOT sufficient:
  * they cover 19 agent event types, so the bridge subscribes every live
  * agent's raw `IEventBus` stream (agents present at attach plus every later
  * `onDidCreate`, which covers subagents spawned mid-turn) and drops every
- * engine event without an M1 runtime-v1 counterpart — M3 owns the remaining
- * fidelity.
+ * engine event without a runtime-v1 counterpart.
  *
  * Sources:
  * - agent `IEventBus`: content/thinking deltas, tool.call.* / tool.result,
- *   subagent.*, task.*, plan.revision, agent.status.updated, turn.ended.
+ *   subagent.*, task.*, plan.revision, agent.status.updated, turn.ended,
+ *   turn.step.started/interrupted (loop/turnEvents.ts), turn.step.retrying
+ *   (stepRetry/stepRetryService.ts), compaction.started/completed
+ *   (fullCompaction/compactionOps.ts — `blocked` is a turn-waits-on-compaction
+ *   signal, not a lifecycle edge, and `cancelled` must not raise the wire
+ *   `CompactionEnd` history clear, so both are dropped), and prompt.steered
+ *   (prompt/promptService.ts — only the RPC/gateway steer path publishes it;
+ *   `inject()` steers such as cron firing never do).
  * - `ISessionInteractionService.onDidChangePending`: a newly parked approval
  *   or question becomes `approval.requested` / `question.requested`
- *   (`user_tool` interactions have no M1 slot and are dropped).
+ *   (`user_tool` interactions have no runtime-v1 slot and are dropped).
  * - `ISessionActivityView.onDidChange`: the busy/idle `session.status` flow.
+ * - `ISessionMcpHandle` (session seed): the initial-connect readiness plus
+ *   the connection view's per-server status stream drive `mcp.loading.begin`
+ *   / `mcp.loading.end` from the pending-server count. The agent-scope
+ *   `mcp.server.status` bus event is deliberately NOT the source: every
+ *   agent's AgentMcpService re-publishes the same session-level statuses, so
+ *   a bus subscription would duplicate begin/end per agent.
+ * - `ISessionSkillCatalog`: `list()` + `onDidChange` drive
+ *   `slash_commands.update` with the user-activatable skill palette, named
+ *   per the ACP-era mapping (acp-server/src/slash.ts): bare name for
+ *   builtin-source or sub-skills, `skill:<name>` otherwise.
+ *
+ * `background_task.observed` has NO native engine source: the wire event is
+ * an observation heuristic over TaskList/TaskOutput/Cron* tool results (the
+ * ACP-era `acp_translate.rs` synthesized it from tool_call updates), while
+ * the v2 task domain's `task.started` / `task.terminated` (already bridged as
+ * `task.updated`) and `task.notified` (model-facing) carry no
+ * tool-call-observation shape. The Rust translate keeps the synthesis on the
+ * `tool.completed` mapping, exactly where the ACP era had it.
  *
  * `turn.completed` / `turn.failed` are synthesized from `turn.ended` and
  * carry the Desktop requestId registered by the turn router
  * (`settleActiveTurn`); `turn.ended` for unregistered turns (subagent runs,
- * engine-internal turns) is dropped. Per-event translation is pure
- * (`translateDomainEvent` / `translateTurnEnded` / `statusUpdatedEmissions`
+ * engine-internal turns) is dropped. `turn.steered` is the steer echo: the
+ * engine accepts a desktop `turn.steer`, publishes `prompt.steered` (which
+ * carries no turn id), and the bridge binds the session's registered active
+ * turn requestId — the echo is dropped when no turn is registered (a steer
+ * from another host needs no desktop transcript echo).
+ * Per-event translation is pure (`translateDomainEvent` /
+ * `translateTurnEnded` / `translatePromptSteered` / `statusUpdatedEmissions`
  * / the interaction translators) so golden tests need no engine; only
  * plan.updated leaves the pure layer, because `plan.revision` carries no
  * content and the bridge reads it back from the agent's plan service — that
@@ -37,13 +67,18 @@ import {
   IEventBus,
   ISessionActivityView,
   ISessionInteractionService,
+  ISessionMcpHandle,
+  ISessionSkillCatalog,
   MAIN_AGENT_ID,
   getLiveSessionById,
+  isUserActivatableSkillType,
+  type ContentPart,
   type DomainEvent,
   type IAgentScopeHandle,
   type IDisposable,
   type ISessionScopeHandle,
   type Interaction,
+  type SkillSummary,
   type TokenUsage,
 } from '@moonshot-ai/agent-core-v2';
 
@@ -178,11 +213,58 @@ export function translateDomainEvent(
     case 'task.started':
     case 'task.terminated':
       return { event: 'task.updated', payload: asPayload({ ...event.info }) };
+    case 'turn.step.started':
+      // Step counters are a main-transcript concern; subagent steps stay
+      // inside their SubagentEvent-wrapped tool traffic.
+      if (!ctx.isMainAgent) return null;
+      return {
+        event: 'step.begin',
+        payload: asPayload({ n: event.step, requestId: ctx.requestId }),
+      };
+    case 'turn.step.interrupted':
+      if (!ctx.isMainAgent) return null;
+      return {
+        event: 'step.interrupted',
+        payload: asPayload({ requestId: ctx.requestId }),
+      };
+    case 'turn.step.retrying':
+      if (!ctx.isMainAgent) return null;
+      return {
+        event: 'step.retry',
+        payload: asPayload({
+          n: event.step,
+          next_attempt: event.nextAttempt,
+          max_attempts: event.maxAttempts,
+          wait_s: event.delayMs / 1000,
+          // The wire/frontend vocabulary is the provider error class name
+          // (APITimeoutError / APIConnectionError / …), not the message.
+          error_type: event.errorName,
+          status_code: event.statusCode ?? null,
+          requestId: ctx.requestId,
+        }),
+      };
+    case 'compaction.started':
+      // Compaction is per-agent context state; only the main agent's
+      // compaction is the session-visible one (a subagent compaction must
+      // never clear the main transcript via the wire CompactionEnd).
+      if (!ctx.isMainAgent) return null;
+      return {
+        event: 'compaction.begin',
+        payload: asPayload({ source: event.trigger }),
+      };
+    case 'compaction.completed':
+      if (!ctx.isMainAgent) return null;
+      return { event: 'compaction.end', payload: asPayload({}) };
     default:
-      // turn.started / turn.step.* / tool.progress / prompt.* /
-      // permission.approval.* / agent.activity.updated / compaction.* /
-      // shell.* / mcp.* / goal.* / skill.* / context.* / error / warning …
-      // have no M1 runtime-v1 counterpart.
+      // turn.started / turn.step.completed / compaction.blocked /
+      // compaction.cancelled / tool.progress / prompt.completed /
+      // prompt.aborted / permission.approval.* / agent.activity.updated /
+      // shell.* / mcp.server.status / tool.list.updated / goal.* / skill.* /
+      // context.* / error / warning … have no runtime-v1 counterpart.
+      // (`compaction.blocked` marks a turn waiting on an in-flight
+      // compaction, not a lifecycle edge; `compaction.cancelled` must not
+      // become CompactionEnd — the frontend clears transcript history on it
+      // while a cancelled compaction kept the engine's context.)
       return null;
   }
 }
@@ -210,6 +292,103 @@ export function translateTurnEnded(
     event: 'turn.failed',
     payload: asPayload({ requestId, error: terminalErrorPayload(event) }),
   };
+}
+
+/**
+ * Translate an accepted steer (`prompt.steered`) into the `turn.steered`
+ * echo. The engine event carries no turn id; the caller binds the session's
+ * registered active-turn requestId. `input` mirrors the replay path's
+ * `SteerInput.user_input` (session_store.rs): all-text content collapses to
+ * one joined string, anything else crosses as wire content parts.
+ */
+export function translatePromptSteered(
+  event: DomainEvent<'prompt.steered'>,
+  requestId: string,
+): TranslatedSessionEvent {
+  return {
+    event: 'turn.steered',
+    payload: asPayload({ requestId, input: engineContentToWireInput(event.content) }),
+  };
+}
+
+/** Engine `ContentPart[]` -> the Desktop wire prompt-input shape. */
+export function engineContentToWireInput(content: readonly ContentPart[]): JsonValue {
+  if (content.every((part) => part.type === 'text')) {
+    return content.map((part) => (part as { text: string }).text).join('');
+  }
+  return content.map((part) => enginePartToWire(part)) as JsonValue;
+}
+
+function enginePartToWire(part: ContentPart): JsonValue {
+  switch (part.type) {
+    case 'text':
+      return asPayload({ type: 'text', text: part.text });
+    case 'think':
+      return asPayload({ type: 'think', think: part.think, encrypted: part.encrypted });
+    case 'image_url':
+      return asPayload({
+        type: 'image_url',
+        image_url: { url: part.imageUrl.url, id: part.imageUrl.id },
+      });
+    case 'audio_url':
+      return asPayload({
+        type: 'audio_url',
+        audio_url: { url: part.audioUrl.url, id: part.audioUrl.id },
+      });
+    case 'video_url':
+      return asPayload({
+        type: 'video_url',
+        video_url: { url: part.videoUrl.url, id: part.videoUrl.id },
+      });
+  }
+}
+
+/**
+ * The session-level MCP loading indicator is driven by the count of servers
+ * still in `pending` (initial connect or a later reconnect): 0 -> >0 begins
+ * the indicator, >0 -> 0 ends it. Pure so golden tests can drive the
+ * transition table directly.
+ */
+export function mcpLoadingTransition(
+  active: boolean,
+  pendingCount: number,
+): 'mcp.loading.begin' | 'mcp.loading.end' | null {
+  if (!active && pendingCount > 0) return 'mcp.loading.begin';
+  if (active && pendingCount === 0) return 'mcp.loading.end';
+  return null;
+}
+
+/**
+ * Build the `slash_commands.update` payload from the session skill catalog.
+ * Naming mirrors the ACP-era `buildAcpSkillSlashCommands`
+ * (acp-server/src/slash.ts): user-activatable skills only, builtin-source or
+ * sub-skills keep their bare name, everything else is `skill:<name>`; sorted
+ * builtin-first then by name. The wire `source` keeps the ACP-era desktop
+ * vocabulary (`runtime:skill` for `skill:` names, `runtime` for bare ones) —
+ * the frontend's session-influence heuristics read exactly those strings.
+ */
+export function slashCommandsUpdatePayload(skills: readonly SkillSummary[]): JsonValue {
+  const sorted = [...skills].toSorted(
+    (a, b) =>
+      (a.source === 'builtin' ? 0 : 1) - (b.source === 'builtin' ? 0 : 1) ||
+      a.name.localeCompare(b.name),
+  );
+  const commands = [];
+  for (const skill of sorted) {
+    if (!isUserActivatableSkillType(skill.type)) continue;
+    const name =
+      skill.source === 'builtin' || skill.isSubSkill === true
+        ? skill.name
+        : `skill:${skill.name}`;
+    commands.push({
+      name,
+      description: skill.description,
+      aliases: [],
+      input_hint: null,
+      source: name.startsWith('skill:') ? 'runtime:skill' : 'runtime',
+    });
+  }
+  return asPayload({ slash_commands: commands });
 }
 
 /**
@@ -378,6 +557,11 @@ class SessionEventBridge {
   private readonly bridgedInteractionIds = new Set<string>();
   private readonly subagentProvenance = new Map<string, SubagentProvenance>();
   private readonly statusSnapshots = new Map<string, AgentStatusSnapshot>();
+  /** MCP servers still in `pending`, by name (initial connect or reconnect). */
+  private readonly mcpPendingServers = new Set<string>();
+  private mcpLoadingActive = false;
+  /** Monotonic token so a stale async catalog list never overwrites a newer one. */
+  private slashListSeq = 0;
   private disposed = false;
 
   constructor(
@@ -411,6 +595,8 @@ class SessionEventBridge {
     for (const agent of lifecycle.list()) {
       this.attachAgent(agent);
     }
+    this.attachMcpLoading();
+    this.attachSlashCommands();
     // Initial snapshot: the Desktop learns the idle state and any pre-attach
     // pending interactions without waiting for the first transition.
     this.emitSafe('session.status', { state: activity.state().busy ? 'busy' : 'idle' });
@@ -460,6 +646,9 @@ class SessionEventBridge {
       case 'turn.ended':
         this.handleTurnEnded(agent, event);
         return;
+      case 'prompt.steered':
+        this.handlePromptSteered(agent, event);
+        return;
       case 'subagent.spawned':
         this.subagentProvenance.set(event.subagentId, {
           parentToolCallId:
@@ -474,6 +663,101 @@ class SessionEventBridge {
     if (translated !== null) {
       this.emitSafe(translated.event, translated.payload);
     }
+  }
+
+  /**
+   * The steer echo: `prompt.steered` carries no turn id, so it binds the
+   * session's registered active turn. Without a registration the steer came
+   * from outside this Desktop (or the turn already settled) and no
+   * transcript echo is owed.
+   */
+  private handlePromptSteered(
+    agent: IAgentScopeHandle,
+    event: DomainEvent<'prompt.steered'>,
+  ): void {
+    if (agent.id !== MAIN_AGENT_ID) return;
+    const active = getActiveTurn(this.engine, this.session.id);
+    if (active === undefined) return;
+    const translated = translatePromptSteered(event, active.requestId);
+    this.emitSafe(translated.event, translated.payload);
+  }
+
+  /**
+   * Session-scope MCP loading indicator: the pending-server count drives
+   * `mcp.loading.begin` / `mcp.loading.end`. Seeds from the connection view
+   * at attach, follows the per-server status stream, and reconciles once the
+   * initial connect settles.
+   */
+  private attachMcpLoading(): void {
+    const mcpHandle = this.session.accessor.get(ISessionMcpHandle);
+    const view = mcpHandle.connectionManager;
+    this.syncMcpPending(view.list());
+    this.disposables.push({
+      dispose: view.onStatusChange((entry) => {
+        if (entry.status === 'pending') {
+          this.mcpPendingServers.add(entry.name);
+        } else {
+          this.mcpPendingServers.delete(entry.name);
+        }
+        this.applyMcpTransition();
+      }),
+    });
+    void mcpHandle.ready.then(
+      () => {
+        if (this.disposed) return;
+        this.syncMcpPending(view.list());
+      },
+      () => {
+        // A rejected readiness still ends the indicator: the per-server
+        // statuses (failed/needs-auth) are the truthful follow-up state.
+        if (this.disposed) return;
+        this.mcpPendingServers.clear();
+        this.applyMcpTransition();
+      },
+    );
+  }
+
+  private syncMcpPending(entries: readonly { name: string; status: string }[]): void {
+    this.mcpPendingServers.clear();
+    for (const entry of entries) {
+      if (entry.status === 'pending') this.mcpPendingServers.add(entry.name);
+    }
+    this.applyMcpTransition();
+  }
+
+  private applyMcpTransition(): void {
+    const next = mcpLoadingTransition(this.mcpLoadingActive, this.mcpPendingServers.size);
+    if (next === null) return;
+    this.mcpLoadingActive = next === 'mcp.loading.begin';
+    this.emitSafe(next, {});
+  }
+
+  /**
+   * Slash-command palette: one full `slash_commands.update` snapshot on
+   * attach (after the catalog's first load) and one per catalog change. A
+   * stale async list never overwrites a newer one (`slashListSeq`).
+   */
+  private attachSlashCommands(): void {
+    const catalog = this.session.accessor.get(ISessionSkillCatalog);
+    this.disposables.push(
+      catalog.onDidChange(() => {
+        this.publishSlashCommands(catalog);
+      }),
+    );
+    this.publishSlashCommands(catalog);
+  }
+
+  private publishSlashCommands(catalog: ISessionSkillCatalog): void {
+    const seq = ++this.slashListSeq;
+    void catalog
+      .list()
+      .then((skills) => {
+        if (this.disposed || seq !== this.slashListSeq) return;
+        this.emitSafe('slash_commands.update', slashCommandsUpdatePayload(skills));
+      })
+      .catch(() => {
+        // The session scope died mid-read (session close); drop the snapshot.
+      });
   }
 
   private contextFor(agent: IAgentScopeHandle, event: DomainEvent): EventTranslateContext {

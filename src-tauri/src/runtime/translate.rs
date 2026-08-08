@@ -32,7 +32,16 @@
 //! call. Fine for stateless events, but per-session seq/dedup/provenance
 //! state does not survive across calls — production wiring must hold one
 //! [`WireTranslator`].
+//!
+//! Submodules: `turn` (session status / turn terminals), `task`
+//! (task/subagent state machines), `interaction` (approval/question reverse
+//! requests), `fidelity` (the M3 wave-2 parity events — step.* / compaction.*
+//! / mcp.loading.* / slash_commands.update / background_task.observed /
+//! turn.steered — plus the completed `session.config` options mapping and the
+//! BackgroundTaskObserved synthesis behind `tool.completed`).
 
+mod fidelity;
+mod interaction;
 mod task;
 mod turn;
 
@@ -250,9 +259,9 @@ fn translate_session_event(
         )],
         "tool.started" => translate_tool_started(state, payload),
         "tool.updated" => translate_tool_updated(state, payload),
-        "tool.completed" => translate_tool_completed(state, payload),
-        "approval.requested" => translate_approval_requested(payload),
-        "question.requested" => translate_question_requested(payload),
+        "tool.completed" => translate_tool_completed(state, session_id, payload),
+        "approval.requested" => interaction::translate_approval_requested(payload),
+        "question.requested" => interaction::translate_question_requested(payload),
         "task.updated" => task::translate_task_updated(state, session_id, payload),
         "subagent.updated" => task::translate_subagent_updated(state, session_id, payload),
         "plan.updated" => vec![wire_event_message(
@@ -273,10 +282,24 @@ fn translate_session_event(
                 "max_context_tokens": cloned_for_keys(payload, &["maxContextTokens", "max_context_tokens"]),
             }),
         )],
-        "session.config" => translate_session_config(session_id, payload),
+        "session.config" => fidelity::translate_session_config(session_id, payload),
         "session.status" => turn::translate_session_status(state, session_id, payload),
         "turn.completed" => turn::translate_turn_completed(state, session_id, payload),
         "turn.failed" => turn::translate_turn_failed(state, session_id, payload),
+        // M3 wave-2 fidelity events (protocol-parity.ts); shapes pinned by
+        // golden tests in tests/runtime_translate.rs.
+        "step.begin" => fidelity::translate_step_begin(payload),
+        "step.interrupted" => fidelity::translate_step_interrupted(),
+        "step.retry" => fidelity::translate_step_retry(payload),
+        "compaction.begin" => fidelity::translate_marker_event("CompactionBegin"),
+        "compaction.end" => fidelity::translate_marker_event("CompactionEnd"),
+        "mcp.loading.begin" => fidelity::translate_marker_event("MCPLoadingBegin"),
+        "mcp.loading.end" => fidelity::translate_marker_event("MCPLoadingEnd"),
+        "slash_commands.update" => fidelity::translate_slash_commands_update(payload),
+        "background_task.observed" => {
+            fidelity::translate_background_task_observed(session_id, payload)
+        }
+        "turn.steered" => fidelity::translate_turn_steered(payload),
         _ => vec![unsupported_event_notice(event)],
     }
 }
@@ -438,7 +461,11 @@ fn translate_tool_updated(state: &mut SessionTranslateState, payload: &Value) ->
     )]
 }
 
-fn translate_tool_completed(state: &mut SessionTranslateState, payload: &Value) -> Vec<String> {
+fn translate_tool_completed(
+    state: &mut SessionTranslateState,
+    session_id: &str,
+    payload: &Value,
+) -> Vec<String> {
     let tool_call_id = string_for_keys(payload, &["toolCallId", "tool_call_id"])
         .unwrap_or_else(|| "tool-call".to_string());
     let is_error = payload
@@ -464,119 +491,37 @@ fn translate_tool_completed(state: &mut SessionTranslateState, payload: &Value) 
         // frontend generic fallback (checklist §1 ToolResult / §3).
         "display": payload.get("display").and_then(Value::as_array).cloned().unwrap_or_default(),
     });
-    if let Some(name) = origin
+    let tool_name = origin
         .as_ref()
         .and_then(|origin| origin.name.as_deref())
-        .or_else(|| payload.get("name").and_then(Value::as_str))
-    {
+        .or_else(|| payload.get("name").and_then(Value::as_str));
+    if let Some(name) = tool_name {
         // extras.tool_title feeds the frontend's background-task observation
         // heuristic (TaskList/TaskOutput/Cron* titles).
         return_value["extras"] = json!({ "tool_title": name });
     }
-    vec![wrap_or_plain(
+    let mut messages = vec![wrap_or_plain(
         state,
         origin.as_ref(),
         "ToolResult",
         json!({ "tool_call_id": tool_call_id, "return_value": return_value }),
-    )]
-}
-
-fn translate_approval_requested(payload: &Value) -> Vec<String> {
-    let Some(approval_id) = string_for_keys(payload, &["approvalId", "approval_id"]) else {
-        return vec![malformed_event_notice("approval.requested", "approvalId")];
+    )];
+    // Background/cron observation synthesis (ACP parity — the ACP translator
+    // derived BackgroundTaskObserved from tool_call updates; the pinned
+    // engine has no native per-observation event). The snapshot text is the
+    // string output when there is one, else the message.
+    let snapshot = match &output {
+        Value::String(text) if !text.is_empty() => text.clone(),
+        _ => message.to_string(),
     };
-    let action = payload
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or("approval");
-    let description = payload
-        .get("description")
-        .and_then(Value::as_str)
-        .unwrap_or(action);
-    let mut wire_payload = json!({
-        "id": approval_id,
-        "action": action,
-        "description": description,
-        // Wire field kept from the ACP shape; identifies the emitting backend.
-        "sender": "runtime",
-        "tool_call_id": string_for_keys(payload, &["toolCallId", "tool_call_id"]).unwrap_or_default(),
-        // The engine has no ACP tool kind; the bridge always sends null.
-        "kind": cloned_for_keys(payload, &["kind"]),
-        "display": payload.get("display").and_then(Value::as_array).cloned().unwrap_or_default(),
-    });
-    if let Some(agent_id) = string_for_keys(payload, &["agentId", "agent_id"]) {
-        wire_payload["agent_id"] = json!(agent_id);
+    if let Some(observed) = fidelity::background_task_observation_from_tool_completed(
+        session_id,
+        &tool_call_id,
+        tool_name,
+        is_error,
+        &snapshot,
+    ) {
+        messages.push(observed);
     }
-    vec![wire_request_message(
-        "ApprovalRequest",
-        wire_payload,
-        json!(approval_id),
-    )]
-}
-
-fn translate_question_requested(payload: &Value) -> Vec<String> {
-    let Some(question_id) = string_for_keys(payload, &["questionId", "question_id"]) else {
-        return vec![malformed_event_notice("question.requested", "questionId")];
-    };
-    let questions = payload
-        .get("questions")
-        .and_then(Value::as_array)
-        .map(|items| items.iter().map(question_item_wire).collect::<Vec<_>>())
-        .unwrap_or_default();
-    vec![wire_request_message(
-        "QuestionRequest",
-        json!({
-            "id": question_id,
-            "tool_call_id": string_for_keys(payload, &["toolCallId", "tool_call_id"]).unwrap_or_default(),
-            "questions": questions,
-        }),
-        json!(question_id),
-    )]
-}
-
-fn question_item_wire(item: &Value) -> Value {
-    let question = item.get("question").and_then(Value::as_str).unwrap_or("");
-    let mut wire = json!({
-        "question": question,
-        "header": string_for_keys(item, &["header"]).unwrap_or_else(|| question.to_string()),
-        "options": item.get("options").and_then(Value::as_array).cloned().unwrap_or_default(),
-        "multi_select": item
-            .get("multi_select")
-            .or_else(|| item.get("multiSelect"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-    });
-    if let Some(body) = string_for_keys(item, &["body"]) {
-        wire["body"] = json!(body);
-    }
-    // The CLI always offers free-text "Other"; keep the ACP-desktop defaults
-    // when the engine omits them.
-    wire["other_label"] =
-        json!(string_for_keys(item, &["other_label", "otherLabel"])
-            .unwrap_or_else(|| "其他".to_string()));
-    wire["other_description"] = json!(string_for_keys(
-        item,
-        &["other_description", "otherDescription"]
-    )
-    .unwrap_or_else(|| "输入自定义回答".to_string()));
-    wire
-}
-
-fn translate_session_config(session_id: &str, payload: &Value) -> Vec<String> {
-    // runtime-v1 session.config carries `model` only (M1); the option record
-    // mirrors the ACP-serialized SessionConfigOption shape.
-    vec![wire_event_message(
-        "ConfigOptionUpdate",
-        json!({
-            "session_id": session_id,
-            "status": "known",
-            "options": [{
-                "id": "model",
-                "optionType": "unknown",
-                "label": Value::Null,
-                "currentValue": cloned_for_keys(payload, &["model"]),
-                "options": Value::Null,
-            }],
-        }),
-    )]
+    messages
 }

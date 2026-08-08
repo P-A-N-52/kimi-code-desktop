@@ -12,8 +12,18 @@
  * runtime.shutdown (bounded drain, ok response, exit 0),
  * fixture.emitScript ({sessionId, requestId?} -> a fixed 8-event session
  * script with per-session seq from 1, for wave-2 translate golden tests),
- * fixture.slowRespond ({delayMs} -> ok response after the delay), and
- * fixture.neverRespond (never answers — exercises the desktop timeout path).
+ * fixture.emitScriptV2 ({sessionId, requestId?} -> a fixed 10-event script
+ * covering every M3 parity event: step.*, compaction.*, mcp.loading.*,
+ * slash_commands.update, background_task.observed, turn.steered — for the
+ * event-fidelity golden tests), fixture.slowRespond ({delayMs} -> ok
+ * response after the delay), and fixture.neverRespond (never answers —
+ * exercises the desktop timeout path).
+ *
+ * M3 parity methods (session.replay, sessions.fork, auth.*, usage.get) are
+ * registered and, since wave 3, advertised with the real runtime's flipped
+ * capability gates (replay/auth/usage/fork: true, events: the full 25-name
+ * session event set). The fixture implements no business logic, so calls
+ * still answer a structured not_implemented error-response.
  *
  * Fault injection via environment (all optional):
  * - KIMI_RUNTIME_FIXTURE_RAW_STDOUT: printed verbatim (+LF) before anything
@@ -35,13 +45,56 @@ const COMMIT = env.KIMI_RUNTIME_FIXTURE_COMMIT ?? PINNED_COMMIT;
 const SELECTED_PROTOCOL = env.KIMI_RUNTIME_FIXTURE_SELECTED_PROTOCOL ?? 'runtime-v1';
 const DUPLICATE_RESPONSES = env.KIMI_RUNTIME_FIXTURE_DUPLICATE_RESPONSES === '1';
 
+const PARITY_METHODS = [
+  'session.replay',
+  'sessions.fork',
+  'auth.startLogin',
+  'auth.getFlow',
+  'auth.cancelLogin',
+  'auth.logout',
+  'auth.status',
+  'usage.get',
+];
+
+// The 25 runtime-v1 session events (SESSION_EVENT_NAMES in protocol.ts):
+// the 15 M1 base events plus the 10 M3 fidelity events.
+const SESSION_EVENT_NAMES = [
+  'session.status',
+  'session.config',
+  'content.delta',
+  'thinking.delta',
+  'tool.started',
+  'tool.updated',
+  'tool.completed',
+  'plan.updated',
+  'usage.updated',
+  'task.updated',
+  'subagent.updated',
+  'approval.requested',
+  'question.requested',
+  'turn.completed',
+  'turn.failed',
+  'step.begin',
+  'step.interrupted',
+  'step.retry',
+  'compaction.begin',
+  'compaction.end',
+  'mcp.loading.begin',
+  'mcp.loading.end',
+  'slash_commands.update',
+  'background_task.observed',
+  'turn.steered',
+];
+
 const FIXTURE_METHODS = [
   'runtime.hello',
   'runtime.getInfo',
   'runtime.shutdown',
   'fixture.emitScript',
+  'fixture.emitScriptV2',
   'fixture.slowRespond',
   'fixture.neverRespond',
+  ...PARITY_METHODS,
 ];
 
 function writeFrame(frame) {
@@ -103,7 +156,20 @@ function runtimeInfo() {
     runtimeVersion: '0.0.0-fixture',
     kimiSource: { tag: PINNED_TAG, commit: COMMIT },
     nodeVersion: process.versions.node,
-    capabilities: { methods: FIXTURE_METHODS, sessions: false, turns: false, config: false },
+    capabilities: {
+      methods: FIXTURE_METHODS,
+      // The M1 family gates stay false (the fixture implements none of those
+      // methods); the parity gates mirror the real runtime's post-wave-3
+      // snapshot even though parity calls still answer not_implemented.
+      sessions: false,
+      turns: false,
+      config: false,
+      replay: true,
+      auth: true,
+      usage: true,
+      fork: true,
+      events: SESSION_EVENT_NAMES,
+    },
     dataSchemaVersion: 1,
   };
 }
@@ -194,6 +260,55 @@ function handleEmitScript(id, params) {
   ok(id, { emitted: 8 });
 }
 
+/**
+ * Fixed script covering all ten M3 parity session events
+ * (PARITY_SESSION_EVENT_NAMES in protocol.ts), for the event-fidelity
+ * translate golden tests. Payloads follow protocol-parity.ts.
+ */
+function handleEmitScriptV2(id, params) {
+  if (!isNonEmptyString(params.sessionId)) {
+    fail(id, 'invalid_params', 'fixture.emitScriptV2 requires a non-empty sessionId.');
+    return;
+  }
+  const sessionId = params.sessionId;
+  const requestId = isNonEmptyString(params.requestId) ? params.requestId : 'fixture-request-1';
+  emitSessionEvent(sessionId, 'step.begin', { n: 1, requestId });
+  emitSessionEvent(sessionId, 'step.retry', {
+    n: 1,
+    next_attempt: 2,
+    max_attempts: 3,
+    wait_s: 4,
+    error_type: 'rate_limit',
+    status_code: 429,
+    requestId,
+  });
+  emitSessionEvent(sessionId, 'step.interrupted', { requestId });
+  emitSessionEvent(sessionId, 'compaction.begin', {});
+  emitSessionEvent(sessionId, 'compaction.end', {});
+  emitSessionEvent(sessionId, 'mcp.loading.begin', {});
+  emitSessionEvent(sessionId, 'mcp.loading.end', {});
+  emitSessionEvent(sessionId, 'slash_commands.update', {
+    slash_commands: [
+      {
+        name: 'fixture',
+        description: 'Fixture slash command',
+        aliases: ['fx'],
+        input_hint: '<arg>',
+        source: 'runtime',
+      },
+    ],
+  });
+  emitSessionEvent(sessionId, 'background_task.observed', {
+    tool_call_id: 'fixture-tool-1',
+    tool_name: 'TaskOutput',
+    task_id: 'fixture-task-1',
+    snapshot: 'fixture task snapshot',
+    terminal_state: 'running',
+  });
+  emitSessionEvent(sessionId, 'turn.steered', { requestId, input: 'fixture steer input' });
+  ok(id, { emitted: 10 });
+}
+
 function handleSlowRespond(id, params) {
   const delayMs = Number(params.delayMs);
   if (!Number.isFinite(delayMs) || delayMs < 0) {
@@ -243,6 +358,9 @@ function handleRequest(frame) {
     case 'fixture.emitScript':
       handleEmitScript(id, params);
       return;
+    case 'fixture.emitScriptV2':
+      handleEmitScriptV2(id, params);
+      return;
     case 'fixture.slowRespond':
       handleSlowRespond(id, params);
       return;
@@ -252,6 +370,14 @@ function handleRequest(frame) {
       // alive for later calls.
       return;
     default:
+      if (PARITY_METHODS.includes(method)) {
+        // The fixture implements no parity business logic: calls answer
+        // not_implemented even though the snapshot gates are on (the
+        // fixture pins the advertised surface, not the behavior, and params
+        // are not validated here).
+        fail(id, 'not_implemented', `${method} is not implemented by the fixture worker.`);
+        return;
+      }
       fail(id, 'method_not_found', `unknown method: ${method}`);
   }
 }

@@ -11,16 +11,26 @@ import type {
 } from '../src/kimi-runtime-adapter';
 import {
   KIMI_SOURCE_COMMIT,
+  PARITY_SESSION_EVENT_NAMES,
   RUNTIME_PROTOCOL,
   RUNTIME_SCOPED_EVENTS,
   RUNTIME_V1_METHODS,
   SESSION_EVENT_NAMES,
+  type RuntimeOutputFrame,
+} from '../src/protocol';
+import {
+  authGetFlowResultSchema,
+  authStartLoginResultSchema,
+  parityMethodSchemas,
+  paritySessionEventPayloadSchemas,
+  sessionReplayParamsSchema,
+} from '../src/protocol-parity';
+import {
   runtimeEventPayloadSchemas,
   runtimeMethodSchemas,
   sessionEventPayloadSchemas,
   turnStartParamsSchema,
-  type RuntimeOutputFrame,
-} from '../src/protocol';
+} from '../src/protocol-schemas';
 import { RuntimeProtocolServer } from '../src/server';
 import { runStdioRuntime } from '../src/stdio';
 
@@ -65,8 +75,15 @@ function hello(id = 'hello-1'): object {
   };
 }
 
-function request(id: string, method: string): object {
-  return { protocol: RUNTIME_PROTOCOL, type: 'request', id, method, params: {} };
+function request(id: string, method: string, params: object = {}): object {
+  return { protocol: RUNTIME_PROTOCOL, type: 'request', id, method, params };
+}
+
+/** Narrow a captured frame to the hello/getInfo response shape for assertions. */
+function helloResultOf(frame: RuntimeOutputFrame | undefined): {
+  result: { capabilities: { methods: string[] } };
+} {
+  return frame as unknown as { result: { capabilities: { methods: string[] } } };
 }
 
 function setup(): {
@@ -170,13 +187,67 @@ describe('runtime-v1 server', () => {
     expect(frames[0]).toMatchObject({
       result: {
         capabilities: {
-          methods: [...RUNTIME_V1_METHODS],
           sessions: true,
           turns: true,
           config: true,
         },
       },
     });
+    // Registration order is not contractual; compare the sets.
+    const helloResult = helloResultOf(frames[0]).result;
+    expect([...helloResult.capabilities.methods].sort()).toEqual([...RUNTIME_V1_METHODS].sort());
+  });
+
+  it('advertises the wired parity families and the full session event set', async () => {
+    const { frames, server } = setup();
+    await server.accept(hello());
+    // M3 wave 3: every parity gate is on and `events` lists the full
+    // SESSION_EVENT_NAMES set (base 15 + fidelity 10).
+    expect(frames[0]).toMatchObject({
+      result: {
+        capabilities: {
+          replay: true,
+          auth: true,
+          usage: true,
+          fork: true,
+          events: [...SESSION_EVENT_NAMES],
+        },
+      },
+    });
+  });
+
+  it('routes the parity methods to real handlers (validation first, then the engine)', async () => {
+    const { frames, server } = setup();
+    await server.accept(hello());
+    // Params are validated against the registered schema first.
+    await server.accept(request('replay-bad', 'session.replay'));
+    // No placeholder remains: with the fake adapter the real handlers fail
+    // structurally on the missing engine — never with not_implemented.
+    await server.accept(
+      request('replay-ok', 'session.replay', {
+        sessionId: 's-1',
+      }),
+    );
+    await server.accept(request('fork-ok', 'sessions.fork', { sessionId: 's-1' }));
+    await server.accept(request('auth-ok', 'auth.status'));
+    await server.accept(request('usage-ok', 'usage.get'));
+    expect(frames[2]).toMatchObject({
+      id: 'replay-bad',
+      ok: false,
+      error: { code: 'invalid_params', retryable: false },
+    });
+    for (const [index, id] of [
+      [3, 'replay-ok'],
+      [4, 'fork-ok'],
+      [5, 'auth-ok'],
+      [6, 'usage-ok'],
+    ] as const) {
+      expect(frames[index]).toMatchObject({
+        id,
+        ok: false,
+        error: { code: 'engine_not_available', retryable: false },
+      });
+    }
   });
 
   it('maintains isolated monotonic event sequences per session', async () => {
@@ -297,5 +368,96 @@ describe('runtime-v1 contract registry', () => {
     expect(
       turnStartParamsSchema.safeParse({ sessionId: 's-1', requestId: 't-1', input: 'hi' }).success,
     ).toBe(true);
+  });
+
+  it('covers the parity methods and events with the merged tables', () => {
+    for (const method of Object.keys(parityMethodSchemas)) {
+      expect(runtimeMethodSchemas[method as keyof typeof runtimeMethodSchemas]).toBeDefined();
+    }
+    for (const event of Object.keys(paritySessionEventPayloadSchemas)) {
+      expect(sessionEventPayloadSchemas[event as keyof typeof sessionEventPayloadSchemas]).toBeDefined();
+    }
+    expect(Object.keys(paritySessionEventPayloadSchemas).sort()).toEqual(
+      [...PARITY_SESSION_EVENT_NAMES].sort(),
+    );
+  });
+
+  it('pins the session.replay streaming contract', () => {
+    expect(sessionReplayParamsSchema.safeParse({ sessionId: 's-1' }).success).toBe(true);
+    expect(
+      sessionReplayParamsSchema.safeParse({ sessionId: 's-1', fromSeq: 40, limit: 100 }).success,
+    ).toBe(true);
+    expect(sessionReplayParamsSchema.safeParse({ sessionId: 's-1', fromSeq: 0 }).success).toBe(
+      false,
+    );
+    expect(sessionReplayParamsSchema.safeParse({}).success).toBe(false);
+  });
+
+  it('pins the klient-aligned auth result shapes', () => {
+    // startLogin: pending flow carries the device-code fields; an already
+    // authenticated flow collapses to flow_id/provider (klient discriminated
+    // union on `status`).
+    expect(
+      authStartLoginResultSchema.safeParse({
+        flow_id: 'f-1',
+        provider: 'kimi-code',
+        status: 'pending',
+        verification_uri: 'https://example.com/device',
+        verification_uri_complete: 'https://example.com/device?user_code=ABCD',
+        user_code: 'ABCD',
+        expires_in: 900,
+        interval: 5,
+        expires_at: '2026-08-07T00:15:00Z',
+      }).success,
+    ).toBe(true);
+    expect(
+      authStartLoginResultSchema.safeParse({
+        flow_id: 'f-1',
+        provider: 'kimi-code',
+        status: 'authenticated',
+      }).success,
+    ).toBe(true);
+    expect(
+      authStartLoginResultSchema.safeParse({ flow_id: 'f-1', status: 'denied' }).success,
+    ).toBe(false);
+    // getFlow is null when no flow is active.
+    expect(authGetFlowResultSchema.safeParse(null).success).toBe(true);
+  });
+
+  it('pins the fidelity event payload shapes', () => {
+    const parse = (event: keyof typeof paritySessionEventPayloadSchemas, payload: unknown) =>
+      paritySessionEventPayloadSchemas[event].safeParse(payload).success;
+    expect(parse('step.begin', { n: 1, requestId: 'r-1' })).toBe(true);
+    expect(parse('step.begin', {})).toBe(false);
+    expect(
+      parse('step.retry', {
+        n: 2,
+        next_attempt: 3,
+        max_attempts: 5,
+        wait_s: 4,
+        error_type: 'rate_limit',
+        status_code: 429,
+      }),
+    ).toBe(true);
+    expect(parse('step.retry', { n: 2 })).toBe(false);
+    expect(parse('compaction.begin', {})).toBe(true);
+    expect(parse('mcp.loading.end', {})).toBe(true);
+    expect(
+      parse('slash_commands.update', {
+        slash_commands: [{ name: 'usage', description: 'Show quota', aliases: ['u'] }],
+      }),
+    ).toBe(true);
+    expect(
+      parse('background_task.observed', {
+        tool_call_id: 'tc-1',
+        tool_name: 'TaskOutput',
+        snapshot: '...',
+        terminal_state: 'running',
+      }),
+    ).toBe(true);
+    expect(
+      parse('background_task.observed', { tool_call_id: 'tc-1', terminal_state: 'bogus' }),
+    ).toBe(false);
+    expect(parse('turn.steered', { requestId: 'r-1', input: 'hold on' })).toBe(true);
   });
 });

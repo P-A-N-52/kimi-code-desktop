@@ -30,14 +30,16 @@ import {
 } from './handler-context';
 import {
   RuntimeRequestError,
+  type JsonValue,
+  type RuntimeRequestFrame,
+} from './protocol';
+import {
   configGetParamsSchema,
   configUpdateParamsSchema,
   modelsListParamsSchema,
   providersImportParamsSchema,
   providersListParamsSchema,
-  type JsonValue,
-  type RuntimeRequestFrame,
-} from './protocol';
+} from './protocol-schemas';
 
 /** Klient `ProviderInput` wire shape — the tightened providers.import entry. */
 const providerImportEntrySchema = z.object({

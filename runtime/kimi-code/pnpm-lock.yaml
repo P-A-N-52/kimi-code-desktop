@@ -86,6 +86,9 @@ importers:
       '@moonshot-ai/klient':
         specifier: workspace:^
         version: link:../../packages/klient
+      '@moonshot-ai/transcript':
+        specifier: workspace:^
+        version: link:../../packages/transcript
       node-pty:
         specifier: ^1.1.0
         version: 1.1.0

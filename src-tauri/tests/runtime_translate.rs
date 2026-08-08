@@ -7,7 +7,12 @@
 //! — no node required. The fixture test spawns the real worker and skips with
 //! a note when `node` is not on PATH.
 
-use app_lib::runtime::protocol::{EventFrame, HelloParams, RUNTIME_PROTOCOL};
+use app_lib::runtime::protocol::{
+    EventFrame, HelloParams, EVENT_BACKGROUND_TASK_OBSERVED, EVENT_COMPACTION_BEGIN,
+    EVENT_COMPACTION_END, EVENT_MCP_LOADING_BEGIN, EVENT_MCP_LOADING_END,
+    EVENT_SLASH_COMMANDS_UPDATE, EVENT_STEP_BEGIN, EVENT_STEP_INTERRUPTED, EVENT_STEP_RETRY,
+    EVENT_TURN_STEERED, RUNTIME_PROTOCOL,
+};
 use app_lib::runtime::supervisor::{
     HandshakeConfig, RuntimeSupervisor, ShutdownConfig, SpawnConfig,
 };
@@ -778,6 +783,381 @@ fn unknown_events_fall_back_to_a_generic_notice() {
 }
 
 // ---------------------------------------------------------------------------
+// M3 wave-2 fidelity events (parity set) -> golden wire shapes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn step_begin_maps_to_wire_step_begin() {
+    let messages = translate_event(&session_frame(
+        EVENT_STEP_BEGIN,
+        json!({ "n": 2, "requestId": "req-1" }),
+    ));
+    assert_eq!(messages.len(), 1);
+    assert_eq!(event_type(&messages[0]), "StepBegin");
+    // requestId is runtime-side correlation only; it never crosses the wire.
+    assert_eq!(event_payload(&messages[0]), json!({ "n": 2 }));
+}
+
+#[test]
+fn step_begin_without_n_is_a_notice_not_a_panic() {
+    let messages = translate_event(&session_frame(EVENT_STEP_BEGIN, json!({})));
+    assert_eq!(event_type(&messages[0]), "SessionNotice");
+    assert!(event_payload(&messages[0])["text"]
+        .as_str()
+        .unwrap_or_default()
+        .contains('n'));
+}
+
+#[test]
+fn step_interrupted_maps_to_an_empty_payload_marker() {
+    let messages = translate_event(&session_frame(
+        EVENT_STEP_INTERRUPTED,
+        json!({ "requestId": "req-1" }),
+    ));
+    assert_eq!(event_type(&messages[0]), "StepInterrupted");
+    assert_eq!(event_payload(&messages[0]), json!({}));
+}
+
+#[test]
+fn step_retry_maps_to_the_snake_case_wire_shape() {
+    let messages = translate_event(&session_frame(
+        EVENT_STEP_RETRY,
+        json!({
+            "n": 1,
+            "next_attempt": 2,
+            "max_attempts": 3,
+            "wait_s": 4,
+            "error_type": "APIStatusError",
+            "status_code": 429,
+            "requestId": "req-1",
+        }),
+    ));
+    assert_eq!(messages.len(), 1);
+    assert_eq!(event_type(&messages[0]), "StepRetry");
+    assert_eq!(
+        event_payload(&messages[0]),
+        json!({
+            "n": 1,
+            "next_attempt": 2,
+            "max_attempts": 3,
+            "wait_s": 4,
+            "error_type": "APIStatusError",
+            "status_code": 429,
+        })
+    );
+
+    // status_code absent -> explicit null (ACP nulls-pass-through).
+    let bare = translate_event(&session_frame(
+        EVENT_STEP_RETRY,
+        json!({
+            "n": 2,
+            "next_attempt": 3,
+            "max_attempts": 3,
+            "wait_s": 1.5,
+            "error_type": "APITimeoutError",
+        }),
+    ));
+    assert_eq!(
+        event_payload(&bare[0]),
+        json!({
+            "n": 2,
+            "next_attempt": 3,
+            "max_attempts": 3,
+            "wait_s": 1.5,
+            "error_type": "APITimeoutError",
+            "status_code": Value::Null,
+        })
+    );
+
+    // A missing required field degrades to the malformed notice.
+    let malformed = translate_event(&session_frame(
+        EVENT_STEP_RETRY,
+        json!({ "n": 1, "next_attempt": 2 }),
+    ));
+    assert_eq!(event_type(&malformed[0]), "SessionNotice");
+    assert_eq!(
+        event_payload(&malformed[0])["reason"],
+        json!("malformed_event")
+    );
+}
+
+#[test]
+fn compaction_and_mcp_loading_map_to_empty_payload_markers() {
+    for (event, wire_type) in [
+        (EVENT_COMPACTION_BEGIN, "CompactionBegin"),
+        (EVENT_COMPACTION_END, "CompactionEnd"),
+        (EVENT_MCP_LOADING_BEGIN, "MCPLoadingBegin"),
+        (EVENT_MCP_LOADING_END, "MCPLoadingEnd"),
+    ] {
+        let messages = translate_event(&session_frame(event, json!({})));
+        assert_eq!(messages.len(), 1, "{event} must not be dropped");
+        assert_eq!(event_type(&messages[0]), wire_type, "{event}");
+        assert_eq!(event_payload(&messages[0]), json!({}), "{event}");
+    }
+}
+
+#[test]
+fn slash_commands_update_normalizes_items_like_the_acp_era() {
+    let messages = translate_event(&session_frame(
+        EVENT_SLASH_COMMANDS_UPDATE,
+        json!({
+            "slash_commands": [
+                {
+                    "name": "skill:review",
+                    "description": "Review code",
+                    "aliases": ["rv"],
+                    "input_hint": "<path>",
+                    "source": "runtime:skill",
+                },
+                // Bare string entries are tolerated (plugin/skill payloads).
+                "plain",
+                // input.hint unwraps; source is inferred when absent.
+                { "name": "kimi-finance:quote", "input": { "hint": "<ticker>" } },
+            ],
+        }),
+    ));
+    assert_eq!(event_type(&messages[0]), "SlashCommandsUpdate");
+    assert_eq!(
+        event_payload(&messages[0]),
+        json!({
+            "slash_commands": [
+                {
+                    "name": "skill:review",
+                    "description": "Review code",
+                    "aliases": ["rv"],
+                    "input_hint": "<path>",
+                    "source": "runtime:skill",
+                },
+                {
+                    "name": "plain",
+                    "description": "",
+                    "aliases": [],
+                    "input_hint": Value::Null,
+                    "source": "runtime",
+                },
+                {
+                    "name": "kimi-finance:quote",
+                    "description": "",
+                    "aliases": [],
+                    "input_hint": "<ticker>",
+                    "source": "runtime:plugin:kimi-finance",
+                },
+            ],
+        })
+    );
+}
+
+#[test]
+fn background_task_observed_lifts_session_id_and_fills_nulls() {
+    let messages = translate_event(&session_frame(
+        EVENT_BACKGROUND_TASK_OBSERVED,
+        json!({
+            "tool_call_id": "call-1",
+            "tool_name": "TaskOutput",
+            "task_id": "task-9",
+            "snapshot": "still running",
+            "terminal_state": "running",
+        }),
+    ));
+    assert_eq!(messages.len(), 1);
+    assert_eq!(event_type(&messages[0]), "BackgroundTaskObserved");
+    assert_eq!(
+        event_payload(&messages[0]),
+        json!({
+            "session_id": "sess-1",
+            "tool_call_id": "call-1",
+            "tool_name": "TaskOutput",
+            "task_id": "task-9",
+            "snapshot": "still running",
+            "terminal_state": "running",
+            "output_path": Value::Null,
+            "cron_id": Value::Null,
+            "cron_expression": Value::Null,
+            "human_schedule": Value::Null,
+            "next_fire_at": Value::Null,
+            "recurring": Value::Null,
+        })
+    );
+
+    // Unknown terminal states normalize to "unknown"; missing ids degrade to
+    // the malformed notice.
+    let odd = translate_event(&session_frame(
+        EVENT_BACKGROUND_TASK_OBSERVED,
+        json!({ "tool_call_id": "c", "tool_name": "TaskList", "terminal_state": "weird" }),
+    ));
+    assert_eq!(event_payload(&odd[0])["terminal_state"], json!("unknown"));
+    let malformed = translate_event(&session_frame(
+        EVENT_BACKGROUND_TASK_OBSERVED,
+        json!({ "snapshot": "x" }),
+    ));
+    assert_eq!(event_type(&malformed[0]), "SessionNotice");
+}
+
+#[test]
+fn tool_completed_synthesizes_background_task_observed_for_observation_tools() {
+    let mut translator = WireTranslator::new();
+    let _ = translator.translate(&session_frame(
+        "tool.started",
+        json!({ "toolCallId": "call-task", "name": "TaskOutput", "arguments": "{}" }),
+    ));
+    let messages = translator.translate(&session_frame(
+        "tool.completed",
+        json!({
+            "toolCallId": "call-task",
+            "isError": false,
+            "output": "task_id: abc123\noutput_path: /tmp/.kimi/tasks/abc123/output.txt\nstatus: ok",
+        }),
+    ));
+    assert_eq!(messages.len(), 2);
+    assert_eq!(event_type(&messages[0]), "ToolResult");
+    assert_eq!(event_type(&messages[1]), "BackgroundTaskObserved");
+    let observed = event_payload(&messages[1]);
+    assert_eq!(observed["session_id"], json!("sess-1"));
+    assert_eq!(observed["tool_call_id"], json!("call-task"));
+    assert_eq!(observed["tool_name"], json!("TaskOutput"));
+    assert_eq!(observed["task_id"], json!("abc123"));
+    assert_eq!(
+        observed["output_path"],
+        json!("/tmp/.kimi/tasks/abc123/output.txt")
+    );
+    assert_eq!(observed["terminal_state"], json!("completed"));
+}
+
+#[test]
+fn tool_completed_synthesis_covers_cron_tools_and_failures() {
+    let mut translator = WireTranslator::new();
+    let cron = translator.translate(&session_frame(
+        "tool.completed",
+        json!({
+            "toolCallId": "call-cron",
+            "name": "CronCreate",
+            "isError": false,
+            "message": "id: cron-1\nhumanSchedule: every day at 9\nnextFireAt: 2026-08-08T09:00:00Z\nrecurring: true",
+        }),
+    ));
+    assert_eq!(cron.len(), 2);
+    let observed = event_payload(&cron[1]);
+    assert_eq!(observed["tool_name"], json!("CronCreate"));
+    assert_eq!(observed["cron_id"], json!("cron-1"));
+    assert_eq!(observed["human_schedule"], json!("every day at 9"));
+    assert_eq!(observed["next_fire_at"], json!("2026-08-08T09:00:00Z"));
+    assert_eq!(observed["recurring"], json!(true));
+
+    let failed = translator.translate(&session_frame(
+        "tool.completed",
+        json!({ "toolCallId": "call-stop", "name": "TaskStop", "isError": true, "message": "nope" }),
+    ));
+    assert_eq!(event_payload(&failed[1])["terminal_state"], json!("failed"));
+
+    // Non-observation tools never synthesize the event.
+    let plain = translator.translate(&session_frame(
+        "tool.completed",
+        json!({ "toolCallId": "call-read", "name": "Read", "isError": false, "output": "text" }),
+    ));
+    assert_eq!(plain.len(), 1);
+}
+
+#[test]
+fn turn_steered_maps_to_steer_input() {
+    let messages = translate_event(&session_frame(
+        EVENT_TURN_STEERED,
+        json!({ "requestId": "req-1", "input": "also run the tests" }),
+    ));
+    assert_eq!(messages.len(), 1);
+    assert_eq!(event_type(&messages[0]), "SteerInput");
+    assert_eq!(
+        event_payload(&messages[0]),
+        json!({ "user_input": "also run the tests" })
+    );
+
+    let parts = translate_event(&session_frame(
+        EVENT_TURN_STEERED,
+        json!({
+            "requestId": "req-2",
+            "input": [{ "type": "text", "text": "look" }, { "type": "image_url", "image_url": { "url": "data:..." } }],
+        }),
+    ));
+    assert_eq!(
+        event_payload(&parts[0])["user_input"][1]["type"],
+        json!("image_url")
+    );
+
+    let malformed = translate_event(&session_frame(EVENT_TURN_STEERED, json!({})));
+    assert_eq!(event_type(&malformed[0]), "SessionNotice");
+}
+
+#[test]
+fn session_config_with_options_array_maps_the_full_option_set() {
+    let messages = translate_event(&session_frame(
+        "session.config",
+        json!({
+            "options": [
+                { "id": "model", "currentValue": "k2" },
+                {
+                    "id": "mode",
+                    "optionType": "select",
+                    "label": "Mode",
+                    "currentValue": "plan",
+                    "options": [{ "value": "plan", "label": "Plan" }, { "value": "code" }],
+                },
+                // Records without an id are dropped, not fatal.
+                { "currentValue": "orphan" },
+            ],
+        }),
+    ));
+    assert_eq!(event_type(&messages[0]), "ConfigOptionUpdate");
+    assert_eq!(
+        event_payload(&messages[0]),
+        json!({
+            "session_id": "sess-1",
+            "status": "known",
+            "options": [
+                {
+                    "id": "model",
+                    "optionType": "unknown",
+                    "label": Value::Null,
+                    "currentValue": "k2",
+                    "options": Value::Null,
+                },
+                {
+                    "id": "mode",
+                    "optionType": "select",
+                    "label": "Mode",
+                    "currentValue": "plan",
+                    "options": [{ "value": "plan", "label": "Plan" }, { "value": "code" }],
+                },
+            ],
+        })
+    );
+}
+
+/// Unknown event names still degrade to the generic notice (checklist §3);
+/// only the ten mapped parity events left this path in wave 2.
+#[test]
+fn unmapped_events_still_fall_back_to_a_generic_notice() {
+    for event in [
+        "goal.updated",
+        "shell.started",
+        "context.low",
+        "turn.stepped",
+    ] {
+        let messages = translate_event(&session_frame(event, json!({})));
+        assert_eq!(messages.len(), 1, "{event} must not be dropped");
+        assert_eq!(
+            event_type(&messages[0]),
+            "SessionNotice",
+            "{event} must degrade to the generic notice"
+        );
+        let payload = event_payload(&messages[0]);
+        assert_eq!(payload["reason"], json!("unsupported_event"), "{event}");
+        assert!(
+            payload["text"].as_str().unwrap_or_default().contains(event),
+            "{event} must be named in the notice"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Synthesized wire events (desktop-side, not runtime-v1 events)
 // ---------------------------------------------------------------------------
 
@@ -1046,6 +1426,136 @@ fn fixture_script_translates_to_the_expected_wire_sequence() {
     assert_eq!(terminal["prompt_request_id"], json!("req-translate-1"));
     assert_eq!(terminal["seq"], json!(1));
     assert_eq!(parse(&wire_sequence[7][0])["id"], json!("req-translate-1"));
+
+    supervisor
+        .shutdown(&ShutdownConfig::default())
+        .expect("clean shutdown");
+}
+
+/// M3 wave-2 golden pass over `fixture.emitScriptV2`: all ten parity events
+/// arrive as ordinary session frames with a continuing per-session seq and
+/// translate into their exact wire shapes (golden assertions below; the
+/// generic-notice fallback now covers only still-unknown event names).
+#[test]
+fn fixture_script_v2_parity_events_translate_in_order() {
+    if !node_on_path() {
+        eprintln!("skipping fixture_script_v2: `node` was not found on PATH");
+        return;
+    }
+    let supervisor = RuntimeSupervisor::new(fixture_config());
+    supervisor.start().expect("spawn fixture worker");
+    supervisor
+        .handshake(&handshake_config())
+        .expect("handshake");
+
+    let events = supervisor.take_event_receiver().expect("event receiver");
+    let mut translator = WireTranslator::new();
+    let _ = recv_event(&events, "runtime.ready");
+
+    let answer = supervisor
+        .call(
+            "fixture.emitScriptV2",
+            json!({ "sessionId": "parity-session", "requestId": "req-parity-1" }),
+            CALL_TIMEOUT,
+        )
+        .expect("emitScriptV2");
+    assert_eq!(answer, json!({ "emitted": 10 }));
+
+    let script_events = [
+        EVENT_STEP_BEGIN,
+        EVENT_STEP_RETRY,
+        EVENT_STEP_INTERRUPTED,
+        EVENT_COMPACTION_BEGIN,
+        EVENT_COMPACTION_END,
+        EVENT_MCP_LOADING_BEGIN,
+        EVENT_MCP_LOADING_END,
+        EVENT_SLASH_COMMANDS_UPDATE,
+        EVENT_BACKGROUND_TASK_OBSERVED,
+        EVENT_TURN_STEERED,
+    ];
+    let mut wire_sequence: Vec<Vec<String>> = Vec::new();
+    for (index, name) in script_events.iter().enumerate() {
+        let frame = recv_event(&events, name);
+        match &frame {
+            EventFrame::Session {
+                session_id,
+                seq,
+                event,
+                ..
+            } => {
+                assert_eq!(session_id, "parity-session");
+                assert_eq!(event, name);
+                // Per-session seq continues monotonically from 1.
+                assert_eq!(*seq, (index as u64) + 1);
+            }
+            other => panic!("expected session event {name}, got {other:?}"),
+        }
+        wire_sequence.push(translator.translate(&frame));
+    }
+
+    // Full-sequence snapshot: the 10 fixture parity events produce exactly
+    // this wire type series, one line each.
+    let snapshot: Vec<String> = wire_sequence
+        .iter()
+        .map(|lines| {
+            assert_eq!(lines.len(), 1, "each parity event maps to one wire line");
+            event_type(&lines[0])
+        })
+        .collect();
+    assert_eq!(
+        snapshot,
+        vec![
+            "StepBegin".to_string(),
+            "StepRetry".to_string(),
+            "StepInterrupted".to_string(),
+            "CompactionBegin".to_string(),
+            "CompactionEnd".to_string(),
+            "MCPLoadingBegin".to_string(),
+            "MCPLoadingEnd".to_string(),
+            "SlashCommandsUpdate".to_string(),
+            "BackgroundTaskObserved".to_string(),
+            "SteerInput".to_string(),
+        ]
+    );
+
+    // Golden spot checks against the fixture payload contents.
+    assert_eq!(event_payload(&wire_sequence[0][0]), json!({ "n": 1 }));
+    assert_eq!(
+        event_payload(&wire_sequence[1][0]),
+        json!({
+            "n": 1,
+            "next_attempt": 2,
+            "max_attempts": 3,
+            "wait_s": 4,
+            "error_type": "rate_limit",
+            "status_code": 429,
+        })
+    );
+    assert_eq!(event_payload(&wire_sequence[2][0]), json!({}));
+    assert_eq!(
+        event_payload(&wire_sequence[7][0]),
+        json!({
+            "slash_commands": [{
+                "name": "fixture",
+                "description": "Fixture slash command",
+                "aliases": ["fx"],
+                "input_hint": "<arg>",
+                "source": "runtime",
+            }],
+        })
+    );
+    let observed = event_payload(&wire_sequence[8][0]);
+    assert_eq!(observed["session_id"], json!("parity-session"));
+    assert_eq!(observed["tool_call_id"], json!("fixture-tool-1"));
+    assert_eq!(observed["tool_name"], json!("TaskOutput"));
+    assert_eq!(observed["task_id"], json!("fixture-task-1"));
+    assert_eq!(observed["snapshot"], json!("fixture task snapshot"));
+    assert_eq!(observed["terminal_state"], json!("running"));
+    assert_eq!(observed["output_path"], Value::Null);
+    assert_eq!(
+        event_payload(&wire_sequence[9][0]),
+        json!({ "user_input": "fixture steer input" })
+    );
 
     supervisor
         .shutdown(&ShutdownConfig::default())

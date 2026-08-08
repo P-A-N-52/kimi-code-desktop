@@ -2,26 +2,31 @@
  * `sessions` method family — runtime-v1 session lifecycle handlers.
  *
  * Covers sessions.list / sessions.create / sessions.get / sessions.update /
- * sessions.delete / session.open / session.close over the engine composition
- * root (./engine). Reads go through the klient `global.sessions` facade
- * (`ISessionIndex`); writes compose `IWorkspaceLifecycleService.handlerFor` →
- * the handler's `ISessionLifecycleService` — there is deliberately no
- * App-scope session lifecycle facade, so this is the same composition the
- * node-sdk v2 client uses (`sdk-rpc-client-v2.ts`). `sessions.create` takes
- * the handler chain because the klient facade `global.sessions.create`
- * accepts no explicit session id; when the Desktop does not supply one, the
- * runtime mints it in the engine's own id shape (`session_<uuid>`). A fresh
- * create leaves the engine session materialized but unopened: `session.open`
+ * sessions.delete / sessions.fork / session.open / session.close over the
+ * engine composition root (./engine). Reads go through the klient
+ * `global.sessions` facade (`ISessionIndex`); writes compose
+ * `IWorkspaceLifecycleService.handlerFor` → the handler's
+ * `ISessionLifecycleService` — there is deliberately no App-scope session
+ * lifecycle facade, so this is the same composition the node-sdk v2 client
+ * uses (`sdk-rpc-client-v2.ts`), and `sessions.fork` takes the same handler
+ * chain because the klient facade has no fork entry point.
+ * `sessions.create` takes the handler chain because the klient facade
+ * `global.sessions.create` accepts no explicit session id; when the Desktop
+ * does not supply one, the runtime mints it in the engine's own id shape
+ * (`session_<uuid>`). A fresh create leaves the engine session materialized
+ * but unopened, and a forked session lands in the same state: `session.open`
  * is the step that registers the session with the adapter and fires
  * `RuntimeSessionHooks.onSessionOpened` so the turns family can attach its
  * event bridge — repeat opens answer the current descriptor without
- * re-firing hooks. `sessions.update` covers runtime-owned fields only
- * (`model`, `cwd`) — title/archive are Desktop metadata and never cross
- * runtime-v1 — and follows the SDK rename pattern for a closed session:
- * resume, mutate, close again.
+ * re-firing hooks. `sessions.fork` is whole-session only in the pinned
+ * engine, so a `turnIndex` param is rejected with `fork_turn_unsupported`
+ * (non-retryable) rather than silently ignored. `sessions.update` covers
+ * runtime-owned fields only (`model`, `cwd`) — title/archive are Desktop
+ * metadata and never cross runtime-v1 — and follows the SDK rename pattern
+ * for a closed session: resume, mutate, close again.
  *
  * Error mapping: unknown session ids → `session_not_found`; a duplicate
- * explicit create id → `session_already_exists`; param validation →
+ * explicit create/fork id → `session_already_exists`; param validation →
  * `invalid_params`; any other engine failure → `internal_error` with the
  * original message preserved.
  */
@@ -61,6 +66,11 @@ import {
 } from './handler-context';
 import {
   RuntimeRequestError,
+  type JsonObject,
+  type JsonValue,
+  type RuntimeRequestFrame,
+} from './protocol';
+import {
   sessionCloseParamsSchema,
   sessionOpenParamsSchema,
   sessionsCreateParamsSchema,
@@ -68,11 +78,9 @@ import {
   sessionsGetParamsSchema,
   sessionsListParamsSchema,
   sessionsUpdateParamsSchema,
-  type JsonObject,
-  type JsonValue,
-  type RuntimeRequestFrame,
   type SessionDescriptor,
-} from './protocol';
+} from './protocol-schemas';
+import { sessionsForkParamsSchema } from './protocol-parity';
 
 export function createSessionHandlers(ctx: RuntimeHandlerContext): RuntimeHandlerEntry[] {
   // Sessions this family has opened (resumed + adapter-tracked + bridge hook
@@ -276,6 +284,66 @@ export function createSessionHandlers(ctx: RuntimeHandlerContext): RuntimeHandle
     ['session.open', openSession],
     ['session.close', closeSession],
   ];
+}
+
+/**
+ * The `sessions.fork` handler entry — a single entry exported separately
+ * from `createSessionHandlers` (it landed in M3 wave 2 while the wave-1
+ * placeholder still owned the method name; wave 3 dropped the placeholder
+ * and the protocol server registers this entry alongside the family).
+ *
+ * Semantics (pinned engine, sessionLifecycleService.fork): whole-session
+ * fork only. A `turnIndex` param is rejected with `fork_turn_unsupported`
+ * (non-retryable) rather than silently forking the whole session — the
+ * Desktop `fork_session` contract needs an honest answer until an engine
+ * with turn-granular fork lands. The forked session lands materialized but
+ * NOT opened — no adapter tracking, no `onSessionOpened` hook, no event
+ * bridge; the first `session.open` attaches all of that, exactly like a
+ * freshly created session.
+ */
+export function createForkSessionHandler(ctx: RuntimeHandlerContext): RuntimeHandlerEntry {
+  const forkSession = async (request: RuntimeRequestFrame): Promise<JsonValue> => {
+    const params = parseParams(sessionsForkParamsSchema, 'sessions.fork', request.params);
+    const engine = requireEngineContext(ctx);
+    const accessor = engine.app.accessor;
+    if (params.turnIndex !== undefined) {
+      throw new RuntimeRequestError(
+        'fork_turn_unsupported',
+        `The pinned engine forks whole sessions only; sessions.fork with turnIndex ${params.turnIndex} is not supported.`,
+        false,
+      );
+    }
+    let handler;
+    try {
+      handler = await handlerForSession(accessor, params.sessionId);
+    } catch (error) {
+      throw toInternalError(error);
+    }
+    if (handler === undefined) throw sessionNotFound(params.sessionId);
+    try {
+      const handle = await handler.accessor.get(ISessionLifecycleService).fork({
+        sourceSessionId: params.sessionId,
+        newSessionId: params.newSessionId,
+        title: params.title,
+      });
+      return toJson(await liveDescriptor(handle));
+    } catch (error) {
+      if (isError2(error)) {
+        if (error.code === ErrorCodes.SESSION_NOT_FOUND) {
+          throw sessionNotFound(params.sessionId);
+        }
+        if (error.code === ErrorCodes.SESSION_ALREADY_EXISTS) {
+          throw new RuntimeRequestError(
+            'session_already_exists',
+            `Session "${params.newSessionId ?? ''}" already exists.`,
+            false,
+          );
+        }
+      }
+      throw toInternalError(error);
+    }
+  };
+  return ['sessions.fork', forkSession];
 }
 
 function parseParams<Schema extends z.ZodType>(
